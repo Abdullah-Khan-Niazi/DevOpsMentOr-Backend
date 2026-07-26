@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # DevOps Mentor API
 
 Enterprise-grade Node.js + TypeScript backend using feature-based modular architecture.
@@ -106,3 +107,6 @@ Failure:
   "errors": []
 }
 ```
+=======
+# Devops-Mentor-Backend
+>>>>>>> d3844b0a1f0128b30aae218a428cd46d84c8fef7
