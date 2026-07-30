@@ -208,47 +208,78 @@ export class AuthService {
 
     const existingUser = await this.usersRepo.findByEmail(oauthUser.email);
 
-    if (!existingUser) {
-      throw new UnauthorizedError(
-        `No account linked with ${input.provider}. Please sign up first.`,
+    if (existingUser) {
+      const accountStatus = getUserStatus(existingUser);
+
+      if (accountStatus !== UserStatus.ACTIVE) {
+        await this.loginHistoryRepo.create({
+          userId: existingUser.userId,
+          ipAddress: meta?.ipAddress,
+          userAgent: meta?.userAgent,
+          loginType: input.provider,
+          isSuccessful: false,
+          failureReason: `Account ${accountStatus.toLowerCase()}`,
+        });
+
+        throw new UnauthorizedError(
+          accountStatus === UserStatus.SUSPENDED
+            ? 'Your account has been suspended.'
+            : 'Your account is inactive.',
+        );
+      }
+
+      const tokens = await this.generateTokens(
+        existingUser.userId,
+        existingUser.email,
+        existingUser.roles,
       );
-    }
 
-    const accountStatus = getUserStatus(existingUser);
+      await db
+        .update(users)
+        .set({
+          lastLoginAt: new Date(),
+          lastLoginIp: meta?.ipAddress ?? null,
+        })
+        .where(eq(users.userId, existingUser.userId));
 
-    if (accountStatus !== UserStatus.ACTIVE) {
       await this.loginHistoryRepo.create({
         userId: existingUser.userId,
         ipAddress: meta?.ipAddress,
         userAgent: meta?.userAgent,
         loginType: input.provider,
-        isSuccessful: false,
-        failureReason: `Account ${accountStatus.toLowerCase()}`,
+        isSuccessful: true,
       });
 
-      throw new UnauthorizedError(
-        accountStatus === UserStatus.SUSPENDED
-          ? 'Your account has been suspended.'
-          : 'Your account is inactive.',
-      );
+      return {
+        user: this.userSvc.toResponse(existingUser),
+        tokens,
+      };
     }
 
-    const tokens = await this.generateTokens(
-      existingUser.userId,
-      existingUser.email,
-      existingUser.roles,
-    );
+    const emailPrefix = oauthUser.email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '_');
 
-    await db
-      .update(users)
-      .set({
-        lastLoginAt: new Date(),
-        lastLoginIp: meta?.ipAddress ?? null,
-      })
-      .where(eq(users.userId, existingUser.userId));
+    let username = emailPrefix;
+    let suffix = 1;
+    while (await this.usersRepo.findByUsername(username)) {
+      username = `${emailPrefix}_${suffix}`;
+      suffix++;
+    }
+
+    const defaultRole = await this.roles.findByName(ROLES.USER);
+
+    const newUser = await this.usersRepo.create({
+      username,
+      email: oauthUser.email,
+      passwordHash: '',
+      salt: '',
+      fullName: oauthUser.name ?? emailPrefix,
+      roleIds: defaultRole ? [defaultRole.id] : [],
+    });
+
+    const tokens = await this.generateTokens(newUser.userId, newUser.email, newUser.roles);
 
     await this.loginHistoryRepo.create({
-      userId: existingUser.userId,
+      userId: newUser.userId,
       ipAddress: meta?.ipAddress,
       userAgent: meta?.userAgent,
       loginType: input.provider,
@@ -256,7 +287,7 @@ export class AuthService {
     });
 
     return {
-      user: this.userSvc.toResponse(existingUser),
+      user: this.userSvc.toResponse(newUser),
       tokens,
     };
   }
