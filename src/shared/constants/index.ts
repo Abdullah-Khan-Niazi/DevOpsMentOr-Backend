@@ -1,5 +1,5 @@
 export { HTTP_STATUS, type HttpStatusCode } from './http-status';
-export { UserStatus } from './enums';
+export { UserStatus, getUserStatus } from './enums';
 
 export const PERMISSIONS = {
   USERS_READ: 'users:read',
