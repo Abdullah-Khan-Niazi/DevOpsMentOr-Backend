@@ -1,19 +1,16 @@
+import type { PermissionEntity } from '../permissions/types';
+
 export interface RoleEntity {
-  id: string;
-  name: string;
+  id: number;
+  roleName: string;
   description: string | null;
+  priority: number;
   createdAt: Date;
-  updatedAt: Date;
 }
 
 export interface RoleWithPermissions extends RoleEntity {
   permissions: Array<{
-    permission: {
-      id: string;
-      name: string;
-      resource: string;
-      action: string;
-    };
+    permission: PermissionEntity;
   }>;
 }
 

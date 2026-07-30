@@ -1,40 +1,43 @@
-import { and, asc, count, desc, eq, ilike, or } from 'drizzle-orm';
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { db, permissions, rolePermissions, roles, userRoles, users } from '../../../app/database';
+import { and, asc, count, desc, eq, like, or } from 'drizzle-orm';
+import { db } from '../../../app/database';
+import { permissions, rolePermissions, roles, userRoles, users } from '../../../app/database/schema';
 import { UserStatus } from '../../../shared/constants';
-import { createId, getSkipTake } from '../../../shared/utils';
+import { getSkipTake } from '../../../shared/utils';
 import type { ListUsersFilter, UserWithRoles } from '../types';
 
 export interface IUserRepository {
-  findById(id: string): Promise<UserWithRoles | null>;
+  findById(id: number): Promise<UserWithRoles | null>;
   findByEmail(email: string): Promise<UserWithRoles | null>;
+  findByUsername(username: string): Promise<UserWithRoles | null>;
   findMany(filter: ListUsersFilter): Promise<{ items: UserWithRoles[]; total: number }>;
   create(data: {
     email: string;
     passwordHash: string;
-    firstName: string;
-    lastName: string;
+    username: string;
+    salt: string;
+    fullName?: string;
+    displayName?: string;
     status?: UserStatus;
-    roleIds?: string[];
+    roleIds?: number[];
   }): Promise<UserWithRoles>;
   update(
-    id: string,
+    id: number,
     data: {
-      firstName?: string;
-      lastName?: string;
+      fullName?: string;
+      displayName?: string;
       status?: UserStatus;
-      roleIds?: string[];
+      roleIds?: number[];
     },
   ): Promise<UserWithRoles>;
-  delete(id: string): Promise<void>;
+  delete(id: number): Promise<void>;
   count(): Promise<number>;
   countByStatus(status: UserStatus): Promise<number>;
 }
 
 export class UserRepository implements IUserRepository {
-  async findById(id: string): Promise<UserWithRoles | null> {
+  async findById(id: number): Promise<UserWithRoles | null> {
     const user = await db.query.users.findFirst({
-      where: eq(users.id, id),
+      where: eq(users.userId, id),
     });
     if (!user) {
       return null;
@@ -52,6 +55,16 @@ export class UserRepository implements IUserRepository {
     return this.attachRoles(user);
   }
 
+  async findByUsername(username: string): Promise<UserWithRoles | null> {
+    const user = await db.query.users.findFirst({
+      where: eq(users.username, username),
+    });
+    if (!user) {
+      return null;
+    }
+    return this.attachRoles(user);
+  }
+
   async findMany(filter: ListUsersFilter): Promise<{ items: UserWithRoles[]; total: number }> {
     const { skip, take } = getSkipTake(filter.page, filter.limit);
     const conditions = [];
@@ -60,26 +73,28 @@ export class UserRepository implements IUserRepository {
       const search = `%${filter.search}%`;
       conditions.push(
         or(
-          ilike(users.email, search),
-          ilike(users.firstName, search),
-          ilike(users.lastName, search),
+          like(users.email, search),
+          like(users.username, search),
+          like(users.fullName, search),
+          like(users.displayName, search),
         ),
       );
     }
 
     if (filter.status) {
-      conditions.push(eq(users.status, filter.status));
+      conditions.push(eq(users.isActive, filter.status === UserStatus.ACTIVE));
     }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
-    const sortableFields: Record<string, AnyPgColumn> = {
+    const sortableFields = {
       createdAt: users.createdAt,
       updatedAt: users.updatedAt,
       email: users.email,
-      firstName: users.firstName,
-      lastName: users.lastName,
+      username: users.username,
+      fullName: users.fullName,
     };
-    const sortColumn = sortableFields[filter.sortBy ?? ''] ?? users.createdAt;
+    const sortKey = filter.sortBy as keyof typeof sortableFields | undefined;
+    const sortColumn = (sortKey && sortableFields[sortKey]) ?? users.createdAt;
     const orderBy = filter.sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
 
     const [rows, totalResult] = await Promise.all([
@@ -94,37 +109,48 @@ export class UserRepository implements IUserRepository {
   async create(data: {
     email: string;
     passwordHash: string;
-    firstName: string;
-    lastName: string;
+    username: string;
+    salt: string;
+    fullName?: string;
+    displayName?: string;
     status?: UserStatus;
-    roleIds?: string[];
+    roleIds?: number[];
   }): Promise<UserWithRoles> {
-    const id = createId();
-    const now = new Date();
+    let userId: number | undefined;
 
     await db.transaction(async (tx) => {
-      await tx.insert(users).values({
-        id,
+      const inserted = await tx.insert(users).values({
         email: data.email,
         passwordHash: data.passwordHash,
-        firstName: data.firstName,
-        lastName: data.lastName,
-        status: data.status ?? UserStatus.ACTIVE,
-        createdAt: now,
-        updatedAt: now,
+        username: data.username,
+        salt: data.salt,
+        fullName: data.fullName,
+        isActive: (data.status ?? UserStatus.ACTIVE) === UserStatus.ACTIVE,
+        isBanned: false,
+        deletedAt: null,
       });
+
+      const createdUserId = inserted[0]?.insertId;
+      if (!createdUserId) {
+        throw new Error('Failed to create user.');
+      }
+      userId = createdUserId;
 
       if (data.roleIds && data.roleIds.length > 0) {
         await tx.insert(userRoles).values(
           data.roleIds.map((roleId) => ({
-            userId: id,
+            userId: createdUserId,
             roleId,
           })),
         );
       }
     });
 
-    const created = await this.findById(id);
+    if (!userId) {
+      throw new Error('Failed to create user.');
+    }
+
+    const created = await this.findById(userId);
     if (!created) {
       throw new Error('Failed to create user.');
     }
@@ -132,24 +158,24 @@ export class UserRepository implements IUserRepository {
   }
 
   async update(
-    id: string,
+    id: number,
     data: {
-      firstName?: string;
-      lastName?: string;
+      fullName?: string;
+      displayName?: string;
       status?: UserStatus;
-      roleIds?: string[];
+      roleIds?: number[];
     },
   ): Promise<UserWithRoles> {
     await db.transaction(async (tx) => {
       await tx
         .update(users)
         .set({
-          firstName: data.firstName,
-          lastName: data.lastName,
-          status: data.status,
-          updatedAt: new Date(),
+          fullName: data.fullName,
+          displayName: data.displayName,
+          isActive: data.status === undefined ? undefined : data.status === UserStatus.ACTIVE,
+          isBanned: data.status === UserStatus.SUSPENDED ? true : undefined,
         })
-        .where(eq(users.id, id));
+        .where(eq(users.userId, id));
 
       if (data.roleIds) {
         await tx.delete(userRoles).where(eq(userRoles.userId, id));
@@ -171,8 +197,8 @@ export class UserRepository implements IUserRepository {
     return updated;
   }
 
-  async delete(id: string): Promise<void> {
-    await db.delete(users).where(eq(users.id, id));
+  async delete(id: number): Promise<void> {
+    await db.delete(users).where(eq(users.userId, id));
   }
 
   async count(): Promise<number> {
@@ -181,31 +207,51 @@ export class UserRepository implements IUserRepository {
   }
 
   async countByStatus(status: UserStatus): Promise<number> {
-    const result = await db.select({ value: count() }).from(users).where(eq(users.status, status));
+    const result = await db
+      .select({ value: count() })
+      .from(users)
+      .where(eq(users.isActive, status === UserStatus.ACTIVE));
     return result[0]?.value ?? 0;
   }
 
   private async attachRoles(user: typeof users.$inferSelect): Promise<UserWithRoles> {
     const roleRows = await db
       .select({
-        roleId: roles.id,
-        roleName: roles.name,
-        permissionId: permissions.id,
-        permissionName: permissions.name,
+        roleId: roles.roleId,
+        roleName: roles.roleName,
+        roleDescription: roles.description,
+        rolePriority: roles.priority,
+        roleCreatedAt: roles.createdAt,
+        permissionId: permissions.permissionId,
+        permissionName: permissions.permissionName,
+        permissionDescription: permissions.description,
+        permissionModule: permissions.module,
+        permissionCreatedAt: permissions.createdAt,
       })
       .from(userRoles)
-      .innerJoin(roles, eq(userRoles.roleId, roles.id))
-      .leftJoin(rolePermissions, eq(roles.id, rolePermissions.roleId))
-      .leftJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(eq(userRoles.userId, user.id));
+      .innerJoin(roles, eq(userRoles.roleId, roles.roleId))
+      .leftJoin(rolePermissions, eq(roles.roleId, rolePermissions.roleId))
+      .leftJoin(permissions, eq(rolePermissions.permissionId, permissions.permissionId))
+      .where(eq(userRoles.userId, user.userId));
 
     const roleMap = new Map<
-      string,
+      number,
       {
         role: {
-          id: string;
-          name: string;
-          permissions: Array<{ permission: { id: string; name: string } }>;
+          id: number;
+          roleName: string;
+          description: string | null;
+          priority: number;
+          createdAt: Date;
+          permissions: Array<{
+            permission: {
+              id: number;
+              permissionName: string;
+              description: string | null;
+              module: string | null;
+              createdAt: Date;
+            };
+          }>;
         };
       }
     >();
@@ -216,14 +262,17 @@ export class UserRepository implements IUserRepository {
         entry = {
           role: {
             id: row.roleId,
-            name: row.roleName,
+            roleName: row.roleName,
+            description: row.roleDescription,
+            priority: row.rolePriority,
+            createdAt: row.roleCreatedAt,
             permissions: [],
           },
         };
         roleMap.set(row.roleId, entry);
       }
 
-      if (row.permissionId && row.permissionName) {
+      if (row.permissionId && row.permissionName && row.permissionCreatedAt) {
         const alreadyExists = entry.role.permissions.some(
           (item) => item.permission.id === row.permissionId,
         );
@@ -231,7 +280,10 @@ export class UserRepository implements IUserRepository {
           entry.role.permissions.push({
             permission: {
               id: row.permissionId,
-              name: row.permissionName,
+              permissionName: row.permissionName,
+              description: row.permissionDescription,
+              module: row.permissionModule,
+              createdAt: row.permissionCreatedAt,
             },
           });
         }
@@ -239,16 +291,36 @@ export class UserRepository implements IUserRepository {
     }
 
     return {
-      id: user.id,
+      userId: user.userId,
+      username: user.username,
       email: user.email,
       passwordHash: user.passwordHash,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      status: user.status as UserStatus,
+      salt: user.salt,
+      fullName: user.fullName,
+      status: user.isBanned
+        ? UserStatus.SUSPENDED
+        : user.isActive
+          ? UserStatus.ACTIVE
+          : UserStatus.INACTIVE,
+      bio: user.bio,
+      avatarUrl: user.avatarUrl,
+      coverPhotoUrl: user.coverPhotoUrl,
+      isVerified: user.isVerified,
+      isActive: user.isActive,
+      isBanned: user.isBanned,
+      banReason: user.banReason,
+      lastLoginAt: user.lastLoginAt,
+      lastLoginIp: user.lastLoginIp,
+      registrationIp: user.registrationIp,
+      timezone: user.timezone,
+      language: user.language,
+      twoFactorEnabled: user.twoFactorEnabled,
+      twoFactorSecret: user.twoFactorSecret,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
+      deletedAt: user.deletedAt,
       roles: Array.from(roleMap.values()),
-    };
+    } as UserWithRoles;
   }
 }
 

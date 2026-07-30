@@ -1,38 +1,40 @@
-import { and, asc, count, desc, eq, ilike, or } from 'drizzle-orm';
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import { and, asc, count, desc, eq, like, or } from 'drizzle-orm';
+import type { AnyMySqlColumn } from 'drizzle-orm/mysql-core';
 import {
   db,
   permissions,
   rolePermissions,
   roles,
 } from '../../../app/database';
-import { createId, getSkipTake } from '../../../shared/utils';
+import { getSkipTake } from '../../../shared/utils';
 import type { ListRolesFilter, RoleWithPermissions } from '../types';
 
 export interface IRoleRepository {
-  findById(id: string): Promise<RoleWithPermissions | null>;
+  findById(id: number): Promise<RoleWithPermissions | null>;
   findByName(name: string): Promise<RoleWithPermissions | null>;
   findMany(filter: ListRolesFilter): Promise<{ items: RoleWithPermissions[]; total: number }>;
   create(data: {
-    name: string;
+    roleName: string;
     description?: string;
-    permissionIds?: string[];
+    priority?: number;
+    permissionIds?: number[];
   }): Promise<RoleWithPermissions>;
   update(
-    id: string,
+    id: number,
     data: {
-      name?: string;
+      roleName?: string;
       description?: string;
-      permissionIds?: string[];
+      priority?: number;
+      permissionIds?: number[];
     },
   ): Promise<RoleWithPermissions>;
-  delete(id: string): Promise<void>;
+  delete(id: number): Promise<void>;
   count(): Promise<number>;
 }
 
 export class RoleRepository implements IRoleRepository {
-  async findById(id: string): Promise<RoleWithPermissions | null> {
-    const role = await db.query.roles.findFirst({ where: eq(roles.id, id) });
+  async findById(id: number): Promise<RoleWithPermissions | null> {
+    const role = await db.query.roles.findFirst({ where: eq(roles.roleId, id) });
     if (!role) {
       return null;
     }
@@ -40,7 +42,7 @@ export class RoleRepository implements IRoleRepository {
   }
 
   async findByName(name: string): Promise<RoleWithPermissions | null> {
-    const role = await db.query.roles.findFirst({ where: eq(roles.name, name) });
+    const role = await db.query.roles.findFirst({ where: eq(roles.roleName, name) });
     if (!role) {
       return null;
     }
@@ -53,14 +55,14 @@ export class RoleRepository implements IRoleRepository {
 
     if (filter.search) {
       const search = `%${filter.search}%`;
-      conditions.push(or(ilike(roles.name, search), ilike(roles.description, search)));
+      conditions.push(or(like(roles.roleName, search), like(roles.description, search)));
     }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
-    const sortableFields: Record<string, AnyPgColumn> = {
+    const sortableFields: Record<string, AnyMySqlColumn> = {
       createdAt: roles.createdAt,
-      updatedAt: roles.updatedAt,
-      name: roles.name,
+      roleName: roles.roleName,
+      priority: roles.priority,
     };
     const sortColumn = sortableFields[filter.sortBy ?? ''] ?? roles.createdAt;
     const orderBy = filter.sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
@@ -75,33 +77,44 @@ export class RoleRepository implements IRoleRepository {
   }
 
   async create(data: {
-    name: string;
+    roleName: string;
     description?: string;
-    permissionIds?: string[];
+    priority?: number;
+    permissionIds?: number[];
   }): Promise<RoleWithPermissions> {
-    const id = createId();
-    const now = new Date();
+    let roleId: number | undefined;
 
     await db.transaction(async (tx) => {
-      await tx.insert(roles).values({
-        id,
-        name: data.name,
-        description: data.description,
-        createdAt: now,
-        updatedAt: now,
-      });
+      const inserted = await tx
+        .insert(roles)
+        .values({
+          roleName: data.roleName,
+          description: data.description,
+          priority: data.priority,
+        })
+        .$returningId();
+
+      roleId = inserted[0]?.roleId;
+      if (!roleId) {
+        throw new Error('Failed to create role.');
+      }
 
       if (data.permissionIds && data.permissionIds.length > 0) {
         await tx.insert(rolePermissions).values(
           data.permissionIds.map((permissionId) => ({
-            roleId: id,
+            roleId,
             permissionId,
           })),
         );
       }
     });
 
-    const created = await this.findById(id);
+    const createdRoleId = roleId;
+    if (!createdRoleId) {
+      throw new Error('Failed to create role.');
+    }
+
+    const created = await this.findById(createdRoleId);
     if (!created) {
       throw new Error('Failed to create role.');
     }
@@ -109,22 +122,23 @@ export class RoleRepository implements IRoleRepository {
   }
 
   async update(
-    id: string,
+    id: number,
     data: {
-      name?: string;
+      roleName?: string;
       description?: string;
-      permissionIds?: string[];
+      priority?: number;
+      permissionIds?: number[];
     },
   ): Promise<RoleWithPermissions> {
     await db.transaction(async (tx) => {
       await tx
         .update(roles)
         .set({
-          name: data.name,
+          roleName: data.roleName,
           description: data.description,
-          updatedAt: new Date(),
+          priority: data.priority,
         })
-        .where(eq(roles.id, id));
+        .where(eq(roles.roleId, id));
 
       if (data.permissionIds) {
         await tx.delete(rolePermissions).where(eq(rolePermissions.roleId, id));
@@ -146,8 +160,8 @@ export class RoleRepository implements IRoleRepository {
     return updated;
   }
 
-  async delete(id: string): Promise<void> {
-    await db.delete(roles).where(eq(roles.id, id));
+  async delete(id: number): Promise<void> {
+    await db.delete(roles).where(eq(roles.roleId, id));
   }
 
   async count(): Promise<number> {
@@ -160,21 +174,22 @@ export class RoleRepository implements IRoleRepository {
   ): Promise<RoleWithPermissions> {
     const permissionRows = await db
       .select({
-        id: permissions.id,
-        name: permissions.name,
-        resource: permissions.resource,
-        action: permissions.action,
+        id: permissions.permissionId,
+        permissionName: permissions.permissionName,
+        description: permissions.description,
+        module: permissions.module,
+        createdAt: permissions.createdAt,
       })
       .from(rolePermissions)
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(eq(rolePermissions.roleId, role.id));
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.permissionId))
+      .where(eq(rolePermissions.roleId, role.roleId));
 
     return {
-      id: role.id,
-      name: role.name,
+      id: role.roleId,
+      roleName: role.roleName,
       description: role.description,
+      priority: role.priority,
       createdAt: role.createdAt,
-      updatedAt: role.updatedAt,
       permissions: permissionRows.map((permission) => ({ permission })),
     };
   }
