@@ -1,11 +1,18 @@
 import type { UserStatus } from '../../shared/constants';
+import type { RoleWithPermissions } from '../roles/types';
 
+/** Internal user persistence model backed by MySQL. */
 export interface UserEntity {
-  id: string;
+  userId: number;
+  username: string;
   email: string;
   passwordHash: string;
-  firstName: string;
-  lastName: string;
+  salt: string;
+  fullName: string | null;
+  isActive: boolean;
+  isBanned: boolean;
+  deletedAt: Date | null;
+  /** Derived application status; not a persisted MySQL column. */
   status: UserStatus;
   createdAt: Date;
   updatedAt: Date;
@@ -13,16 +20,7 @@ export interface UserEntity {
 
 export interface UserWithRoles extends UserEntity {
   roles: Array<{
-    role: {
-      id: string;
-      name: string;
-      permissions: Array<{
-        permission: {
-          id: string;
-          name: string;
-        };
-      }>;
-    };
+    role: RoleWithPermissions;
   }>;
 }
 
