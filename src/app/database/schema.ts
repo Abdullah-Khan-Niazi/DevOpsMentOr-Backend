@@ -200,12 +200,32 @@ export const apiTokens = mysqlTable(
   (table) => [uniqueIndex('api_tokens_api_token_key').on(table.apiToken)],
 );
 
+export const refreshTokens = mysqlTable(
+  'refresh_tokens',
+  {
+    id: int('id').autoincrement().primaryKey(),
+    token: varchar('token', { length: 500 }).notNull(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at').notNull(),
+    revokedAt: timestamp('revoked_at', { mode: 'date' }),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('refresh_tokens_token_key').on(table.token),
+    index('idx_token').on(table.token),
+    index('idx_user').on(table.userId),
+  ],
+);
+
 export const usersRelations = relations(users, ({ many }) => ({
   roles: many(userRoles),
   sessions: many(sessions),
   otpCodes: many(otpCodes),
   loginHistory: many(loginHistory),
   apiTokens: many(apiTokens),
+  refreshTokens: many(refreshTokens),
 }));
 
 export const rolesRelations = relations(roles, ({ many }) => ({
@@ -244,4 +264,8 @@ export const loginHistoryRelations = relations(loginHistory, ({ one }) => ({
 
 export const apiTokensRelations = relations(apiTokens, ({ one }) => ({
   user: one(users, { fields: [apiTokens.userId], references: [users.userId] }),
+}));
+
+export const refreshTokensRelations = relations(refreshTokens, ({ one }) => ({
+  user: one(users, { fields: [refreshTokens.userId], references: [users.userId] }),
 }));
