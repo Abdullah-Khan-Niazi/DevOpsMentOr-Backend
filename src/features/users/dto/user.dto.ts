@@ -1,26 +1,26 @@
 import type { UserStatus } from '../../../shared/constants';
 
 export interface CreateUserDto {
+  username: string;
   email: string;
   password: string;
-  firstName: string;
-  lastName: string;
-  roleIds?: string[];
+  fullName: string;
+  roleIds?: number[];
   status?: UserStatus;
 }
 
 export interface UpdateUserDto {
-  firstName?: string;
-  lastName?: string;
+  username?: string;
+  fullName?: string;
   status?: UserStatus;
-  roleIds?: string[];
+  roleIds?: number[];
 }
 
 export interface UserResponseDto {
-  id: string;
+  userId: number;
+  username: string;
   email: string;
-  firstName: string;
-  lastName: string;
+  fullName: string | null;
   status: UserStatus;
   roles: string[];
   createdAt: Date;
