@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { env } from '../../app/config/env';
 import { UnauthorizedError } from '../errors';
@@ -22,9 +23,13 @@ export class TokenService {
   }
 
   createTokenPair(payload: Omit<JwtPayload, 'type'>): TokenPair {
+    const jti = randomUUID();
+
+    const extendedPayload = { ...payload, jti };
+
     return {
-      accessToken: this.signAccessToken(payload),
-      refreshToken: this.signRefreshToken(payload),
+      accessToken: this.signAccessToken(extendedPayload),
+      refreshToken: this.signRefreshToken(extendedPayload),
     };
   }
 
