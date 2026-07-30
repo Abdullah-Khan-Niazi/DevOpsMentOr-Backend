@@ -19,9 +19,15 @@ interface GoogleUser {
 interface GitHubUser {
   id: number;
   login: string;
-  email: string;
-  name: string;
+  email: string | null;
+  name: string | null;
   avatar_url: string;
+}
+
+interface GitHubEmail {
+  email: string;
+  primary: boolean;
+  verified: boolean;
 }
 
 interface LinkedInUser {
@@ -116,44 +122,42 @@ export class OAuthService {
   }
 
   private async getGitHubUser(accessToken: string): Promise<OAuthUserInfo> {
-    const response = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/vnd.github.v3+json',
-      },
-    });
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'DevOps-Mentor-App',
+    };
+
+    const response = await fetch('https://api.github.com/user', { headers });
 
     if (!response.ok) {
       throw new BadRequestError('Failed to fetch GitHub user info.');
     }
 
     const user = (await response.json()) as GitHubUser;
+    let primaryEmail = user.email;
 
-    if (!user.email) {
-      const emailResponse = await fetch('https://api.github.com/user/emails', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/vnd.github.v3+json',
-        },
-      });
+    if (!primaryEmail) {
+      const emailResponse = await fetch('https://api.github.com/user/emails', { headers });
 
       if (emailResponse.ok) {
-        const emails = (await emailResponse.json()) as Array<{
-          email: string;
-          primary: boolean;
-          verified: boolean;
-        }>;
-        const primary = emails.find((e) => e.primary);
+        const emails = (await emailResponse.json()) as GitHubEmail[];
+        const primary = emails.find((e) => e.primary && e.verified)
+          ?? emails.find((e) => e.verified);
         if (primary) {
-          user.email = primary.email;
+          primaryEmail = primary.email;
         }
       }
+    }
+
+    if (!primaryEmail) {
+      throw new BadRequestError('Unable to retrieve a verified email from your GitHub account. Please ensure your email is public or verified.');
     }
 
     return {
       provider: 'github',
       providerId: String(user.id),
-      email: user.email,
+      email: primaryEmail,
       name: user.name ?? user.login,
       avatarUrl: user.avatar_url,
     };
