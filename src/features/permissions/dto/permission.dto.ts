@@ -1,23 +1,19 @@
 export interface CreatePermissionDto {
-  name: string;
+  permissionName: string;
   description?: string;
-  resource: string;
-  action: string;
+  module?: string;
 }
 
 export interface UpdatePermissionDto {
-  name?: string;
+  permissionName?: string;
   description?: string;
-  resource?: string;
-  action?: string;
+  module?: string;
 }
 
 export interface PermissionResponseDto {
-  id: string;
-  name: string;
+  id: number;
+  permissionName: string;
   description: string | null;
-  resource: string;
-  action: string;
+  module: string | null;
   createdAt: Date;
-  updatedAt: Date;
 }

@@ -1,11 +1,9 @@
 export interface PermissionEntity {
-  id: string;
-  name: string;
+  id: number;
+  permissionName: string;
   description: string | null;
-  resource: string;
-  action: string;
+  module: string | null;
   createdAt: Date;
-  updatedAt: Date;
 }
 
 export interface ListPermissionsFilter {
@@ -14,5 +12,5 @@ export interface ListPermissionsFilter {
   search?: string;
   sortBy?: string;
   sortOrder: 'asc' | 'desc';
-  resource?: string;
+  module?: string;
 }
