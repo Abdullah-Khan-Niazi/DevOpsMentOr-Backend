@@ -1,20 +1,22 @@
 export interface CreateRoleDto {
-  name: string;
+  roleName: string;
   description?: string;
-  permissionIds?: string[];
+  priority?: number;
+  permissionIds?: number[];
 }
 
 export interface UpdateRoleDto {
-  name?: string;
+  roleName?: string;
   description?: string;
-  permissionIds?: string[];
+  priority?: number;
+  permissionIds?: number[];
 }
 
 export interface RoleResponseDto {
-  id: string;
-  name: string;
+  id: number;
+  roleName: string;
   description: string | null;
+  priority: number;
   permissions: string[];
   createdAt: Date;
-  updatedAt: Date;
 }
