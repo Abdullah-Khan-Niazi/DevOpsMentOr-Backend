@@ -37,4 +37,8 @@ export const cacheKeys = {
   identity: (userId: number): string => `identity:${userId}`,
   /** `admin_invite:{token}` → JSON { email, fullName, expiresAt }. */
   adminInvite: (token: string): string => `admin_invite:${token}`,
+  /** `lp_stats` → JSON LearnerPoolStatsDto; TTL = 60s (F2 forward hook). */
+  learnerPoolStats: (): string => 'lp_stats',
+  /** `admin_kpi` → JSON AdminDashboardDto; TTL = 5min (ADM-06). */
+  adminDashboard: (): string => 'admin_kpi',
 } as const;
