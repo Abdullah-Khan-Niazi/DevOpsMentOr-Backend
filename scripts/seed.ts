@@ -2,11 +2,14 @@ import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import dotenv from 'dotenv';
 import {
+  countries,
   db,
   disconnectDatabase,
   permissions,
   rolePermissions,
   roles,
+  skills,
+  systemSettings,
   userRoles,
   users,
 } from '../src/app/database';
@@ -48,6 +51,13 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.AUTH_APITOKEN_READ, module: 'auth', description: 'List own API tokens' },
   { name: PERMISSIONS.AUTH_APITOKEN_DELETE, module: 'auth', description: 'Revoke own API tokens' },
   { name: PERMISSIONS.AUTH_LOGIN_HISTORY_READ, module: 'auth', description: 'Read own login history' },
+  // ─── F2 Users / Profiles / Platform Administration ──────────────────────
+  { name: PERMISSIONS.PLATFORM_USERS_MANAGE, module: 'platform', description: 'Manage platform users (ban, unban, soft delete)' },
+  { name: PERMISSIONS.PLATFORM_SETTINGS_MANAGE, module: 'platform', description: 'Manage platform system settings' },
+  { name: PERMISSIONS.USERS_PROFILE_READ, module: 'users', description: 'Read own user profile' },
+  { name: PERMISSIONS.USERS_PROFILE_UPDATE, module: 'users', description: 'Update own user profile' },
+  { name: PERMISSIONS.USERS_SKILLS_MANAGE, module: 'users', description: 'Manage own skill list' },
+  { name: PERMISSIONS.USERS_FOLLOW_MANAGE, module: 'users', description: 'Follow and unfollow users' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -62,6 +72,10 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.AUTH_APITOKEN_READ,
     PERMISSIONS.AUTH_APITOKEN_DELETE,
     PERMISSIONS.AUTH_LOGIN_HISTORY_READ,
+    PERMISSIONS.USERS_PROFILE_READ,
+    PERMISSIONS.USERS_PROFILE_UPDATE,
+    PERMISSIONS.USERS_SKILLS_MANAGE,
+    PERMISSIONS.USERS_FOLLOW_MANAGE,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -73,6 +87,10 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.AUTH_APITOKEN_READ,
     PERMISSIONS.AUTH_APITOKEN_DELETE,
     PERMISSIONS.AUTH_LOGIN_HISTORY_READ,
+    PERMISSIONS.USERS_PROFILE_READ,
+    PERMISSIONS.USERS_PROFILE_UPDATE,
+    PERMISSIONS.USERS_SKILLS_MANAGE,
+    PERMISSIONS.USERS_FOLLOW_MANAGE,
   ],
   [ROLES.ORG_STUDENT]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -82,6 +100,10 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.AUTH_APITOKEN_READ,
     PERMISSIONS.AUTH_APITOKEN_DELETE,
     PERMISSIONS.AUTH_LOGIN_HISTORY_READ,
+    PERMISSIONS.USERS_PROFILE_READ,
+    PERMISSIONS.USERS_PROFILE_UPDATE,
+    PERMISSIONS.USERS_SKILLS_MANAGE,
+    PERMISSIONS.USERS_FOLLOW_MANAGE,
   ],
   [ROLES.INDIVIDUAL_LEARNER]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -91,6 +113,10 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.AUTH_APITOKEN_READ,
     PERMISSIONS.AUTH_APITOKEN_DELETE,
     PERMISSIONS.AUTH_LOGIN_HISTORY_READ,
+    PERMISSIONS.USERS_PROFILE_READ,
+    PERMISSIONS.USERS_PROFILE_UPDATE,
+    PERMISSIONS.USERS_SKILLS_MANAGE,
+    PERMISSIONS.USERS_FOLLOW_MANAGE,
   ],
   [ROLES.GUEST]: [],
 };
@@ -143,6 +169,129 @@ async function upsertRole(name: string, description: string, permissionIds: numb
   }
 
   return roleId;
+}
+
+export const skillCatalogSeeds = [
+  // cloud — DevOps
+  { skillName: 'Docker', category: 'cloud' as const, description: 'Containerization and image lifecycle management.' },
+  { skillName: 'Kubernetes', category: 'cloud' as const, description: 'Container orchestration, clusters and workloads.' },
+  { skillName: 'Terraform', category: 'cloud' as const, description: 'Infrastructure as Code provisioning and state management.' },
+  { skillName: 'Ansible', category: 'cloud' as const, description: 'Configuration management and automation playbooks.' },
+  { skillName: 'AWS', category: 'cloud' as const, description: 'Amazon Web Services core services and architecture.' },
+  { skillName: 'Microsoft Azure', category: 'cloud' as const, description: 'Azure core services and architecture.' },
+  { skillName: 'Google Cloud Platform', category: 'cloud' as const, description: 'GCP core services and architecture.' },
+  { skillName: 'Linux Administration', category: 'cloud' as const, description: 'Linux system administration and troubleshooting.' },
+  { skillName: 'Shell Scripting', category: 'cloud' as const, description: 'Bash scripting for automation pipelines.' },
+  { skillName: 'Site Reliability Engineering', category: 'cloud' as const, description: 'SLIs, SLOs, error budgets and reliability practices.' },
+  // governance — DevOps
+  { skillName: 'CI/CD Pipelines', category: 'governance' as const, description: 'Continuous integration and delivery pipeline design.' },
+  { skillName: 'Jenkins', category: 'governance' as const, description: 'Jenkins pipeline automation and shared libraries.' },
+  { skillName: 'GitHub Actions', category: 'governance' as const, description: 'Workflow automation with GitHub Actions.' },
+  { skillName: 'GitOps', category: 'governance' as const, description: 'Declarative infrastructure delivery via Git.' },
+  { skillName: 'Policy as Code', category: 'governance' as const, description: 'Automated compliance and policy enforcement.' },
+  { skillName: 'Compliance Auditing', category: 'governance' as const, description: 'Audit-ready infrastructure and release practices.' },
+] as const;
+
+export const systemSettingSeeds = [
+  {
+    settingKey: 'platform.registration.open',
+    settingValue: { value: true },
+    groupName: 'platform',
+    description: 'Allow new user registration on the platform.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'platform.maintenance.mode',
+    settingValue: { value: false },
+    groupName: 'platform',
+    description: 'Place the platform in maintenance mode.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'platform.avatar.max_size_mb',
+    settingValue: { value: 5 },
+    groupName: 'media',
+    description: 'Maximum avatar upload size in megabytes.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'platform.profile.default_visibility',
+    settingValue: { value: true },
+    groupName: 'profile',
+    description: 'Default visibility for newly created user profiles.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'platform.build.version',
+    settingValue: { value: '1.0.0' },
+    groupName: 'system',
+    description: 'Current platform build version. Read-only.',
+    isEditable: false,
+  },
+] as const;
+
+async function seedSkillsCatalog(): Promise<void> {
+  for (const seed of skillCatalogSeeds) {
+    const existing = await db.query.skills.findFirst({
+      where: eq(skills.skillName, seed.skillName),
+    });
+    if (existing) {
+      continue;
+    }
+    await db.insert(skills).values(seed);
+  }
+
+  const count = await db.$count(skills);
+  // eslint-disable-next-line no-console
+  console.log(`Skills catalog seeded (${count} rows).`);
+}
+
+async function seedSystemSettings(): Promise<void> {
+  for (const seed of systemSettingSeeds) {
+    const existing = await db.query.systemSettings.findFirst({
+      where: eq(systemSettings.settingKey, seed.settingKey),
+    });
+    if (existing) {
+      continue;
+    }
+    await db.insert(systemSettings).values({
+      settingKey: seed.settingKey,
+      settingValue: seed.settingValue,
+      groupName: seed.groupName,
+      description: seed.description,
+      isEditable: seed.isEditable,
+    });
+  }
+
+  const settings = await db.select().from(systemSettings);
+  // eslint-disable-next-line no-console
+  console.log(`System settings seeded (${settings.length} rows).`);
+}
+
+async function seedCountriesIfMissing(): Promise<void> {
+  const rows = await db.select().from(countries);
+  if (rows.length > 0) {
+    // eslint-disable-next-line no-console
+    console.log(`Countries catalog present (${rows.length} rows). Skipping seed.`);
+    return;
+  }
+
+  const fallbackCountries = [
+    { countryCode: 'US', countryName: 'United States', iso3Code: 'USA', phoneCode: '+1' },
+    { countryCode: 'GB', countryName: 'United Kingdom', iso3Code: 'GBR', phoneCode: '+44' },
+    { countryCode: 'DE', countryName: 'Germany', iso3Code: 'DEU', phoneCode: '+49' },
+    { countryCode: 'FR', countryName: 'France', iso3Code: 'FRA', phoneCode: '+33' },
+    { countryCode: 'PK', countryName: 'Pakistan', iso3Code: 'PAK', phoneCode: '+92' },
+    { countryCode: 'AE', countryName: 'United Arab Emirates', iso3Code: 'ARE', phoneCode: '+971' },
+    { countryCode: 'IN', countryName: 'India', iso3Code: 'IND', phoneCode: '+91' },
+    { countryCode: 'SA', countryName: 'Saudi Arabia', iso3Code: 'SAU', phoneCode: '+966' },
+    { countryCode: 'CA', countryName: 'Canada', iso3Code: 'CAN', phoneCode: '+1' },
+    { countryCode: 'AU', countryName: 'Australia', iso3Code: 'AUS', phoneCode: '+61' },
+  ];
+
+  await db.insert(countries).values(fallbackCountries);
+  // eslint-disable-next-line no-console
+  console.log(`Countries catalog seeded (${fallbackCountries.length} rows).`);
 }
 
 async function main(): Promise<void> {
@@ -214,6 +363,10 @@ async function main(): Promise<void> {
 
   await db.delete(userRoles).where(eq(userRoles.userId, adminId));
   await db.insert(userRoles).values({ userId: adminId, roleId: adminRole.roleId });
+
+  await seedSkillsCatalog();
+  await seedSystemSettings();
+  await seedCountriesIfMissing();
 
   // eslint-disable-next-line no-console
   console.log('Seed completed.');
