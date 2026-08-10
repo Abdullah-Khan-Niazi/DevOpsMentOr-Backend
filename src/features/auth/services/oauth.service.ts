@@ -30,14 +30,6 @@ interface GitHubEmail {
   verified: boolean;
 }
 
-interface LinkedInUser {
-  sub: string;
-  email_verified: boolean;
-  name: string;
-  picture: string;
-  email: string;
-}
-
 export class OAuthService {
   private async exchangeCode(
     provider: OAuthProvider,
@@ -57,11 +49,6 @@ export class OAuthService {
         tokenUrl: 'https://github.com/login/oauth/access_token',
         clientId: env.GITHUB_CLIENT_ID ?? '',
         clientSecret: env.GITHUB_CLIENT_SECRET ?? '',
-      },
-      linkedin: {
-        tokenUrl: 'https://www.linkedin.com/oauth/v2/accessToken',
-        clientId: env.LINKEDIN_CLIENT_ID ?? '',
-        clientSecret: env.LINKEDIN_CLIENT_SECRET ?? '',
       },
     };
 
@@ -163,27 +150,6 @@ export class OAuthService {
     };
   }
 
-  private async getLinkedInUser(accessToken: string): Promise<OAuthUserInfo> {
-    const response = await fetch(
-      'https://api.linkedin.com/v2/userinfo',
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
-
-    if (!response.ok) {
-      throw new BadRequestError('Failed to fetch LinkedIn user info.');
-    }
-
-    const user = (await response.json()) as LinkedInUser;
-
-    return {
-      provider: 'linkedin',
-      providerId: user.sub,
-      email: user.email,
-      name: user.name,
-      avatarUrl: user.picture,
-    };
-  }
-
   async getUserInfo(
     provider: OAuthProvider,
     code: string,
@@ -196,8 +162,6 @@ export class OAuthService {
         return this.getGoogleUser(accessToken);
       case 'github':
         return this.getGitHubUser(accessToken);
-      case 'linkedin':
-        return this.getLinkedInUser(accessToken);
     }
   }
 }

@@ -41,7 +41,7 @@ export const refreshTokenSchema = z.object({
 });
 
 export const oAuthLoginSchema = z.object({
-  provider: z.enum(['google', 'github', 'linkedin']),
+  provider: z.enum(['google', 'github']),
   code: z.string().min(1, 'Authorization code is required.'),
   redirectUri: z.string().url('Invalid redirect URI.'),
 });

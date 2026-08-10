@@ -5,7 +5,7 @@ export interface ILoginHistoryRepository {
     userId: number;
     ipAddress?: string;
     userAgent?: string;
-    loginType: 'email' | 'google' | 'github' | 'linkedin' | 'enterprise_sso';
+    loginType: 'email' | 'google' | 'github' | 'enterprise_sso';
     isSuccessful: boolean;
     failureReason?: string;
   }): Promise<void>;
@@ -16,7 +16,7 @@ export class LoginHistoryRepository implements ILoginHistoryRepository {
     userId: number;
     ipAddress?: string;
     userAgent?: string;
-    loginType: 'email' | 'google' | 'github' | 'linkedin' | 'enterprise_sso';
+    loginType: 'email' | 'google' | 'github' | 'enterprise_sso';
     isSuccessful: boolean;
     failureReason?: string;
   }): Promise<void> {

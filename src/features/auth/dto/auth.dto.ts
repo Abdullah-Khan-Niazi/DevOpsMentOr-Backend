@@ -26,7 +26,7 @@ export interface AuthResponseDto {
   tokens: AuthTokensDto;
 }
 
-export type OAuthProvider = 'google' | 'github' | 'linkedin';
+export type OAuthProvider = 'google' | 'github';
 
 export interface OAuthLoginDto {
   provider: OAuthProvider;

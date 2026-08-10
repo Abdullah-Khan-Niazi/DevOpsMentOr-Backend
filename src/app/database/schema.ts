@@ -167,7 +167,6 @@ export const loginHistory = mysqlTable(
       'email',
       'google',
       'github',
-      'linkedin',
       'enterprise_sso',
     ])
       .notNull()

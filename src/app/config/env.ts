@@ -19,8 +19,6 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().default(''),
   GITHUB_CLIENT_ID: z.string().default(''),
   GITHUB_CLIENT_SECRET: z.string().default(''),
-  LINKEDIN_CLIENT_ID: z.string().default(''),
-  LINKEDIN_CLIENT_SECRET: z.string().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);
