@@ -13,8 +13,26 @@ import {
   varchar,
 } from 'drizzle-orm/mysql-core';
 
-export const userStatusEnum = mysqlEnum('user_status', ['ACTIVE', 'INACTIVE', 'SUSPENDED']);
+/**
+ * Drizzle schema mapping for the `devops-mentor` MySQL database.
+ *
+ * SOURCE OF TRUTH: the `devops_db.sql` file at the repository root.
+ * Every table below mirrors a CREATE TABLE statement present in that file.
+ * No speculative, virtual, or purged tables are defined here.
+ *
+ * Scope: F1 (Identity, Authentication, Authorization & Access).
+ * All other feature domains (orgs, curriculum, labs, billing, ...) map to
+ * their own feature tables and are out of scope for this module.
+ */
 
+/**
+ * `users` — Core identity store.
+ * Mirrors `CREATE TABLE users` in devops_db.sql. Holds credentials
+ * (password_hash + per-user salt), account state flags (is_verified,
+ * is_active, is_banned), transport data (timezone/language), 2FA material
+ * (two_factor_enabled / two_factor_secret), and audit timestamps.
+ * Soft delete via `deleted_at` exists in the SQL source and is honored here.
+ */
 export const users = mysqlTable(
   'users',
   {
@@ -52,6 +70,10 @@ export const users = mysqlTable(
   ],
 );
 
+/**
+ * `roles` — Role definitions (platform_admin, org_admin, professor,
+ * org_student, individual_learner, guest). `priority` orders role resolution.
+ */
 export const roles = mysqlTable(
   'roles',
   {
@@ -64,6 +86,10 @@ export const roles = mysqlTable(
   (table) => [uniqueIndex('roles_role_name_key').on(table.roleName)],
 );
 
+/**
+ * `permissions` — Permission definitions (e.g. `platform.admin.access`,
+ * `auth:session:read`). `module` buckets permissions by feature domain.
+ */
 export const permissions = mysqlTable(
   'permissions',
   {
@@ -76,6 +102,10 @@ export const permissions = mysqlTable(
   (table) => [uniqueIndex('permissions_permission_name_key').on(table.permissionName)],
 );
 
+/**
+ * `role_permissions` — Composite join: which permissions a role carries.
+ * Composite PK (role_id, permission_id); cascade deletes from both parents.
+ */
 export const rolePermissions = mysqlTable(
   'role_permissions',
   {
@@ -91,6 +121,10 @@ export const rolePermissions = mysqlTable(
   (table) => [primaryKey({ columns: [table.roleId, table.permissionId] })],
 );
 
+/**
+ * `user_roles` — Composite join: which roles a user holds.
+ * Composite PK (user_id, role_id); cascade deletes from both parents.
+ */
 export const userRoles = mysqlTable(
   'user_roles',
   {
@@ -106,6 +140,12 @@ export const userRoles = mysqlTable(
   (table) => [primaryKey({ columns: [table.userId, table.roleId] })],
 );
 
+/**
+ * `sessions` — Active session + refresh token rotation store.
+ * session_token (JTI) and refresh_token are unique; tokens rotate on every
+ * refresh. A deactivated session (is_active = false) or expired row
+ * (expires_at <= NOW()) rejects refresh attempts.
+ */
 export const sessions = mysqlTable(
   'sessions',
   {
@@ -133,6 +173,11 @@ export const sessions = mysqlTable(
   ],
 );
 
+/**
+ * `otp_codes` — One-time passwords: email verification, password reset,
+ * 2FA. One-time use enforced by `is_used`; `expires_at` enforced at read
+ * time. `code` column is also the storage slot for admin invitation tokens.
+ */
 export const otpCodes = mysqlTable(
   'otp_codes',
   {
@@ -154,6 +199,11 @@ export const otpCodes = mysqlTable(
   (table) => [index('idx_code').on(table.code), index('idx_expires').on(table.expiresAt)],
 );
 
+/**
+ * `login_history` — Per-attempt audit trail (success + failure) for every
+ * authentication method. `login_type` mirrors the SQL enum: email, google,
+ * github (no other OAuth providers are supported).
+ */
 export const loginHistory = mysqlTable(
   'login_history',
   {
@@ -163,12 +213,7 @@ export const loginHistory = mysqlTable(
       .references(() => users.userId, { onDelete: 'cascade' }),
     ipAddress: varchar('ip_address', { length: 45 }),
     userAgent: text('user_agent'),
-    loginType: mysqlEnum('login_type', [
-      'email',
-      'google',
-      'github',
-      'enterprise_sso',
-    ])
+    loginType: mysqlEnum('login_type', ['email', 'google', 'github'])
       .notNull()
       .default('email'),
     isSuccessful: boolean('is_successful').notNull().default(true),
@@ -181,6 +226,11 @@ export const loginHistory = mysqlTable(
   (table) => [index('idx_user_login').on(table.userId), index('idx_created').on(table.createdAt)],
 );
 
+/**
+ * `api_tokens` — Personal API access tokens. The raw token is shown exactly
+ * once at creation; the persisted `api_token` value is a hash. `permissions`
+ * is a JSON array of granted permission names.
+ */
 export const apiTokens = mysqlTable(
   'api_tokens',
   {
@@ -199,32 +249,12 @@ export const apiTokens = mysqlTable(
   (table) => [uniqueIndex('api_tokens_api_token_key').on(table.apiToken)],
 );
 
-export const refreshTokens = mysqlTable(
-  'refresh_tokens',
-  {
-    id: int('id').autoincrement().primaryKey(),
-    token: varchar('token', { length: 500 }).notNull(),
-    userId: int('user_id')
-      .notNull()
-      .references(() => users.userId, { onDelete: 'cascade' }),
-    expiresAt: timestamp('expires_at').notNull(),
-    revokedAt: timestamp('revoked_at', { mode: 'date' }),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-  },
-  (table) => [
-    uniqueIndex('refresh_tokens_token_key').on(table.token),
-    index('idx_token').on(table.token),
-    index('idx_user').on(table.userId),
-  ],
-);
-
 export const usersRelations = relations(users, ({ many }) => ({
   roles: many(userRoles),
   sessions: many(sessions),
   otpCodes: many(otpCodes),
   loginHistory: many(loginHistory),
   apiTokens: many(apiTokens),
-  refreshTokens: many(refreshTokens),
 }));
 
 export const rolesRelations = relations(roles, ({ many }) => ({
@@ -263,8 +293,4 @@ export const loginHistoryRelations = relations(loginHistory, ({ one }) => ({
 
 export const apiTokensRelations = relations(apiTokens, ({ one }) => ({
   user: one(users, { fields: [apiTokens.userId], references: [users.userId] }),
-}));
-
-export const refreshTokensRelations = relations(refreshTokens, ({ one }) => ({
-  user: one(users, { fields: [refreshTokens.userId], references: [users.userId] }),
 }));
