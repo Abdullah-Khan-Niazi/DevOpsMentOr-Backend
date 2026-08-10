@@ -16,7 +16,7 @@ export class TokenService {
     } as jwt.SignOptions);
   }
 
-  signRefreshToken(payload: Omit<JwtPayload, 'type'>): string {
+  signRefreshToken(payload: Pick<JwtPayload, 'sub' | 'email' | 'jti'>): string {
     return jwt.sign({ ...payload, type: 'refresh' }, env.JWT_REFRESH_SECRET, {
       expiresIn: env.JWT_REFRESH_EXPIRES_IN,
     } as jwt.SignOptions);
@@ -29,7 +29,11 @@ export class TokenService {
 
     return {
       accessToken: this.signAccessToken(extendedPayload),
-      refreshToken: this.signRefreshToken(extendedPayload),
+      refreshToken: this.signRefreshToken({
+        sub: extendedPayload.sub,
+        email: extendedPayload.email,
+        jti,
+      }),
     };
   }
 
@@ -55,6 +59,15 @@ export class TokenService {
     } catch {
       throw new UnauthorizedError('Invalid or expired refresh token.');
     }
+  }
+
+  /** Decodes an unsigned JWT without signature verification (own issued tokens). */
+  decodeToken(token: string): JwtPayload {
+    const payload = jwt.decode(token) as JwtPayload | null;
+    if (!payload) {
+      throw new UnauthorizedError('Malformed token.');
+    }
+    return payload;
   }
 
   getRefreshTokenExpiryDate(): Date {
