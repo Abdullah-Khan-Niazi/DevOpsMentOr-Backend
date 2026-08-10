@@ -1,6 +1,10 @@
 import { relations } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
+  char,
+  date,
+  decimal,
   index,
   int,
   json,
@@ -249,12 +253,18 @@ export const apiTokens = mysqlTable(
   (table) => [uniqueIndex('api_tokens_api_token_key').on(table.apiToken)],
 );
 
-export const usersRelations = relations(users, ({ many }) => ({
+export const usersRelations = relations(users, ({ many, one }) => ({
   roles: many(userRoles),
   sessions: many(sessions),
   otpCodes: many(otpCodes),
   loginHistory: many(loginHistory),
   apiTokens: many(apiTokens),
+  profile: one(userProfiles),
+  skills: many(userSkills),
+  following: many(userFollows, { relationName: 'user_following' }),
+  followers: many(userFollows, { relationName: 'user_followers' }),
+  userSettings: many(userSettings),
+  files: many(files),
 }));
 
 export const rolesRelations = relations(roles, ({ many }) => ({
@@ -294,3 +304,304 @@ export const loginHistoryRelations = relations(loginHistory, ({ one }) => ({
 export const apiTokensRelations = relations(apiTokens, ({ one }) => ({
   user: one(users, { fields: [apiTokens.userId], references: [users.userId] }),
 }));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// F2 — Users, Profiles & Platform Administration
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * `countries` — Country catalog for the profile country selector (USR-14).
+ * Mirrors `CREATE TABLE countries` in devops_db.sql. Seeded via scripts/seed.ts.
+ */
+export const countries = mysqlTable(
+  'countries',
+  {
+    countryId: int('country_id').autoincrement().primaryKey(),
+    countryCode: char('country_code', { length: 2 }).notNull(),
+    countryName: varchar('country_name', { length: 100 }).notNull(),
+    iso3Code: char('iso3_code', { length: 3 }),
+    numericCode: int('numeric_code'),
+    phoneCode: varchar('phone_code', { length: 10 }),
+    flagEmoji: varchar('flag_emoji', { length: 10 }),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('countries_country_code_key').on(table.countryCode)],
+);
+
+/**
+ * `user_profiles` — Extended profile data (USR-02). Created lazily on first
+ * profile-edit call (UPSERT keyed on `user_id`). `is_public` drives public
+ * profile visibility (USR-10). Social/rank columns mirror the SQL source.
+ */
+export const userProfiles = mysqlTable(
+  'user_profiles',
+  {
+    profileId: int('profile_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    countryId: int('country_id').references(() => countries.countryId),
+    city: varchar('city', { length: 100 }),
+    address: text('address'),
+    phone: varchar('phone', { length: 20 }),
+    dateOfBirth: date('date_of_birth', { mode: 'string' }),
+    gender: mysqlEnum('gender', ['male', 'female', 'other', 'prefer_not_to_say']),
+    occupation: varchar('occupation', { length: 100 }),
+    company: varchar('company', { length: 100 }),
+    website: varchar('website', { length: 255 }),
+    githubUrl: varchar('github_url', { length: 255 }),
+    linkedinUrl: varchar('linkedin_url', { length: 255 }),
+    twitterHandle: varchar('twitter_handle', { length: 50 }),
+    discordUsername: varchar('discord_username', { length: 100 }),
+    hackerRankPoints: int('hacker_rank_points').notNull().default(0),
+    globalRank: int('global_rank'),
+    countryRank: int('country_rank'),
+    reputationScore: int('reputation_score').notNull().default(0),
+    profileViews: int('profile_views').notNull().default(0),
+    isPublic: boolean('is_public').notNull().default(true),
+  },
+  (table) => [uniqueIndex('user_profiles_user_id_key').on(table.userId)],
+);
+
+/**
+ * `skills` — Skill catalog (USR-13). DevOps skills are seeded under the
+ * `cloud` / `governance` categories (F2 §06 adaptation; enum never altered).
+ */
+export const skills = mysqlTable(
+  'skills',
+  {
+    skillId: int('skill_id').autoincrement().primaryKey(),
+    skillName: varchar('skill_name', { length: 100 }).notNull(),
+    category: mysqlEnum('category', [
+      'offensive',
+      'defensive',
+      'forensics',
+      'networking',
+      'web',
+      'mobile',
+      'cloud',
+      'ai_ml',
+      'governance',
+    ]).notNull(),
+    description: text('description'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('skills_skill_name_key').on(table.skillName)],
+);
+
+/**
+ * `user_skills` — Skill proficiency mapping (USR-05/06/07). Composite PK
+ * (user_id, skill_id) prevents duplicate skill rows per user.
+ */
+export const userSkills = mysqlTable(
+  'user_skills',
+  {
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    skillId: int('skill_id')
+      .notNull()
+      .references(() => skills.skillId, { onDelete: 'cascade' }),
+    proficiencyLevel: mysqlEnum('proficiency_level', [
+      'beginner',
+      'intermediate',
+      'advanced',
+      'expert',
+    ])
+      .notNull()
+      .default('beginner'),
+    yearsExperience: decimal('years_experience', { precision: 3, scale: 1 }).notNull().default('0'),
+    isVerified: boolean('is_verified').notNull().default(false),
+    endorsedBy: int('endorsed_by'),
+    endorsedAt: timestamp('endorsed_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.skillId] })],
+);
+
+/**
+ * `user_follows` — Follow/unfollow social graph (USR-11/12). Composite PK
+ * (follower_id, following_id); the SQL CHECK (follower_id != following_id)
+ * is pre-validated in the service layer.
+ */
+export const userFollows = mysqlTable(
+  'user_follows',
+  {
+    followerId: int('follower_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    followingId: int('following_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    followedAt: timestamp('followed_at').notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.followerId, table.followingId] })],
+);
+
+/**
+ * `user_settings` — Per-user preference key/value store (USR-08/09).
+ * `setting_value` is JSON; UPSERT keyed on (user_id, setting_key).
+ */
+export const userSettings = mysqlTable(
+  'user_settings',
+  {
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    settingKey: varchar('setting_key', { length: 100 }).notNull(),
+    settingValue: json('setting_value'),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.settingKey] })],
+);
+
+/**
+ * `system_settings` — Platform configuration store (ADM-08/09).
+ * `is_editable = false` records are read-only; PATCH attempts return 403.
+ */
+export const systemSettings = mysqlTable(
+  'system_settings',
+  {
+    settingId: int('setting_id').autoincrement().primaryKey(),
+    settingKey: varchar('setting_key', { length: 100 }).notNull(),
+    settingValue: json('setting_value'),
+    groupName: varchar('group_name', { length: 50 }),
+    description: text('description'),
+    isEditable: boolean('is_editable').notNull().default(true),
+    updatedBy: int('updated_by'),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('system_settings_setting_key_key').on(table.settingKey)],
+);
+
+/**
+ * `audit_logs` — Platform admin mutation audit trail (ADM-07). Every ban,
+ * unban, soft-delete and settings change writes a row with before/after
+ * `changes` JSON.
+ */
+export const auditLogs = mysqlTable(
+  'audit_logs',
+  {
+    logId: int('log_id').autoincrement().primaryKey(),
+    adminUserId: int('admin_user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    action: varchar('action', { length: 50 }).notNull(),
+    targetType: varchar('target_type', { length: 50 }),
+    targetId: int('target_id'),
+    changes: json('changes'),
+    ipAddress: varchar('ip_address', { length: 45 }),
+    userAgent: text('user_agent'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_admin').on(table.adminUserId),
+    index('idx_action').on(table.action),
+    index('idx_created').on(table.createdAt),
+  ],
+);
+
+/**
+ * `files` — Uploaded avatar/cover file records (USR-03/04). The row is
+ * persisted BEFORE `users.avatar_url` / `users.cover_photo_url` is updated
+ * (broken references are forbidden, F2 §05 invariant 2).
+ */
+export const files = mysqlTable(
+  'files',
+  {
+    fileId: int('file_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    fileName: varchar('file_name', { length: 255 }).notNull(),
+    filePath: varchar('file_path', { length: 255 }).notNull(),
+    fileSizeBytes: bigint('file_size_bytes', { mode: 'number' }),
+    mimeType: varchar('mime_type', { length: 100 }),
+    fileHash: varchar('file_hash', { length: 64 }),
+    storageType: mysqlEnum('storage_type', ['local', 's3', 'azure', 'gcs'])
+      .notNull()
+      .default('local'),
+    bucketName: varchar('bucket_name', { length: 100 }),
+    objectKey: varchar('object_key', { length: 255 }),
+    isPublic: boolean('is_public').notNull().default(false),
+    uploadIp: varchar('upload_ip', { length: 45 }),
+    downloadsCount: int('downloads_count').notNull().default(0),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [index('idx_user').on(table.userId)],
+);
+
+export const countriesRelations = relations(countries, ({ many }) => ({
+  profiles: many(userProfiles),
+}));
+
+export const userProfilesRelations = relations(userProfiles, ({ one }) => ({
+  user: one(users, { fields: [userProfiles.userId], references: [users.userId] }),
+  country: one(countries, { fields: [userProfiles.countryId], references: [countries.countryId] }),
+}));
+
+export const skillsRelations = relations(skills, ({ many }) => ({
+  userSkills: many(userSkills),
+}));
+
+export const userSkillsRelations = relations(userSkills, ({ one }) => ({
+  user: one(users, { fields: [userSkills.userId], references: [users.userId] }),
+  skill: one(skills, { fields: [userSkills.skillId], references: [skills.skillId] }),
+}));
+
+export const userFollowsRelations = relations(userFollows, ({ one }) => ({
+  follower: one(users, {
+    fields: [userFollows.followerId],
+    references: [users.userId],
+    relationName: 'user_followers',
+  }),
+  following: one(users, {
+    fields: [userFollows.followingId],
+    references: [users.userId],
+    relationName: 'user_following',
+  }),
+}));
+
+export const userSettingsRelations = relations(userSettings, ({ one }) => ({
+  user: one(users, { fields: [userSettings.userId], references: [users.userId] }),
+}));
+
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+  admin: one(users, { fields: [auditLogs.adminUserId], references: [users.userId] }),
+}));
+
+export const filesRelations = relations(files, ({ one }) => ({
+  user: one(users, { fields: [files.userId], references: [users.userId] }),
+}));
+
+/**
+ * `organizations` — Enterprise organization records (F3 domain). Mapped here
+ * because ADM-06 dashboard KPIs count organizations (F2 §06 derived entity).
+ * No runtime coupling to F3: only a COUNT(*) aggregate is used.
+ */
+export const organizations = mysqlTable(
+  'organizations',
+  {
+    organizationId: int('organization_id').autoincrement().primaryKey(),
+    name: varchar('name', { length: 255 }).notNull(),
+    slug: varchar('slug', { length: 255 }).notNull(),
+    description: text('description'),
+    logoUrl: varchar('logo_url', { length: 255 }),
+    website: varchar('website', { length: 255 }),
+    industry: varchar('industry', { length: 100 }),
+    employeeCount: int('employee_count'),
+    isVerified: boolean('is_verified').notNull().default(false),
+    billingEmail: varchar('billing_email', { length: 255 }),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('organizations_name_key').on(table.name),
+    uniqueIndex('organizations_slug_key').on(table.slug),
+    index('idx_name').on(table.name),
+  ],
+);
