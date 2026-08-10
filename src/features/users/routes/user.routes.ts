@@ -6,7 +6,7 @@ import {
   validateRequest,
 } from '../../../shared/middleware';
 import { asyncHandler } from '../../../shared/utils';
-import { uuidParamSchema } from '../../../shared/validators';
+import { numberParamSchema } from '../../../shared/validators';
 import { userController } from '../controllers/user.controller';
 import {
   createUserSchema,
@@ -46,7 +46,7 @@ userRoutes.get(
 userRoutes.get(
   '/:id',
   authorizePermissions(PERMISSIONS.USERS_READ),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   asyncHandler((req, res) => userController.getUserById(req, res)),
 );
 
@@ -78,7 +78,7 @@ userRoutes.post(
 userRoutes.patch(
   '/:id',
   authorizePermissions(PERMISSIONS.USERS_UPDATE),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   validateRequest(updateUserSchema, 'body'),
   asyncHandler((req, res) => userController.updateUser(req, res)),
 );
@@ -95,7 +95,7 @@ userRoutes.patch(
 userRoutes.delete(
   '/:id',
   authorizePermissions(PERMISSIONS.USERS_DELETE),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   asyncHandler((req, res) => userController.deleteUser(req, res)),
 );
 

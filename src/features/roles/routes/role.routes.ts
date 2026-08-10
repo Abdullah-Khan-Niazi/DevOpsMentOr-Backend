@@ -6,7 +6,7 @@ import {
   validateRequest,
 } from '../../../shared/middleware';
 import { asyncHandler } from '../../../shared/utils';
-import { uuidParamSchema } from '../../../shared/validators';
+import { numberParamSchema } from '../../../shared/validators';
 import { roleController } from '../controllers/role.controller';
 import {
   createRoleSchema,
@@ -28,7 +28,7 @@ roleRoutes.get(
 roleRoutes.get(
   '/:id',
   authorizePermissions(PERMISSIONS.ROLES_READ),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   asyncHandler((req, res) => roleController.getRoleById(req, res)),
 );
 
@@ -42,7 +42,7 @@ roleRoutes.post(
 roleRoutes.patch(
   '/:id',
   authorizePermissions(PERMISSIONS.ROLES_UPDATE),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   validateRequest(updateRoleSchema, 'body'),
   asyncHandler((req, res) => roleController.updateRole(req, res)),
 );
@@ -50,7 +50,7 @@ roleRoutes.patch(
 roleRoutes.delete(
   '/:id',
   authorizePermissions(PERMISSIONS.ROLES_DELETE),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   asyncHandler((req, res) => roleController.deleteRole(req, res)),
 );
 

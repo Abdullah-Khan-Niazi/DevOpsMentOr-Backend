@@ -26,18 +26,18 @@ export class UserController {
   }
 
   async getUserById(req: Request, res: Response): Promise<Response> {
-    const user = await userService.getUserById(req.params.id);
+    const user = await userService.getUserById(Number(req.params.id));
     return sendSuccess(res, user, 'User retrieved successfully.');
   }
 
   async updateUser(req: Request, res: Response): Promise<Response> {
     const body = req.body as UpdateUserDto;
-    const user = await userService.updateUser(req.params.id, body);
+    const user = await userService.updateUser(Number(req.params.id), body);
     return sendSuccess(res, user, 'User updated successfully.');
   }
 
   async deleteUser(req: Request, res: Response): Promise<Response> {
-    await userService.deleteUser(req.params.id);
+    await userService.deleteUser(Number(req.params.id));
     return sendSuccess(res, null, 'User deleted successfully.');
   }
 }
