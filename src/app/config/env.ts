@@ -17,6 +17,7 @@ const envSchema = z.object({
   APP_NAME: z.string().default('DevOpsMentOr'),
   FRONTEND_URL: z.string().url().default('http://localhost:5173'),
   PUBLIC_API_URL: z.string().url().default('http://localhost:3001'),
+  UPLOAD_DIR: z.string().min(1).default('uploads'),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required.'),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required.'),

@@ -24,6 +24,21 @@ export const PERMISSIONS = {
   AUTH_APITOKEN_READ: 'auth:apitoken:read',
   AUTH_APITOKEN_DELETE: 'auth:apitoken:delete',
   AUTH_LOGIN_HISTORY_READ: 'auth:loginhistory:read',
+  // ─── F2 Users / Profiles / Platform Administration ──────────────────────
+  PLATFORM_USERS_MANAGE: 'platform.users.manage',
+  PLATFORM_SETTINGS_MANAGE: 'platform.settings.manage',
+  USERS_PROFILE_READ: 'users:profile:read',
+  USERS_PROFILE_UPDATE: 'users:profile:update',
+  USERS_SKILLS_MANAGE: 'users:skills:manage',
+  USERS_FOLLOW_MANAGE: 'users:follow:manage',
+} as const;
+
+/** Audit log action strings (F2 §07 contract values). */
+export const AUDIT_ACTIONS = {
+  BAN_USER: 'ban_user',
+  UNBAN_USER: 'unban_user',
+  DELETE_USER: 'delete_user',
+  UPDATE_SETTING: 'update_setting',
 } as const;
 
 export const ROLES = {
