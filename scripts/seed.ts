@@ -10,10 +10,11 @@ import {
   roles,
   skills,
   systemSettings,
+  teams,
   userRoles,
   users,
 } from '../src/app/database';
-import { PERMISSIONS, ROLES } from '../src/shared/constants';
+import { PERMISSIONS, ORG_CONSTANTS, ROLES } from '../src/shared/constants';
 import { env } from '../src/app/config';
 
 dotenv.config();
@@ -58,6 +59,18 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.USERS_PROFILE_UPDATE, module: 'users', description: 'Update own user profile' },
   { name: PERMISSIONS.USERS_SKILLS_MANAGE, module: 'users', description: 'Manage own skill list' },
   { name: PERMISSIONS.USERS_FOLLOW_MANAGE, module: 'users', description: 'Follow and unfollow users' },
+  // ─── F3 Organizations / Classes / Academic Enrollment ────────────────────
+  { name: PERMISSIONS.PLATFORM_ORGANIZATIONS_MANAGE, module: 'organizations', description: 'Create and manage all organizations platform-wide' },
+  { name: PERMISSIONS.PLATFORM_ORGANIZATIONS_READ, module: 'organizations', description: 'Read organization records platform-wide' },
+  { name: PERMISSIONS.ORG_READ, module: 'organizations', description: 'Read own organization' },
+  { name: PERMISSIONS.ORG_MANAGE, module: 'organizations', description: 'Manage own organization' },
+  { name: PERMISSIONS.ORG_CLASSES_MANAGE, module: 'organizations', description: 'Create and manage classes in own organization' },
+  { name: PERMISSIONS.ORG_PROFESSORS_INVITE, module: 'organizations', description: 'Invite professors to own organization' },
+  { name: PERMISSIONS.ORG_STUDENTS_INVITE, module: 'organizations', description: 'Invite students to own organization' },
+  { name: PERMISSIONS.CLASS_MANAGE, module: 'organizations', description: 'Manage a class (update, assign professor)' },
+  { name: PERMISSIONS.CLASS_STUDENTS_READ, module: 'organizations', description: 'Read class roster and invitations' },
+  { name: PERMISSIONS.CLASS_STUDENTS_INVITE, module: 'organizations', description: 'Invite, import and withdraw students' },
+  { name: PERMISSIONS.ENROLLMENT_READ, module: 'organizations', description: 'Read own enrollment and accept invitations' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -76,6 +89,16 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.USERS_PROFILE_UPDATE,
     PERMISSIONS.USERS_SKILLS_MANAGE,
     PERMISSIONS.USERS_FOLLOW_MANAGE,
+    PERMISSIONS.PLATFORM_ORGANIZATIONS_READ,
+    PERMISSIONS.ORG_READ,
+    PERMISSIONS.ORG_MANAGE,
+    PERMISSIONS.ORG_CLASSES_MANAGE,
+    PERMISSIONS.ORG_PROFESSORS_INVITE,
+    PERMISSIONS.ORG_STUDENTS_INVITE,
+    PERMISSIONS.CLASS_MANAGE,
+    PERMISSIONS.CLASS_STUDENTS_READ,
+    PERMISSIONS.CLASS_STUDENTS_INVITE,
+    PERMISSIONS.ENROLLMENT_READ,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -91,6 +114,11 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.USERS_PROFILE_UPDATE,
     PERMISSIONS.USERS_SKILLS_MANAGE,
     PERMISSIONS.USERS_FOLLOW_MANAGE,
+    PERMISSIONS.ORG_READ,
+    PERMISSIONS.CLASS_MANAGE,
+    PERMISSIONS.CLASS_STUDENTS_READ,
+    PERMISSIONS.CLASS_STUDENTS_INVITE,
+    PERMISSIONS.ENROLLMENT_READ,
   ],
   [ROLES.ORG_STUDENT]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -104,6 +132,9 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.USERS_PROFILE_UPDATE,
     PERMISSIONS.USERS_SKILLS_MANAGE,
     PERMISSIONS.USERS_FOLLOW_MANAGE,
+    PERMISSIONS.ORG_READ,
+    PERMISSIONS.CLASS_STUDENTS_READ,
+    PERMISSIONS.ENROLLMENT_READ,
   ],
   [ROLES.INDIVIDUAL_LEARNER]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -294,6 +325,28 @@ async function seedCountriesIfMissing(): Promise<void> {
   console.log(`Countries catalog seeded (${fallbackCountries.length} rows).`);
 }
 
+/** F3 sentinel team anchoring org-level professor invitations (idempotent). */
+async function seedOrgInviteSentinel(ownerUserId: number): Promise<void> {
+  const existing = await db.query.teams.findFirst({
+    where: eq(teams.slug, ORG_CONSTANTS.ORG_INVITE_SENTINEL_SLUG),
+  });
+  if (existing) {
+    return;
+  }
+
+  await db.insert(teams).values({
+    organizationId: null,
+    teamName: 'Organization invitations',
+    slug: ORG_CONSTANTS.ORG_INVITE_SENTINEL_SLUG,
+    description: null,
+    teamOwnerId: ownerUserId,
+    isPublic: false,
+    maxMembers: 0,
+  });
+  // eslint-disable-next-line no-console
+  console.log('Organization invitation sentinel team seeded.');
+}
+
 async function main(): Promise<void> {
   const permissionIds = new Map<string, number>();
 
@@ -364,6 +417,7 @@ async function main(): Promise<void> {
   await db.delete(userRoles).where(eq(userRoles.userId, adminId));
   await db.insert(userRoles).values({ userId: adminId, roleId: adminRole.roleId });
 
+  await seedOrgInviteSentinel(adminId);
   await seedSkillsCatalog();
   await seedSystemSettings();
   await seedCountriesIfMissing();

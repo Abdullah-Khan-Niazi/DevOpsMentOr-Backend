@@ -605,3 +605,105 @@ export const organizations = mysqlTable(
     index('idx_name').on(table.name),
   ],
 );
+
+/**
+ * `teams` — Adapted as Classes (F3 §06 mapping). A DevOps Mentor class is a
+ * `teams` row with `is_public = false` and `organization_id` bound to its
+ * organization. `team_owner_id` holds the primary professor's `user_id`
+ * (created-by user until a professor is assigned via CLS-05).
+ *
+ * Sentinel row: a global team with `slug = '__org_invites__'` and a NULL
+ * `organization_id` anchors org-level professor invitations in
+ * `team_invitations` (the column is NOT NULL with an FK to teams). Because
+ * org-scoped queries filter `organization_id = :orgId`, the NULL sentinel is
+ * never returned by class listings.
+ */
+export const teams = mysqlTable(
+  'teams',
+  {
+    teamId: int('team_id').autoincrement().primaryKey(),
+    organizationId: int('organization_id').references(
+      () => organizations.organizationId,
+      { onDelete: 'set null' },
+    ),
+    teamName: varchar('team_name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 100 }).notNull(),
+    description: text('description'),
+    logoUrl: varchar('logo_url', { length: 255 }),
+    teamOwnerId: int('team_owner_id')
+      .notNull()
+      .references(() => users.userId),
+    isPublic: boolean('is_public').notNull().default(false),
+    maxMembers: int('max_members').notNull().default(50),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('teams_slug_key').on(table.slug),
+    index('idx_org').on(table.organizationId),
+  ],
+);
+
+/**
+ * `team_members` — Adapted as Enrollments (F3 §06 mapping). Students are
+ * `role = 'member'` rows; primary professors are `role = 'captain'` and
+ * secondary professors `role = 'co_captain'`. Withdrawal sets `is_active =
+ * false` and `left_at = NOW()`; the historical row is never hard-deleted.
+ */
+export const teamMembers = mysqlTable(
+  'team_members',
+  {
+    teamId: int('team_id')
+      .notNull()
+      .references(() => teams.teamId, { onDelete: 'cascade' }),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    role: mysqlEnum('role', ['member', 'captain', 'co_captain', 'manager'])
+      .notNull()
+      .default('member'),
+    joinedAt: timestamp('joined_at').notNull().defaultNow(),
+    leftAt: timestamp('left_at'),
+    isActive: boolean('is_active').notNull().default(true),
+  },
+  (table) => [
+    primaryKey({ columns: [table.teamId, table.userId] }),
+    index('idx_user').on(table.userId),
+  ],
+);
+
+/**
+ * `team_invitations` — Adapted as Class Invitations (F3 §06 mapping). Student
+ * invitations reference the class `team_id`; org-level professor invitations
+ * reference the global sentinel team (`__org_invites__`), with the org
+ * resolved from the inviter's scope at acceptance time. Tokens expire after
+ * 72 hours; a single email cannot hold two pending invites to the same class.
+ */
+export const teamInvitations = mysqlTable(
+  'team_invitations',
+  {
+    invitationId: int('invitation_id').autoincrement().primaryKey(),
+    teamId: int('team_id')
+      .notNull()
+      .references(() => teams.teamId, { onDelete: 'cascade' }),
+    inviterId: int('inviter_id')
+      .notNull()
+      .references(() => users.userId),
+    inviteeEmail: varchar('invitee_email', { length: 255 }).notNull(),
+    inviteeUserId: int('invitee_user_id').references(() => users.userId, {
+      onDelete: 'set null',
+    }),
+    token: varchar('token', { length: 255 }).notNull(),
+    status: mysqlEnum('status', ['pending', 'accepted', 'declined', 'expired'])
+      .notNull()
+      .default('pending'),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    acceptedAt: timestamp('accepted_at'),
+  },
+  (table) => [
+    uniqueIndex('team_invitations_token_key').on(table.token),
+    index('idx_token').on(table.token),
+    index('idx_email').on(table.inviteeEmail),
+  ],
+);
