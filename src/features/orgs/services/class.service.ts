@@ -202,7 +202,15 @@ export class ClassService {
     }
 
     const text = file.buffer.toString('utf8').replace(/^\uFEFF/, '');
-    const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    let lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+
+    // Drop a header row (e.g. the downloadable `Email` template) before the
+    // 200-row limit applies, so a header does not count toward the row cap or
+    // surface a spurious invalid_email error.
+    const firstCell = lines[0]?.split(',')[0]?.trim().toLowerCase() ?? '';
+    if (firstCell === 'email') {
+      lines = lines.slice(1);
+    }
 
     if (lines.length > ORG_CONSTANTS.IMPORT_ROW_LIMIT) {
       throw new BadRequestError(

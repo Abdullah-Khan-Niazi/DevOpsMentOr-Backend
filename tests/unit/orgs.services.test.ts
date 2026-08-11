@@ -365,6 +365,14 @@ describe('ClassService (F3)', () => {
         { row: 2, email: 'not-an-email', reason: 'invalid_email' },
       ]);
     });
+
+    it('skips a header row so the downloadable Email template imports cleanly', async () => {
+      const file = csvBuffer(['Email', 'good@acme.edu', 'second@acme.edu']);
+      const result = await service.importStudents(actor, 10, file);
+      expect(result.totalRows).toBe(2);
+      expect(result.successCount).toBe(2);
+      expect(result.errors).toEqual([]);
+    });
   });
 
   describe('acceptInvitation (ENR-02)', () => {
