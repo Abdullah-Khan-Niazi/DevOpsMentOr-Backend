@@ -14,7 +14,7 @@ export class PermissionService {
   constructor(private readonly permissions: IPermissionRepository = permissionRepository) {}
 
   async createPermission(input: CreatePermissionDto): Promise<PermissionResponseDto> {
-    const existing = await this.permissions.findByName(input.name);
+    const existing = await this.permissions.findByName(input.permissionName);
     if (existing) {
       throw new ConflictError('A permission with this name already exists.');
     }
@@ -33,7 +33,7 @@ export class PermissionService {
     };
   }
 
-  async getPermissionById(id: string): Promise<PermissionResponseDto> {
+  async getPermissionById(id: number): Promise<PermissionResponseDto> {
     const permission = await this.permissions.findById(id);
     if (!permission) {
       throw new NotFoundError('Permission not found.');
@@ -41,14 +41,14 @@ export class PermissionService {
     return this.toResponse(permission);
   }
 
-  async updatePermission(id: string, input: UpdatePermissionDto): Promise<PermissionResponseDto> {
+  async updatePermission(id: number, input: UpdatePermissionDto): Promise<PermissionResponseDto> {
     const existing = await this.permissions.findById(id);
     if (!existing) {
       throw new NotFoundError('Permission not found.');
     }
 
-    if (input.name && input.name !== existing.name) {
-      const duplicate = await this.permissions.findByName(input.name);
+    if (input.permissionName && input.permissionName !== existing.permissionName) {
+      const duplicate = await this.permissions.findByName(input.permissionName);
       if (duplicate) {
         throw new ConflictError('A permission with this name already exists.');
       }
@@ -58,7 +58,7 @@ export class PermissionService {
     return this.toResponse(permission);
   }
 
-  async deletePermission(id: string): Promise<void> {
+  async deletePermission(id: number): Promise<void> {
     const existing = await this.permissions.findById(id);
     if (!existing) {
       throw new NotFoundError('Permission not found.');
@@ -69,12 +69,10 @@ export class PermissionService {
   private toResponse(permission: PermissionEntity): PermissionResponseDto {
     return {
       id: permission.id,
-      name: permission.name,
+      permissionName: permission.permissionName,
       description: permission.description,
-      resource: permission.resource,
-      action: permission.action,
+      module: permission.module,
       createdAt: permission.createdAt,
-      updatedAt: permission.updatedAt,
     };
   }
 }

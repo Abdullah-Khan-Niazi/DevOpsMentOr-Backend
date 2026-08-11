@@ -11,3 +11,5 @@ coverage/
 *.md
 .gitignore
 .git/
+uploads/
+.gitignore

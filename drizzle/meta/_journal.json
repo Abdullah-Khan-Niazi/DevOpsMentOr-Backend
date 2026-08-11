@@ -1,12 +1,33 @@
 {
   "version": "7",
-  "dialect": "postgresql",
+  "dialect": "mysql",
   "entries": [
     {
       "idx": 0,
-      "version": "7",
-      "when": 1753516800000,
-      "tag": "0000_init",
+      "version": "5",
+      "when": 1786387158004,
+      "tag": "0000_grey_scorpion",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1786395330686,
+      "tag": "0001_open_morg",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1786395862847,
+      "tag": "0002_gorgeous_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1786417076514,
+      "tag": "0003_puzzling_unus",
       "breakpoints": true
     }
   ]

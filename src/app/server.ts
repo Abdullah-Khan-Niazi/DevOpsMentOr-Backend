@@ -1,12 +1,13 @@
 import { createApp } from './app';
 import { env } from './config';
 import { logger } from '../shared/logger';
-import { connectDatabase } from './database';
+import { connectDatabase, disconnectDatabase } from './database';
+import { connectRedis, disconnectRedis } from './cache/redis';
 
 export async function startServer(): Promise<void> {
-  // Database connection temporarily disabled until PostgreSQL is configured.
-  // Re-enable: await connectDatabase() from './database'
   await connectDatabase();
+  await connectRedis();
+
   const app = createApp();
   const server = app.listen(env.PORT, () => {
     logger.info(`Server listening on port ${env.PORT} [${env.NODE_ENV}]`);
@@ -17,7 +18,11 @@ export async function startServer(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`${signal} received. Shutting down gracefully...`);
     server.close(() => {
-      process.exit(0);
+      void (async () => {
+        await disconnectRedis();
+        await disconnectDatabase();
+        process.exit(0);
+      })();
     });
   };
 
