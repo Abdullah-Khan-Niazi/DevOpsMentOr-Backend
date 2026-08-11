@@ -53,6 +53,30 @@ export class EmailService {
       text: `Your ${env.APP_NAME} ${purpose} code is ${code}. It expires in ${env.OTP_TTL_MINUTES} minutes. If you did not request this, you can safely ignore this email.`,
     });
   }
+
+  /**
+   * F3 invitation dispatch. Same SMTP fallback policy as OTP emails:
+   * dev logs the invite link, production requires SMTP. The invite URL
+   * always points at the frontend accept screen (SCR-F3-08).
+   */
+  async sendInvitationEmail(to: string, inviteUrl: string): Promise<void> {
+    if (!env.SMTP_HOST) {
+      if (env.NODE_ENV === 'production') {
+        throw new Error('SMTP_HOST is not configured; email delivery is unavailable.');
+      }
+
+      logger.info({ to, inviteUrl }, 'SMTP not configured (development) - invitation delivered via log');
+      return;
+    }
+
+    const transporter = this.ensureTransport();
+    await transporter.sendMail({
+      from: env.SMTP_FROM,
+      to,
+      subject: `You have been invited to join ${env.APP_NAME}`,
+      text: `Accept your invitation here: ${inviteUrl}`,
+    });
+  }
 }
 
 export const emailService = new EmailService();

@@ -6,6 +6,7 @@ import { permissionRoutes } from '../features/permissions';
 import { reportRoutes } from '../features/reports';
 import { dashboardRoutes } from '../features/dashboard';
 import { adminRoutes } from '../features/admin';
+import { orgRoutes } from '../features/orgs';
 
 export function registerRoutes(): Router {
   const router = Router();
@@ -20,6 +21,7 @@ export function registerRoutes(): Router {
   router.use('/permissions', permissionRoutes);
   router.use('/reports', reportRoutes);
   router.use('/dashboard', dashboardRoutes);
+  router.use('/', orgRoutes);
 
   return router;
 }
