@@ -41,4 +41,6 @@ export const cacheKeys = {
   learnerPoolStats: (): string => 'lp_stats',
   /** `admin_kpi` → JSON AdminDashboardDto; TTL = 5min (ADM-06). */
   adminDashboard: (): string => 'admin_kpi',
+  /** `course_progress:{userId}` → JSON CourseProgressDto; TTL = 60s (F5 §08). */
+  courseProgress: (userId: number): string => `course_progress:${userId}`,
 } as const;
