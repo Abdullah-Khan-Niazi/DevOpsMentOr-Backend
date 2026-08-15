@@ -7,6 +7,7 @@ import { reportRoutes } from '../features/reports';
 import { dashboardRoutes } from '../features/dashboard';
 import { adminRoutes } from '../features/admin';
 import { orgRoutes } from '../features/orgs';
+import { adminCurriculumRoutes, curriculumRoutes } from '../features/curriculum';
 
 export function registerRoutes(): Router {
   const router = Router();
@@ -22,6 +23,8 @@ export function registerRoutes(): Router {
   router.use('/reports', reportRoutes);
   router.use('/dashboard', dashboardRoutes);
   router.use('/', orgRoutes);
+  router.use('/curriculum', curriculumRoutes);
+  router.use('/admin', adminCurriculumRoutes);
 
   return router;
 }
