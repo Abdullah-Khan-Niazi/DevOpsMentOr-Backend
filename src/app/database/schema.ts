@@ -988,3 +988,159 @@ export const quizAnswers = mysqlTable(
     index('idx_question').on(table.questionId),
   ],
 );
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * F5 — Learning Experience & Progress Tracking (§06 embedded DB mapping).
+ * Tables mirror CREATE TABLE statements in devops_db.sql verbatim; no schema
+ * alteration was required (the §06 adaptation is entirely at the query level).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * `user_progress` — Multi-grain progress rows (F5 §06). A row with all three
+ * IDs populated is lesson-grain progress; `lesson_id IS NULL` with
+ * `module_id` set is module-grain; both `lesson_id` and `module_id` NULL is
+ * course-grain rollup. The source schema has NO unique index, so the F5
+ * service enforces (user_id, lesson_id) uniqueness via an application-level
+ * select-then-write upsert inside a transaction.
+ */
+export const userProgress = mysqlTable(
+  'user_progress',
+  {
+    progressId: int('progress_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    courseId: int('course_id').references(() => academyCourses.courseId, {
+      onDelete: 'cascade',
+    }),
+    moduleId: int('module_id').references(() => modules.moduleId, { onDelete: 'cascade' }),
+    lessonId: int('lesson_id').references(() => lessons.lessonId, { onDelete: 'cascade' }),
+    progressPercentage: decimal('progress_percentage', { precision: 5, scale: 2 })
+      .notNull()
+      .default('0'),
+    isCompleted: boolean('is_completed').notNull().default(false),
+    completedAt: timestamp('completed_at'),
+    lastAccessedAt: timestamp('last_accessed_at').notNull().defaultNow(),
+    timeSpentSeconds: int('time_spent_seconds').notNull().default(0),
+  },
+  (table) => [
+    index('idx_up_user').on(table.userId),
+    index('idx_up_module').on(table.moduleId),
+    index('idx_up_lesson').on(table.lessonId),
+  ],
+);
+
+/**
+ * `quiz_attempts` — Quiz session records per user per quiz (F5 §06).
+ * `attempt_number` increments per (user_id, quiz_id); `score` is a 0-100
+ * percentage; `is_passed` is evaluated against `quizzes.passing_score` at
+ * submission time.
+ */
+export const quizAttempts = mysqlTable(
+  'quiz_attempts',
+  {
+    attemptId: int('attempt_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    quizId: int('quiz_id')
+      .notNull()
+      .references(() => quizzes.quizId, { onDelete: 'cascade' }),
+    score: int('score').notNull().default(0),
+    isPassed: boolean('is_passed').notNull().default(false),
+    attemptNumber: int('attempt_number').notNull().default(1),
+    startedAt: timestamp('started_at').notNull().defaultNow(),
+    completedAt: timestamp('completed_at'),
+    timeTakenSeconds: int('time_taken_seconds'),
+  },
+  (table) => [
+    index('idx_qa_user_quiz').on(table.userId, table.quizId),
+  ],
+);
+
+/**
+ * `user_quiz_answers` — Per-question answer records per attempt (F5 §06).
+ * `answer_id` is NULL for fill_blank questions; `answer_text` carries the
+ * free-text response; `points_earned` is written at scoring time.
+ */
+export const userQuizAnswers = mysqlTable(
+  'user_quiz_answers',
+  {
+    userAnswerId: int('user_answer_id').autoincrement().primaryKey(),
+    attemptId: int('attempt_id')
+      .notNull()
+      .references(() => quizAttempts.attemptId, { onDelete: 'cascade' }),
+    questionId: int('question_id')
+      .notNull()
+      .references(() => quizQuestions.questionId),
+    answerId: int('answer_id').references(() => quizAnswers.answerId),
+    isCorrect: boolean('is_correct').notNull().default(false),
+    answerText: text('answer_text'),
+    pointsEarned: int('points_earned').notNull().default(0),
+    answeredAt: timestamp('answered_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_uqa_attempt').on(table.attemptId),
+  ],
+);
+
+/**
+ * `activity_logs` — Learner event history (F5 §06). `activity_type` holds the
+ * `LearningActivityType` string enum verbatim; `details` carries structured
+ * event context such as `{ lessonId, moduleId, score }`. Written by
+ * ActivityLogService (F5) and by F6 via the `recordEvent` forward hook.
+ */
+export const activityLogs = mysqlTable(
+  'activity_logs',
+  {
+    logId: int('log_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    activityType: varchar('activity_type', { length: 50 }).notNull(),
+    details: json('details').$type<Record<string, unknown> | null>(),
+    ipAddress: varchar('ip_address', { length: 45 }),
+    userAgent: text('user_agent'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_al_user').on(table.userId),
+    index('idx_al_type').on(table.activityType),
+    index('idx_al_created').on(table.createdAt),
+  ],
+);
+
+export const userProgressRelations = relations(userProgress, ({ one }) => ({
+  user: one(users, { fields: [userProgress.userId], references: [users.userId] }),
+  course: one(academyCourses, {
+    fields: [userProgress.courseId],
+    references: [academyCourses.courseId],
+  }),
+  module: one(modules, { fields: [userProgress.moduleId], references: [modules.moduleId] }),
+  lesson: one(lessons, { fields: [userProgress.lessonId], references: [lessons.lessonId] }),
+}));
+
+export const quizAttemptsRelations = relations(quizAttempts, ({ one, many }) => ({
+  user: one(users, { fields: [quizAttempts.userId], references: [users.userId] }),
+  quiz: one(quizzes, { fields: [quizAttempts.quizId], references: [quizzes.quizId] }),
+  answers: many(userQuizAnswers),
+}));
+
+export const userQuizAnswersRelations = relations(userQuizAnswers, ({ one }) => ({
+  attempt: one(quizAttempts, {
+    fields: [userQuizAnswers.attemptId],
+    references: [quizAttempts.attemptId],
+  }),
+  question: one(quizQuestions, {
+    fields: [userQuizAnswers.questionId],
+    references: [quizQuestions.questionId],
+  }),
+  answer: one(quizAnswers, {
+    fields: [userQuizAnswers.answerId],
+    references: [quizAnswers.answerId],
+  }),
+}));
+
+export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
+  user: one(users, { fields: [activityLogs.userId], references: [users.userId] }),
+}));

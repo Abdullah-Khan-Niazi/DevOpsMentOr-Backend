@@ -47,6 +47,12 @@ export const PERMISSIONS = {
   CURRICULUM_READ: 'curriculum.read',
   PLATFORM_CURRICULUM_READ: 'platform.curriculum.read',
   PLATFORM_CURRICULUM_MANAGE: 'platform.curriculum.manage',
+  // ─── F5 Learning Experience / Progress Tracking (§04 permission values) ─
+  PROGRESS_SELF_READ: 'progress.self.read',
+  PROGRESS_SELF_WRITE: 'progress.self.write',
+  PROGRESS_CLASS_READ: 'progress.class.read',
+  PROGRESS_ORG_READ: 'progress.org.read',
+  PLATFORM_PROGRESS_READ: 'platform.progress.read',
 } as const;
 
 /** Audit log action strings (F2 §07 contract values). */
