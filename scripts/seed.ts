@@ -79,6 +79,12 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.CURRICULUM_READ, module: 'curriculum', description: 'Browse published course, modules, lessons and quiz metadata' },
   { name: PERMISSIONS.PLATFORM_CURRICULUM_READ, module: 'curriculum', description: 'Read all curriculum content including drafts' },
   { name: PERMISSIONS.PLATFORM_CURRICULUM_MANAGE, module: 'curriculum', description: 'Create, edit, publish, archive and reorder curriculum content' },
+  // ─── F5 Learning Experience / Progress Tracking ─────────────────────────
+  { name: PERMISSIONS.PROGRESS_SELF_READ, module: 'progress', description: 'Read own lesson, module and course progress' },
+  { name: PERMISSIONS.PROGRESS_SELF_WRITE, module: 'progress', description: 'Start or complete own lessons and submit quiz attempts' },
+  { name: PERMISSIONS.PROGRESS_CLASS_READ, module: 'progress', description: 'Read progress of students in assigned classes' },
+  { name: PERMISSIONS.PROGRESS_ORG_READ, module: 'progress', description: 'Read progress of all students in own organization' },
+  { name: PERMISSIONS.PLATFORM_PROGRESS_READ, module: 'progress', description: 'Read any user progress platform-wide' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -108,6 +114,10 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CLASS_STUDENTS_INVITE,
     PERMISSIONS.ENROLLMENT_READ,
     PERMISSIONS.CURRICULUM_READ,
+    PERMISSIONS.PROGRESS_SELF_READ,
+    PERMISSIONS.PROGRESS_SELF_WRITE,
+    PERMISSIONS.PROGRESS_CLASS_READ,
+    PERMISSIONS.PROGRESS_ORG_READ,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -129,6 +139,9 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CLASS_STUDENTS_INVITE,
     PERMISSIONS.ENROLLMENT_READ,
     PERMISSIONS.CURRICULUM_READ,
+    PERMISSIONS.PROGRESS_SELF_READ,
+    PERMISSIONS.PROGRESS_SELF_WRITE,
+    PERMISSIONS.PROGRESS_CLASS_READ,
   ],
   [ROLES.ORG_STUDENT]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -146,6 +159,8 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CLASS_STUDENTS_READ,
     PERMISSIONS.ENROLLMENT_READ,
     PERMISSIONS.CURRICULUM_READ,
+    PERMISSIONS.PROGRESS_SELF_READ,
+    PERMISSIONS.PROGRESS_SELF_WRITE,
   ],
   [ROLES.INDIVIDUAL_LEARNER]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -160,6 +175,8 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.USERS_SKILLS_MANAGE,
     PERMISSIONS.USERS_FOLLOW_MANAGE,
     PERMISSIONS.CURRICULUM_READ,
+    PERMISSIONS.PROGRESS_SELF_READ,
+    PERMISSIONS.PROGRESS_SELF_WRITE,
   ],
   [ROLES.GUEST]: [],
 };
