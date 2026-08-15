@@ -2,14 +2,18 @@ import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import dotenv from 'dotenv';
 import {
+  academyCourses,
+  categories,
   countries,
   db,
+  difficultyLevels,
   disconnectDatabase,
   permissions,
   rolePermissions,
   roles,
   skills,
   systemSettings,
+  tags,
   teams,
   userRoles,
   users,
@@ -71,6 +75,10 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.CLASS_STUDENTS_READ, module: 'organizations', description: 'Read class roster and invitations' },
   { name: PERMISSIONS.CLASS_STUDENTS_INVITE, module: 'organizations', description: 'Invite, import and withdraw students' },
   { name: PERMISSIONS.ENROLLMENT_READ, module: 'organizations', description: 'Read own enrollment and accept invitations' },
+  // ─── F4 Canonical Curriculum / Course Content ────────────────────────────
+  { name: PERMISSIONS.CURRICULUM_READ, module: 'curriculum', description: 'Browse published course, modules, lessons and quiz metadata' },
+  { name: PERMISSIONS.PLATFORM_CURRICULUM_READ, module: 'curriculum', description: 'Read all curriculum content including drafts' },
+  { name: PERMISSIONS.PLATFORM_CURRICULUM_MANAGE, module: 'curriculum', description: 'Create, edit, publish, archive and reorder curriculum content' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -99,6 +107,7 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CLASS_STUDENTS_READ,
     PERMISSIONS.CLASS_STUDENTS_INVITE,
     PERMISSIONS.ENROLLMENT_READ,
+    PERMISSIONS.CURRICULUM_READ,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -119,6 +128,7 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CLASS_STUDENTS_READ,
     PERMISSIONS.CLASS_STUDENTS_INVITE,
     PERMISSIONS.ENROLLMENT_READ,
+    PERMISSIONS.CURRICULUM_READ,
   ],
   [ROLES.ORG_STUDENT]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -135,6 +145,7 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.ORG_READ,
     PERMISSIONS.CLASS_STUDENTS_READ,
     PERMISSIONS.ENROLLMENT_READ,
+    PERMISSIONS.CURRICULUM_READ,
   ],
   [ROLES.INDIVIDUAL_LEARNER]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -148,6 +159,7 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.USERS_PROFILE_UPDATE,
     PERMISSIONS.USERS_SKILLS_MANAGE,
     PERMISSIONS.USERS_FOLLOW_MANAGE,
+    PERMISSIONS.CURRICULUM_READ,
   ],
   [ROLES.GUEST]: [],
 };
@@ -347,6 +359,93 @@ async function seedOrgInviteSentinel(ownerUserId: number): Promise<void> {
   console.log('Organization invitation sentinel team seeded.');
 }
 
+const difficultyLevelSeeds = [
+  { name: 'Very Easy', levelValue: 1, colorHex: '#00cc66', pointsMultiplier: '1.00' },
+  { name: 'Easy', levelValue: 2, colorHex: '#00b4d8', pointsMultiplier: '1.20' },
+  { name: 'Medium', levelValue: 3, colorHex: '#ffb703', pointsMultiplier: '1.50' },
+  { name: 'Hard', levelValue: 4, colorHex: '#f94144', pointsMultiplier: '2.00' },
+  { name: 'Insane', levelValue: 5, colorHex: '#7209b7', pointsMultiplier: '2.50' },
+] as const;
+
+const categorySeeds = [
+  { name: 'Web', slug: 'web', description: 'Web application development and security' },
+  { name: 'Reverse Engineering', slug: 'reverse-engineering', description: 'Reverse engineering and binary analysis' },
+  { name: 'Forensics', slug: 'forensics', description: 'Digital forensics and analysis' },
+  { name: 'Cryptography', slug: 'cryptography', description: 'Cryptographic challenges' },
+  { name: 'Network', slug: 'network', description: 'Networking fundamentals and protocols' },
+  { name: 'Cloud', slug: 'cloud', description: 'Cloud computing and infrastructure' },
+  { name: 'AI/ML', slug: 'ai-ml', description: 'Artificial intelligence and machine learning security' },
+] as const;
+
+const tagSeeds = [
+  { tagName: 'docker', slug: 'docker', colorHex: '#0db7ed' },
+  { tagName: 'kubernetes', slug: 'kubernetes', colorHex: '#326ce5' },
+  { tagName: 'aws', slug: 'aws', colorHex: '#ff9900' },
+  { tagName: 'linux', slug: 'linux', colorHex: '#fcc624' },
+  { tagName: 'terraform', slug: 'terraform', colorHex: '#7b42bc' },
+  { tagName: 'ci-cd', slug: 'ci-cd', colorHex: '#e4482d' },
+  { tagName: 'networking', slug: 'networking', colorHex: '#00b4d8' },
+  { tagName: 'security', slug: 'security', colorHex: '#e5484d' },
+] as const;
+
+/** F4: difficulty taxonomy, categories, tags and the canonical course. */
+async function seedCurriculumCatalog(adminUserId: number): Promise<void> {
+  for (const seed of difficultyLevelSeeds) {
+    const existing = await db.query.difficultyLevels.findFirst({
+      where: eq(difficultyLevels.name, seed.name),
+    });
+    if (!existing) {
+      await db.insert(difficultyLevels).values(seed);
+    }
+  }
+
+  for (const seed of categorySeeds) {
+    const existing = await db.query.categories.findFirst({
+      where: eq(categories.slug, seed.slug),
+    });
+    if (!existing) {
+      await db.insert(categories).values(seed);
+    }
+  }
+
+  for (const seed of tagSeeds) {
+    const existing = await db.query.tags.findFirst({
+      where: eq(tags.slug, seed.slug),
+    });
+    if (!existing) {
+      await db.insert(tags).values(seed);
+    }
+  }
+
+  // §05 invariant 1: exactly one canonical course per deployment.
+  const existingCourse = await db.query.academyCourses.findFirst({
+    orderBy: (row, { asc }) => [asc(row.courseId)],
+  });
+  if (!existingCourse) {
+    const medium = await db.query.difficultyLevels.findFirst({
+      where: eq(difficultyLevels.name, 'Medium'),
+    });
+    const cloud = await db.query.categories.findFirst({
+      where: eq(categories.slug, 'cloud'),
+    });
+    await db.insert(academyCourses).values({
+      title: 'DevOps Mentor',
+      slug: 'devops-mentor',
+      description: 'End-to-end DevOps engineering curriculum.',
+      difficultyId: medium?.difficultyId ?? 3,
+      categoryId: cloud?.categoryId ?? null,
+      instructorId: adminUserId,
+      estimatedHours: 40,
+      isPublished: true,
+      prerequisites: null,
+      learningObjectives: null,
+    });
+  }
+
+  // eslint-disable-next-line no-console
+  console.log('Curriculum catalog seeded (difficulties, categories, tags, course).');
+}
+
 async function main(): Promise<void> {
   const permissionIds = new Map<string, number>();
 
@@ -418,6 +517,7 @@ async function main(): Promise<void> {
   await db.insert(userRoles).values({ userId: adminId, roleId: adminRole.roleId });
 
   await seedOrgInviteSentinel(adminId);
+  await seedCurriculumCatalog(adminId);
   await seedSkillsCatalog();
   await seedSystemSettings();
   await seedCountriesIfMissing();
