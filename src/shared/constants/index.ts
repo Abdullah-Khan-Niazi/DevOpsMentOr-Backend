@@ -43,6 +43,10 @@ export const PERMISSIONS = {
   CLASS_STUDENTS_READ: 'class:students:read',
   CLASS_STUDENTS_INVITE: 'class:students:invite',
   ENROLLMENT_READ: 'enrollment:read',
+  // ─── F4 Canonical Curriculum / Course Content ─────────────────────────
+  CURRICULUM_READ: 'curriculum.read',
+  PLATFORM_CURRICULUM_READ: 'platform.curriculum.read',
+  PLATFORM_CURRICULUM_MANAGE: 'platform.curriculum.manage',
 } as const;
 
 /** Audit log action strings (F2 §07 contract values). */
@@ -62,6 +66,21 @@ export const AUDIT_ACTIONS = {
   INVITE_STUDENTS: 'invite_students',
   WITHDRAW_STUDENT: 'withdraw_student',
   SET_EMAIL_DOMAIN: 'set_email_domain',
+  // ─── F4 curriculum admin mutations ──────────────────────────────────────
+  UPDATE_COURSE: 'update_course',
+  CREATE_MODULE: 'create_module',
+  UPDATE_MODULE: 'update_module',
+  PUBLISH_MODULE: 'publish_module',
+  ARCHIVE_MODULE: 'archive_module',
+  REORDER_MODULES: 'reorder_modules',
+  CREATE_LESSON: 'create_lesson',
+  UPDATE_LESSON: 'update_lesson',
+  PUBLISH_LESSON: 'publish_lesson',
+  REORDER_LESSONS: 'reorder_lessons',
+  CREATE_QUIZ: 'create_quiz',
+  UPDATE_QUIZ: 'update_quiz',
+  CREATE_QUESTION: 'create_question',
+  UPDATE_QUESTION: 'update_question',
 } as const;
 
 /**

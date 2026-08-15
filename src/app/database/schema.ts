@@ -8,6 +8,7 @@ import {
   index,
   int,
   json,
+  longtext,
   mysqlEnum,
   mysqlTable,
   primaryKey,
@@ -16,6 +17,7 @@ import {
   uniqueIndex,
   varchar,
 } from 'drizzle-orm/mysql-core';
+import type { AnyMySqlColumn } from 'drizzle-orm/mysql-core';
 
 /**
  * Drizzle schema mapping for the `devops-mentor` MySQL database.
@@ -705,5 +707,284 @@ export const teamInvitations = mysqlTable(
     uniqueIndex('team_invitations_token_key').on(table.token),
     index('idx_token').on(table.token),
     index('idx_email').on(table.inviteeEmail),
+  ],
+);
+/* ────────────────────────────────────────────────────────────────────────────
+ * F4 — Canonical Curriculum & Course Content (§06 embedded DB mapping).
+ * Tables mirror CREATE TABLE statements in devops_db.sql verbatim.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * `difficulty_levels` — Curriculum difficulty taxonomy (F4 §06 reuse).
+ * Pre-seeded: Very Easy → Insane. `level_value` ranks difficulties;
+ * `is_active` gates visibility. Read-only for F4; referenced by
+ * `academy_courses.difficulty_id`.
+ */
+export const difficultyLevels = mysqlTable(
+  'difficulty_levels',
+  {
+    difficultyId: int('difficulty_id').autoincrement().primaryKey(),
+    name: varchar('name', { length: 50 }).notNull(),
+    levelValue: int('level_value').notNull(),
+    colorHex: varchar('color_hex', { length: 7 }),
+    iconClass: varchar('icon_class', { length: 50 }),
+    pointsMultiplier: decimal('points_multiplier', { precision: 3, scale: 2 }).default('1.00'),
+    description: text('description'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('difficulty_levels_name_key').on(table.name),
+    uniqueIndex('difficulty_levels_level_value_key').on(table.levelValue),
+  ],
+);
+
+/**
+ * `categories` — Content taxonomy (F4 §06 reuse). Pre-seeded: Cloud, Web,
+ * etc. Supports a single-level self hierarchy via `parent_category_id`;
+ * `display_order` drives catalog ordering.
+ */
+export const categories = mysqlTable(
+  'categories',
+  {
+    categoryId: int('category_id').autoincrement().primaryKey(),
+    name: varchar('name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 100 }).notNull(),
+    description: text('description'),
+    iconUrl: varchar('icon_url', { length: 255 }),
+    parentCategoryId: int('parent_category_id').references(
+      (): AnyMySqlColumn => categories.categoryId,
+      { onDelete: 'cascade' },
+    ),
+    displayOrder: int('display_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('categories_name_key').on(table.name),
+    uniqueIndex('categories_slug_key').on(table.slug),
+  ],
+);
+
+/**
+ * `tags` — Lesson tag vocabulary (F4 §06 reuse). A flat set of named tags
+ * linked to lessons through the polymorphic `challenge_tags` mapping.
+ */
+export const tags = mysqlTable(
+  'tags',
+  {
+    tagId: int('tag_id').autoincrement().primaryKey(),
+    tagName: varchar('tag_name', { length: 50 }).notNull(),
+    slug: varchar('slug', { length: 50 }).notNull(),
+    colorHex: varchar('color_hex', { length: 7 }).notNull().default('#6c757d'),
+    description: text('description'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('tags_tag_name_key').on(table.tagName),
+    uniqueIndex('tags_slug_key').on(table.slug),
+  ],
+);
+
+/**
+ * `academy_courses` — The canonical course entity (F4 §05 invariant 1).
+ * EXACTLY ONE row per deployment; created idempotently by the admin course
+ * endpoint. `difficulty_id` is NOT NULL (FK to difficulty_levels);
+ * `prerequisites` and `learning_objectives` are JSON arrays.
+ */
+export const academyCourses = mysqlTable(
+  'academy_courses',
+  {
+    courseId: int('course_id').autoincrement().primaryKey(),
+    title: varchar('title', { length: 255 }).notNull(),
+    slug: varchar('slug', { length: 255 }).notNull(),
+    description: text('description'),
+    difficultyId: int('difficulty_id')
+      .notNull()
+      .references(() => difficultyLevels.difficultyId),
+    categoryId: int('category_id').references(() => categories.categoryId),
+    instructorId: int('instructor_id')
+      .notNull()
+      .references(() => users.userId),
+    coverImageUrl: varchar('cover_image_url', { length: 255 }),
+    videoTrailerUrl: varchar('video_trailer_url', { length: 255 }),
+    estimatedHours: int('estimated_hours').notNull().default(0),
+    totalLessons: int('total_lessons').notNull().default(0),
+    totalQuizzes: int('total_quizzes').notNull().default(0),
+    isPublished: boolean('is_published').notNull().default(false),
+    isPremium: boolean('is_premium').notNull().default(false),
+    price: decimal('price', { precision: 10, scale: 2 }).notNull().default('0'),
+    discountPrice: decimal('discount_price', { precision: 10, scale: 2 }),
+    averageRating: decimal('average_rating', { precision: 3, scale: 2 }).notNull().default('0'),
+    totalRatings: int('total_ratings').notNull().default(0),
+    enrollmentCount: int('enrollment_count').notNull().default(0),
+    prerequisites: json('prerequisites').$type<string[] | null>(),
+    learningObjectives: json('learning_objectives').$type<string[] | null>(),
+    releaseDate: date('release_date'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('academy_courses_slug_key').on(table.slug),
+  ],
+);
+
+/**
+ * `modules` — Course modules (F4 §05). `module_order` is unique within the
+ * course (invariant 2). `is_published = FALSE` represents both DRAFT and
+ * ARCHIVED states; archiving cascades to children (invariant 5).
+ */
+export const modules = mysqlTable(
+  'modules',
+  {
+    moduleId: int('module_id').autoincrement().primaryKey(),
+    courseId: int('course_id')
+      .notNull()
+      .references(() => academyCourses.courseId, { onDelete: 'cascade' }),
+    title: varchar('title', { length: 255 }).notNull(),
+    description: text('description'),
+    moduleOrder: int('module_order').notNull(),
+    estimatedMinutes: int('estimated_minutes').notNull().default(0),
+    isPublished: boolean('is_published').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    index('idx_course_order').on(table.courseId, table.moduleOrder),
+  ],
+);
+
+/**
+ * `lessons` — Module lessons (F4 §05). `content_type` drives rendering
+ * (text | video | interactive | lab; lab links to F6 definitions).
+ * `lesson_order` is unique within the module (invariant 3). Lessons are
+ * never hard-deleted; removal unpublishes and re-orders (invariant 10).
+ */
+export const lessons = mysqlTable(
+  'lessons',
+  {
+    lessonId: int('lesson_id').autoincrement().primaryKey(),
+    moduleId: int('module_id')
+      .notNull()
+      .references(() => modules.moduleId, { onDelete: 'cascade' }),
+    title: varchar('title', { length: 255 }).notNull(),
+    content: longtext('content'),
+    contentType: mysqlEnum('content_type', ['text', 'video', 'interactive', 'lab'])
+      .notNull()
+      .default('text'),
+    videoUrl: varchar('video_url', { length: 255 }),
+    videoDurationSeconds: int('video_duration_seconds'),
+    lessonOrder: int('lesson_order').notNull(),
+    isPublished: boolean('is_published').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    index('idx_module_order').on(table.moduleId, table.lessonOrder),
+  ],
+);
+
+/**
+ * `challenge_tags` — Polymorphic lesson→tag mapping (F4 §06 adaptation).
+ * The `challenge_id` column is repurposed to hold `lessons.lesson_id`;
+ * each row joins a lesson to a `tags` row. No schema change was needed.
+ * Declared after `lessons` because the FK callback is evaluated at import.
+ */
+export const challengeTags = mysqlTable(
+  'challenge_tags',
+  {
+    challengeId: int('challenge_id')
+      .notNull()
+      .references((): AnyMySqlColumn => lessons.lessonId, { onDelete: 'cascade' }),
+    tagId: int('tag_id')
+      .notNull()
+      .references((): AnyMySqlColumn => tags.tagId, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.challengeId, table.tagId] }),
+    index('idx_tag').on(table.tagId),
+  ],
+);
+
+/**
+ * `quizzes` — Module-level quizzes (F4 §05). `passing_score` is a 0-100
+ * percentage; `is_required` marks gate quizzes. Publish requires the parent
+ * module to be published (invariant 4).
+ */
+export const quizzes = mysqlTable(
+  'quizzes',
+  {
+    quizId: int('quiz_id').autoincrement().primaryKey(),
+    moduleId: int('module_id')
+      .notNull()
+      .references(() => modules.moduleId, { onDelete: 'cascade' }),
+    title: varchar('title', { length: 255 }).notNull(),
+    description: text('description'),
+    passingScore: int('passing_score').notNull().default(70),
+    timeLimitMinutes: int('time_limit_minutes'),
+    isRequired: boolean('is_required').notNull().default(true),
+    isPublished: boolean('is_published').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    index('idx_quiz_module').on(table.moduleId),
+  ],
+);
+
+/**
+ * `quiz_questions` — Question bank per quiz (F4 §05). `question_type`
+ * controls the answer-correctness invariant (invariant 6) and answer
+ * stripping for non-admin responses. `is_active = FALSE` soft-hides a
+ * question without deleting it.
+ */
+export const quizQuestions = mysqlTable(
+  'quiz_questions',
+  {
+    questionId: int('question_id').autoincrement().primaryKey(),
+    quizId: int('quiz_id')
+      .notNull()
+      .references(() => quizzes.quizId, { onDelete: 'cascade' }),
+    questionText: text('question_text').notNull(),
+    questionType: mysqlEnum('question_type', [
+      'multiple_choice',
+      'true_false',
+      'fill_blank',
+      'multiple_select',
+    ])
+      .notNull()
+      .default('multiple_choice'),
+    points: int('points').notNull().default(10),
+    explanation: text('explanation'),
+    questionOrder: int('question_order').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    index('idx_quiz_order').on(table.quizId, table.questionOrder),
+  ],
+);
+
+/**
+ * `quiz_answers` — Answer options per question (F4 §05). `is_correct` is
+ * NEVER exposed to learner roles; stripped at the service boundary.
+ */
+export const quizAnswers = mysqlTable(
+  'quiz_answers',
+  {
+    answerId: int('answer_id').autoincrement().primaryKey(),
+    questionId: int('question_id')
+      .notNull()
+      .references(() => quizQuestions.questionId, { onDelete: 'cascade' }),
+    answerText: text('answer_text').notNull(),
+    isCorrect: boolean('is_correct').notNull().default(false),
+    answerOrder: int('answer_order').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_question').on(table.questionId),
   ],
 );
