@@ -10,6 +10,7 @@ import { orgRoutes } from '../features/orgs';
 import { adminCurriculumRoutes, curriculumRoutes } from '../features/curriculum';
 import { adminProgressRouter, progressRouter } from '../features/progress';
 import { adminLabsRouter, labsRouter } from '../features/labs';
+import { adminGamificationRouter, gamificationRouter } from '../features/gamification';
 
 export function registerRoutes(): Router {
   const router = Router();
@@ -31,6 +32,8 @@ export function registerRoutes(): Router {
   router.use('/admin', adminProgressRouter);
   router.use(labsRouter);
   router.use('/admin', adminLabsRouter);
+  router.use(gamificationRouter);
+  router.use('/admin', adminGamificationRouter);
 
   return router;
 }

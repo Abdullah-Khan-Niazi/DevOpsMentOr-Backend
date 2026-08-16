@@ -4,6 +4,7 @@ import { logger } from '../shared/logger';
 import { connectDatabase, disconnectDatabase } from './database';
 import { connectRedis, disconnectRedis } from './cache/redis';
 import { labTtlMonitorJob } from '../features/labs';
+import { leaderboardComputationJob } from '../features/gamification';
 
 export async function startServer(): Promise<void> {
   await connectDatabase();
@@ -17,10 +18,12 @@ export async function startServer(): Promise<void> {
   });
 
   labTtlMonitorJob.start();
+  leaderboardComputationJob.start();
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`${signal} received. Shutting down gracefully...`);
     labTtlMonitorJob.stop();
+    leaderboardComputationJob.stop();
     server.close(() => {
       void (async () => {
         await disconnectRedis();
