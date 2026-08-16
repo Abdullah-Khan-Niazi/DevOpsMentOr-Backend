@@ -85,6 +85,15 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.PROGRESS_CLASS_READ, module: 'progress', description: 'Read progress of students in assigned classes' },
   { name: PERMISSIONS.PROGRESS_ORG_READ, module: 'progress', description: 'Read progress of all students in own organization' },
   { name: PERMISSIONS.PLATFORM_PROGRESS_READ, module: 'progress', description: 'Read any user progress platform-wide' },
+  // ─── F6 Labs, Execution Engine & AI Mentor ─────────────────────────────
+  { name: PERMISSIONS.LABS_INSTANCE_CREATE, module: 'labs', description: 'Provision, start and extend own lab instances' },
+  { name: PERMISSIONS.LABS_INSTANCE_READ, module: 'labs', description: 'Read own lab instances, run checks and submit answers' },
+  { name: PERMISSIONS.LABS_INSTANCE_DELETE, module: 'labs', description: 'Stop or terminate own lab instances' },
+  { name: PERMISSIONS.LABS_AI_MENTOR_USE, module: 'labs', description: 'Use the AI Mentor assistant in lessons and labs' },
+  { name: PERMISSIONS.LABS_CLASS_READ, module: 'labs', description: 'Read lab activity of students in assigned classes' },
+  { name: PERMISSIONS.LABS_ORG_READ, module: 'labs', description: 'Read lab activity of all students in own organization' },
+  { name: PERMISSIONS.PLATFORM_LABS_MANAGE, module: 'labs', description: 'Create, edit and publish labs and tracks' },
+  { name: PERMISSIONS.PLATFORM_LABS_ADMIN, module: 'labs', description: 'Monitor and force-terminate any lab instance' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -118,6 +127,12 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.PROGRESS_SELF_WRITE,
     PERMISSIONS.PROGRESS_CLASS_READ,
     PERMISSIONS.PROGRESS_ORG_READ,
+    PERMISSIONS.LABS_INSTANCE_CREATE,
+    PERMISSIONS.LABS_INSTANCE_READ,
+    PERMISSIONS.LABS_INSTANCE_DELETE,
+    PERMISSIONS.LABS_AI_MENTOR_USE,
+    PERMISSIONS.LABS_CLASS_READ,
+    PERMISSIONS.LABS_ORG_READ,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -142,6 +157,11 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.PROGRESS_SELF_READ,
     PERMISSIONS.PROGRESS_SELF_WRITE,
     PERMISSIONS.PROGRESS_CLASS_READ,
+    PERMISSIONS.LABS_INSTANCE_CREATE,
+    PERMISSIONS.LABS_INSTANCE_READ,
+    PERMISSIONS.LABS_INSTANCE_DELETE,
+    PERMISSIONS.LABS_AI_MENTOR_USE,
+    PERMISSIONS.LABS_CLASS_READ,
   ],
   [ROLES.ORG_STUDENT]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -161,6 +181,10 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CURRICULUM_READ,
     PERMISSIONS.PROGRESS_SELF_READ,
     PERMISSIONS.PROGRESS_SELF_WRITE,
+    PERMISSIONS.LABS_INSTANCE_CREATE,
+    PERMISSIONS.LABS_INSTANCE_READ,
+    PERMISSIONS.LABS_INSTANCE_DELETE,
+    PERMISSIONS.LABS_AI_MENTOR_USE,
   ],
   [ROLES.INDIVIDUAL_LEARNER]: [
     PERMISSIONS.DASHBOARD_READ,
