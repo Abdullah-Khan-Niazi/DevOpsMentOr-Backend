@@ -94,6 +94,12 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.LABS_ORG_READ, module: 'labs', description: 'Read lab activity of all students in own organization' },
   { name: PERMISSIONS.PLATFORM_LABS_MANAGE, module: 'labs', description: 'Create, edit and publish labs and tracks' },
   { name: PERMISSIONS.PLATFORM_LABS_ADMIN, module: 'labs', description: 'Monitor and force-terminate any lab instance' },
+  // ─── F7 Achievements / Gamification / Certification ─────────────────────
+  { name: PERMISSIONS.GAMIFICATION_PROFILE_READ, module: 'gamification', description: 'Read own gamification profile, badges, achievements and points history' },
+  { name: PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD, module: 'gamification', description: 'Download own certificates' },
+  { name: PERMISSIONS.GAMIFICATION_CLASS_READ, module: 'gamification', description: 'Read leaderboards of assigned classes' },
+  { name: PERMISSIONS.GAMIFICATION_ORG_READ, module: 'gamification', description: 'Read leaderboards of own organization' },
+  { name: PERMISSIONS.PLATFORM_GAMIFICATION_MANAGE, module: 'gamification', description: 'Manage badges, achievements, seasons, points adjustments and certificate invalidation' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -133,6 +139,9 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.LABS_AI_MENTOR_USE,
     PERMISSIONS.LABS_CLASS_READ,
     PERMISSIONS.LABS_ORG_READ,
+    PERMISSIONS.GAMIFICATION_PROFILE_READ,
+    PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
+    PERMISSIONS.GAMIFICATION_ORG_READ,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -162,6 +171,9 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.LABS_INSTANCE_DELETE,
     PERMISSIONS.LABS_AI_MENTOR_USE,
     PERMISSIONS.LABS_CLASS_READ,
+    PERMISSIONS.GAMIFICATION_PROFILE_READ,
+    PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
+    PERMISSIONS.GAMIFICATION_CLASS_READ,
   ],
   [ROLES.ORG_STUDENT]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -185,6 +197,8 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.LABS_INSTANCE_READ,
     PERMISSIONS.LABS_INSTANCE_DELETE,
     PERMISSIONS.LABS_AI_MENTOR_USE,
+    PERMISSIONS.GAMIFICATION_PROFILE_READ,
+    PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
   ],
   [ROLES.INDIVIDUAL_LEARNER]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -201,6 +215,8 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CURRICULUM_READ,
     PERMISSIONS.PROGRESS_SELF_READ,
     PERMISSIONS.PROGRESS_SELF_WRITE,
+    PERMISSIONS.GAMIFICATION_PROFILE_READ,
+    PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
   ],
   [ROLES.GUEST]: [],
 };
