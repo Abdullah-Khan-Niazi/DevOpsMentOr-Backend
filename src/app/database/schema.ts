@@ -1445,3 +1445,360 @@ export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
     references: [organizations.organizationId],
   }),
 }));
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * F7 — Achievements, Gamification & Certification (§06 embedded DB mapping).
+ * Tables mirror CREATE TABLE statements in devops_db.sql verbatim; no schema
+ * alteration was required. Cybersecurity-domain columns on reused tables are
+ * documented but permanently held at zero by the application.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * `badges` — Badge catalog (F7 §06 direct reuse). `badge_type` ENUM defines the
+ * visual tier (bronze → special); `points_required` is the point reward credited
+ * when the badge is awarded; `criteria` JSON holds the auto-award trigger rule
+ * `{ triggerType, triggerValue }`. `is_hidden = TRUE` badges are awarded by the
+ * engine but stripped from every learner-facing response (invariant 8).
+ */
+export const badges = mysqlTable(
+  'badges',
+  {
+    badgeId: int('badge_id').autoincrement().primaryKey(),
+    badgeName: varchar('badge_name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 100 }).notNull(),
+    description: text('description'),
+    badgeType: mysqlEnum('badge_type', [
+      'bronze',
+      'silver',
+      'gold',
+      'platinum',
+      'diamond',
+      'special',
+    ])
+      .notNull()
+      .default('bronze'),
+    iconUrl: varchar('icon_url', { length: 255 }),
+    pointsRequired: int('points_required').notNull().default(0),
+    criteria: json('criteria').$type<{ triggerType: string; triggerValue: Record<string, unknown> } | null>(),
+    isHidden: boolean('is_hidden').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('badges_badge_name_key').on(table.badgeName),
+    uniqueIndex('badges_slug_key').on(table.slug),
+  ],
+);
+
+/**
+ * `user_badges` — Badge award records (F7 §06 direct reuse). Composite PK
+ * (user_id, badge_id) enforces the idempotency invariant: a badge can be
+ * earned at most once per user (invariant 1). `awarded_reason` stores the
+ * trigger description captured at award time.
+ */
+export const userBadges = mysqlTable(
+  'user_badges',
+  {
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    badgeId: int('badge_id')
+      .notNull()
+      .references(() => badges.badgeId, { onDelete: 'cascade' }),
+    awardedAt: timestamp('awarded_at').notNull().defaultNow(),
+    awardedReason: text('awarded_reason'),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.badgeId] }),
+    index('idx_user_badges_user').on(table.userId),
+  ],
+);
+
+/**
+ * `achievements` — Achievement catalog (F7 §06 direct reuse). `points_awarded`
+ * is the one-time point reward on unlock; `trigger_type` is a string key
+ * (`lab_completions`, `course_completions`, `streak_days`, `points_balance`)
+ * and `trigger_value` JSON holds the threshold. `is_active = FALSE` rows are
+ * ignored by the evaluation engine.
+ */
+export const achievements = mysqlTable(
+  'achievements',
+  {
+    achievementId: int('achievement_id').autoincrement().primaryKey(),
+    name: varchar('name', { length: 100 }).notNull(),
+    description: text('description'),
+    pointsAwarded: int('points_awarded').notNull().default(0),
+    triggerType: varchar('trigger_type', { length: 50 }),
+    triggerValue: json('trigger_value').$type<Record<string, unknown> | null>(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('achievements_name_key').on(table.name)],
+);
+
+/**
+ * `user_achievements` — Achievement unlock records (F7 §06 direct reuse).
+ * Composite PK (user_id, achievement_id) enforces the idempotency invariant
+ * (invariant 2). `progress_data` JSON snapshots the metrics at unlock time.
+ */
+export const userAchievements = mysqlTable(
+  'user_achievements',
+  {
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    achievementId: int('achievement_id')
+      .notNull()
+      .references(() => achievements.achievementId, { onDelete: 'cascade' }),
+    unlockedAt: timestamp('unlocked_at').notNull().defaultNow(),
+    progressData: json('progress_data').$type<Record<string, unknown> | null>(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.achievementId] })],
+);
+
+/**
+ * `points_history` — Append-only points ledger (F7 §06 direct reuse).
+ * `points_change` is positive (earned) or negative (penalty); the running
+ * `points_balance_after` is computed inside a transaction. Rows are NEVER
+ * updated or deleted (invariant 3) — corrections are new `admin_adjustment`
+ * rows. `source_type` mirrors the SQL ENUM verbatim.
+ */
+export const pointsHistory = mysqlTable(
+  'points_history',
+  {
+    historyId: int('history_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    pointsChange: int('points_change').notNull(),
+    pointsBalanceAfter: int('points_balance_after').notNull(),
+    sourceType: mysqlEnum('source_type', [
+      'machine_own',
+      'challenge_solve',
+      'course_complete',
+      'achievement',
+      'daily_bonus',
+      'admin_adjustment',
+      'penalty',
+    ]).notNull(),
+    sourceId: int('source_id'),
+    description: text('description'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_ph_user').on(table.userId),
+    index('idx_ph_created').on(table.createdAt),
+  ],
+);
+
+/**
+ * `certificates` — Course completion certificates (F7 §06 direct reuse).
+ * `certificate_number` is globally unique (`DM-{YYYY}-{UUID8}`); the
+ * `unique_user_course` key guarantees one certificate per (user_id, course_id)
+ * (invariants 4 & 5). `grade` is computed at issuance only; `certificate_url`
+ * is the shareable public verification URL; `verifier_ip` records the last
+ * public verification request. `is_valid = FALSE` rows still verify as invalid
+ * without exposing the invalidation reason (invariant 12).
+ */
+export const certificates = mysqlTable(
+  'certificates',
+  {
+    certificateId: int('certificate_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    courseId: int('course_id')
+      .notNull()
+      .references(() => academyCourses.courseId, { onDelete: 'cascade' }),
+    certificateNumber: varchar('certificate_number', { length: 50 }).notNull(),
+    grade: decimal('grade', { precision: 5, scale: 2 }),
+    certificateUrl: varchar('certificate_url', { length: 255 }),
+    issuedAt: timestamp('issued_at').notNull().defaultNow(),
+    expiresAt: timestamp('expires_at'),
+    isValid: boolean('is_valid').notNull().default(true),
+    verifierIp: varchar('verifier_ip', { length: 45 }),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('certificates_certificate_number_key').on(table.certificateNumber),
+    uniqueIndex('certificates_user_course_key').on(table.userId, table.courseId),
+    index('idx_cert_number').on(table.certificateNumber),
+  ],
+);
+
+/**
+ * `leaderboards` — Global / country / region rank snapshot (F7 §06 reuse).
+ * Recomputed by the scheduled job every 15 minutes; never real-time.
+ * `machine_owns_count` and `challenge_solves_count` are cybersecurity-domain
+ * columns permanently held at 0 in DevOps Mentor (invariant 11);
+ * `course_completions_count` is the primary course metric.
+ */
+export const leaderboards = mysqlTable(
+  'leaderboards',
+  {
+    leaderboardId: int('leaderboard_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    totalPoints: int('total_points').notNull().default(0),
+    machineOwnsCount: int('machine_owns_count').notNull().default(0),
+    challengeSolvesCount: int('challenge_solves_count').notNull().default(0),
+    courseCompletionsCount: int('course_completions_count').notNull().default(0),
+    globalRank: int('global_rank'),
+    countryRank: int('country_rank'),
+    regionRank: int('region_rank'),
+    calculatedAt: timestamp('calculated_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_global_rank').on(table.globalRank),
+    index('idx_points').on(table.totalPoints),
+  ],
+);
+
+/**
+ * `leaderboard_history` — Rank trend snapshots (F7 §06 direct reuse). One row
+ * per user per computation cycle (AC-10); powers the trend charts. Read-only
+ * from the API; written exclusively by the leaderboard computation job.
+ */
+export const leaderboardHistory = mysqlTable(
+  'leaderboard_history',
+  {
+    historyId: int('history_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    totalPoints: int('total_points').notNull().default(0),
+    globalRank: int('global_rank'),
+    recordedAt: timestamp('recorded_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_lh_user').on(table.userId),
+    index('idx_lh_recorded').on(table.recordedAt),
+  ],
+);
+
+/**
+ * `seasons` — Time-boxed ranking periods (F7 §06 direct reuse).
+ * `season_number` is unique; `start_date`/`end_date` bound the point window
+ * used by `season_leaderboards`. `is_active` marks the current period; an
+ * overlap between active seasons is rejected at the admin service layer.
+ */
+export const seasons = mysqlTable(
+  'seasons',
+  {
+    seasonId: int('season_id').autoincrement().primaryKey(),
+    seasonName: varchar('season_name', { length: 100 }).notNull(),
+    seasonNumber: int('season_number').notNull(),
+    description: text('description'),
+    bannerUrl: varchar('banner_url', { length: 255 }),
+    startDate: date('start_date', { mode: 'string' }).notNull(),
+    endDate: date('end_date', { mode: 'string' }).notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('seasons_season_number_key').on(table.seasonNumber),
+    index('idx_seasons_dates').on(table.startDate, table.endDate),
+  ],
+);
+
+/**
+ * `season_content` — Content assigned to a season (F7 §06 reuse). The SQL ENUM
+ * carries `machine`/`challenge` (cybersecurity-domain, rejected at the Zod
+ * layer with 422 per AC-09) and `lab`; in DevOps Mentor only `lab` is an
+ * insertable value (the `course` value from the contract has no SQL ENUM slot).
+ */
+export const seasonContent = mysqlTable(
+  'season_content',
+  {
+    seasonId: int('season_id')
+      .notNull()
+      .references(() => seasons.seasonId, { onDelete: 'cascade' }),
+    contentType: mysqlEnum('content_type', ['machine', 'challenge', 'lab']).notNull(),
+    contentId: int('content_id').notNull(),
+    releaseOrder: int('release_order').notNull(),
+    isReleased: boolean('is_released').notNull().default(false),
+    releasedAt: timestamp('released_at'),
+  },
+  (table) => [primaryKey({ columns: [table.seasonId, table.contentType, table.contentId] })],
+);
+
+/**
+ * `season_leaderboards` — Per-season point accumulation and rank (F7 §06
+ * reuse). `points_earned` aggregates `points_history` within the season date
+ * window; `rank` is computed at query time (contract §02). The
+ * `unique_season_user` key (season_id, user_id) makes the recompute a UPSERT.
+ */
+export const seasonLeaderboards = mysqlTable(
+  'season_leaderboards',
+  {
+    leaderboardId: int('leaderboard_id').autoincrement().primaryKey(),
+    seasonId: int('season_id')
+      .notNull()
+      .references(() => seasons.seasonId, { onDelete: 'cascade' }),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    pointsEarned: int('points_earned').notNull().default(0),
+    rank: int('rank'),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('season_leaderboards_season_user_key').on(table.seasonId, table.userId),
+  ],
+);
+
+export const badgesRelations = relations(badges, ({ many }) => ({
+  userBadges: many(userBadges),
+}));
+
+export const userBadgesRelations = relations(userBadges, ({ one }) => ({
+  user: one(users, { fields: [userBadges.userId], references: [users.userId] }),
+  badge: one(badges, { fields: [userBadges.badgeId], references: [badges.badgeId] }),
+}));
+
+export const achievementsRelations = relations(achievements, ({ many }) => ({
+  userAchievements: many(userAchievements),
+}));
+
+export const userAchievementsRelations = relations(userAchievements, ({ one }) => ({
+  user: one(users, { fields: [userAchievements.userId], references: [users.userId] }),
+  achievement: one(achievements, {
+    fields: [userAchievements.achievementId],
+    references: [achievements.achievementId],
+  }),
+}));
+
+export const pointsHistoryRelations = relations(pointsHistory, ({ one }) => ({
+  user: one(users, { fields: [pointsHistory.userId], references: [users.userId] }),
+}));
+
+export const certificatesRelations = relations(certificates, ({ one }) => ({
+  user: one(users, { fields: [certificates.userId], references: [users.userId] }),
+  course: one(academyCourses, {
+    fields: [certificates.courseId],
+    references: [academyCourses.courseId],
+  }),
+}));
+
+export const leaderboardsRelations = relations(leaderboards, ({ one }) => ({
+  user: one(users, { fields: [leaderboards.userId], references: [users.userId] }),
+}));
+
+export const leaderboardHistoryRelations = relations(leaderboardHistory, ({ one }) => ({
+  user: one(users, { fields: [leaderboardHistory.userId], references: [users.userId] }),
+}));
+
+export const seasonsRelations = relations(seasons, ({ many }) => ({
+  content: many(seasonContent),
+  leaderboards: many(seasonLeaderboards),
+}));
+
+export const seasonContentRelations = relations(seasonContent, ({ one }) => ({
+  season: one(seasons, { fields: [seasonContent.seasonId], references: [seasons.seasonId] }),
+}));
+
+export const seasonLeaderboardsRelations = relations(seasonLeaderboards, ({ one }) => ({
+  season: one(seasons, { fields: [seasonLeaderboards.seasonId], references: [seasons.seasonId] }),
+  user: one(users, { fields: [seasonLeaderboards.userId], references: [users.userId] }),
+}));

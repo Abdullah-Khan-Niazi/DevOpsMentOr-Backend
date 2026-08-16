@@ -62,6 +62,12 @@ export const PERMISSIONS = {
   LABS_ORG_READ: 'labs:org:read',
   PLATFORM_LABS_MANAGE: 'platform.labs.manage',
   PLATFORM_LABS_ADMIN: 'platform.labs.admin',
+  // ─── F7 Achievements / Gamification / Certification (§04 permission values) ─
+  GAMIFICATION_PROFILE_READ: 'gamification:profile:read',
+  GAMIFICATION_CERTIFICATE_DOWNLOAD: 'gamification:certificate:download',
+  GAMIFICATION_CLASS_READ: 'gamification:class:read',
+  GAMIFICATION_ORG_READ: 'gamification:org:read',
+  PLATFORM_GAMIFICATION_MANAGE: 'platform.gamification.manage',
 } as const;
 
 /** Audit log action strings (F2 §07 contract values). */

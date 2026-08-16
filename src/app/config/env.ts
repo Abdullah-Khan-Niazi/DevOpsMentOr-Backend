@@ -73,6 +73,13 @@ const envSchema = z.object({
   LAB_TTL_MONITOR_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
   LAB_EXTEND_MINUTES: z.coerce.number().int().positive().default(60),
   LAB_MAX_EXTENSIONS: z.coerce.number().int().min(0).default(3),
+
+  // ─── F7 Achievements / Gamification / Certification ───────────────────────
+  // Certificate public verification page origin (BLOCKING per F7 §12: a missing
+  // value must halt boot). Used to build the shareable `certificates.certificate_url`.
+  CERTIFICATE_VERIFY_BASE_URL: z.string().min(1, 'CERTIFICATE_VERIFY_BASE_URL is required.'),
+  // Leaderboard recompute cadence (minutes) for the scheduled computation job.
+  LEADERBOARD_RECOMPUTE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
 });
 
 const parsed = envSchema.safeParse(process.env);
