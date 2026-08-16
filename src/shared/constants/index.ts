@@ -53,6 +53,15 @@ export const PERMISSIONS = {
   PROGRESS_CLASS_READ: 'progress.class.read',
   PROGRESS_ORG_READ: 'progress.org.read',
   PLATFORM_PROGRESS_READ: 'platform.progress.read',
+  // ─── F6 Labs / Execution Engine / AI Mentor (§04 permission values) ───────
+  LABS_INSTANCE_CREATE: 'labs:instance:create',
+  LABS_INSTANCE_READ: 'labs:instance:read',
+  LABS_INSTANCE_DELETE: 'labs:instance:delete',
+  LABS_AI_MENTOR_USE: 'labs:ai-mentor:use',
+  LABS_CLASS_READ: 'labs:class:read',
+  LABS_ORG_READ: 'labs:org:read',
+  PLATFORM_LABS_MANAGE: 'platform.labs.manage',
+  PLATFORM_LABS_ADMIN: 'platform.labs.admin',
 } as const;
 
 /** Audit log action strings (F2 §07 contract values). */
@@ -87,6 +96,13 @@ export const AUDIT_ACTIONS = {
   UPDATE_QUIZ: 'update_quiz',
   CREATE_QUESTION: 'create_question',
   UPDATE_QUESTION: 'update_question',
+  // ─── F6 labs admin mutations (§07 traceability) ───────────────────────────
+  CREATE_LAB: 'create_lab',
+  UPDATE_LAB: 'update_lab',
+  PUBLISH_LAB: 'publish_lab',
+  CREATE_TRACK: 'create_track',
+  UPDATE_TRACK: 'update_track',
+  TERMINATE_INSTANCE: 'terminate_instance',
 } as const;
 
 /**

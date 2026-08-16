@@ -1144,3 +1144,304 @@ export const userQuizAnswersRelations = relations(userQuizAnswers, ({ one }) => 
 export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
   user: one(users, { fields: [activityLogs.userId], references: [users.userId] }),
 }));
+
+/**
+ * `labs` — DevOps lab catalog (F6 §06 direct reuse). `lab_type` restricts the
+ * deployment to `pro_lab` (full infrastructure lab), `sherlock`
+ * (troubleshooting diagnostic lab) and `vip_lab` (premium guided environment);
+ * the SQL enum additionally carries `fortress` which is cybersecurity-domain
+ * and unused in DevOps Mentor. `is_premium` feeds the F9 entitlement gate.
+ */
+export const labs = mysqlTable(
+  'labs',
+  {
+    labId: int('lab_id').autoincrement().primaryKey(),
+    labName: varchar('lab_name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 100 }).notNull(),
+    description: text('description'),
+    difficultyId: int('difficulty_id')
+      .notNull()
+      .references(() => difficultyLevels.difficultyId),
+    categoryId: int('category_id').references(() => categories.categoryId),
+    labType: mysqlEnum('lab_type', ['pro_lab', 'fortress', 'sherlock', 'vip_lab']).notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    isPremium: boolean('is_premium').notNull().default(false),
+    estimatedHours: int('estimated_hours').notNull().default(0),
+    networkDiagramUrl: varchar('network_diagram_url', { length: 255 }),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('labs_lab_name_key').on(table.labName),
+    uniqueIndex('labs_slug_key').on(table.slug),
+    index('idx_labs_difficulty').on(table.difficultyId),
+  ],
+);
+
+/**
+ * `pro_labs` — Infrastructure lab extension (F6 §06 adaptation).
+ * `required_root_count` is adapted as the required completed assertion count;
+ * `flag_values` JSON is adapted as `{ "checkpointId": "assertionGroupId" }`
+ * checkpoint identifiers consumed server-side by the assertion engine.
+ */
+export const proLabs = mysqlTable(
+  'pro_labs',
+  {
+    proLabId: int('pro_lab_id').autoincrement().primaryKey(),
+    labId: int('lab_id')
+      .notNull()
+      .references(() => labs.labId, { onDelete: 'cascade' }),
+    networkIpRange: varchar('network_ip_range', { length: 50 }),
+    totalMachines: int('total_machines').notNull().default(0),
+    requiredRootCount: int('required_root_count').notNull().default(0),
+    flagValues: json('flag_values').$type<Record<string, string> | null>(),
+    activeUsersCount: int('active_users_count').notNull().default(0),
+  },
+  (table) => [uniqueIndex('pro_labs_lab_id_key').on(table.labId)],
+);
+
+/**
+ * `sherlocks` — Troubleshooting/diagnostic lab extension (F6 §06 adaptation).
+ * `questions` JSON holds `[{ id, text, hint? }]`; `answers` JSON holds
+ * `[{ id, answer }]` and is SERVER-SIDE ONLY: it is never returned by any
+ * API response (F6 §05 invariant 5).
+ */
+export const sherlocks = mysqlTable(
+  'sherlocks',
+  {
+    sherlockId: int('sherlock_id').autoincrement().primaryKey(),
+    labId: int('lab_id')
+      .notNull()
+      .references(() => labs.labId, { onDelete: 'cascade' }),
+    evidenceFileUrl: varchar('evidence_file_url', { length: 255 }),
+    evidenceFileSize: bigint('evidence_file_size', { mode: 'number' }),
+    fileHash: varchar('file_hash', { length: 64 }),
+    questions: json('questions').$type<Array<{ id: string; text: string; hint?: string }> | null>(),
+    answers: json('answers').$type<Array<{ id: string; answer: string }> | null>(),
+    requiredCorrectAnswers: int('required_correct_answers').notNull().default(0),
+  },
+  (table) => [uniqueIndex('sherlocks_lab_id_key').on(table.labId)],
+);
+
+/**
+ * `vpn_servers` — Lab network infrastructure pool (F6 §06 direct reuse).
+ * `region` ENUM defines the geographic pool; `current_users` is incremented
+ * atomically on assignment and decremented on teardown (F6 §05 invariants
+ * 6 and 7).
+ */
+export const vpnServers = mysqlTable(
+  'vpn_servers',
+  {
+    vpnId: int('vpn_id').autoincrement().primaryKey(),
+    serverName: varchar('server_name', { length: 100 }).notNull(),
+    serverLocation: varchar('server_location', { length: 100 }),
+    countryId: int('country_id').references(() => countries.countryId),
+    ipAddress: varchar('ip_address', { length: 15 }),
+    port: int('port').notNull().default(443),
+    region: mysqlEnum('region', ['US', 'EU', 'ASIA', 'AUSTRALIA', 'SOUTH_AMERICA', 'AFRICA'])
+      .notNull(),
+    maxUsers: int('max_users').notNull().default(100),
+    currentUsers: int('current_users').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    isMaintenance: boolean('is_maintenance').notNull().default(false),
+    loadBalancerUrl: varchar('load_balancer_url', { length: 255 }),
+    status: mysqlEnum('status', ['online', 'offline', 'degraded']).notNull().default('online'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [index('idx_vpn_region').on(table.region)],
+);
+
+/**
+ * `vpn_assignments` — User to VPN server binding (F6 §06 direct reuse).
+ * `ovpn_config_url` holds a time-limited signed download URL; ownership is
+ * always verified as `user_id = session.userId`.
+ */
+export const vpnAssignments = mysqlTable(
+  'vpn_assignments',
+  {
+    assignmentId: int('assignment_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    vpnId: int('vpn_id')
+      .notNull()
+      .references(() => vpnServers.vpnId),
+    assignedIp: varchar('assigned_ip', { length: 15 }),
+    ovpnConfigUrl: varchar('ovpn_config_url', { length: 255 }),
+    assignedAt: timestamp('assigned_at').notNull().defaultNow(),
+    expiresAt: timestamp('expires_at'),
+    isActive: boolean('is_active').notNull().default(true),
+  },
+  (table) => [index('idx_vpn_assignments_user').on(table.userId)],
+);
+
+/**
+ * `pwnbox_instances` — Browser-native lab instance (F6 §06 adaptation).
+ * Container type is Docker/Kubernetes pods: `hostname` = pod DNS,
+ * `assigned_ip` = pod cluster IP, `ssh_port` = mapped NodePort,
+ * `root_password` = ephemeral initial credential returned ONCE at provision
+ * time (F6 §05 invariants 2 and 3). Every row carries an `expires_at` TTL
+ * enforced by the TTL monitor job. The lab association is recovered from the
+ * LAB_STARTED activity event (`details.labId`); the SQL table has no
+ * `lab_id` column.
+ */
+export const pwnboxInstances = mysqlTable(
+  'pwnbox_instances',
+  {
+    instanceId: int('instance_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    vpnId: int('vpn_id')
+      .notNull()
+      .references(() => vpnServers.vpnId),
+    hostname: varchar('hostname', { length: 100 }),
+    assignedIp: varchar('assigned_ip', { length: 15 }),
+    sshPort: int('ssh_port').notNull().default(22),
+    rootPassword: varchar('root_password', { length: 255 }),
+    ramGb: int('ram_gb').notNull().default(2),
+    cpuCores: int('cpu_cores').notNull().default(2),
+    diskGb: int('disk_gb').notNull().default(20),
+    status: mysqlEnum('status', ['pending', 'running', 'stopped', 'terminated', 'error'])
+      .notNull()
+      .default('pending'),
+    startedAt: timestamp('started_at').notNull().defaultNow(),
+    expiresAt: timestamp('expires_at'),
+    terminatedAt: timestamp('terminated_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [index('idx_pi_user').on(table.userId), index('idx_pi_status').on(table.status)],
+);
+
+/**
+ * `tracks` — Learning path catalog (F6 §06 direct reuse). `total_machines`
+ * and `total_challenges` hold zero in DevOps Mentor; only `total_labs` and
+ * course counts are populated.
+ */
+export const tracks = mysqlTable(
+  'tracks',
+  {
+    trackId: int('track_id').autoincrement().primaryKey(),
+    trackName: varchar('track_name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 100 }).notNull(),
+    description: text('description'),
+    difficultyId: int('difficulty_id')
+      .notNull()
+      .references(() => difficultyLevels.difficultyId),
+    categoryId: int('category_id').references(() => categories.categoryId),
+    totalMachines: int('total_machines').notNull().default(0),
+    totalChallenges: int('total_challenges').notNull().default(0),
+    totalLabs: int('total_labs').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    isPremium: boolean('is_premium').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('tracks_track_name_key').on(table.trackName),
+    uniqueIndex('tracks_slug_key').on(table.slug),
+  ],
+);
+
+/**
+ * `track_content` — Ordered track item mapping (F6 §06 direct reuse).
+ * `content_type` is restricted to `'lab'` and `'course'` at the Zod
+ * validation layer (F6 §05 invariant 12); `machine` and `challenge` are
+ * cybersecurity-domain and rejected with 422.
+ */
+export const trackContent = mysqlTable(
+  'track_content',
+  {
+    trackId: int('track_id')
+      .notNull()
+      .references(() => tracks.trackId, { onDelete: 'cascade' }),
+    contentType: mysqlEnum('content_type', ['machine', 'challenge', 'lab', 'course']).notNull(),
+    contentId: int('content_id').notNull(),
+    displayOrder: int('display_order').notNull(),
+    required: boolean('required').notNull().default(false),
+  },
+  (table) => [
+    primaryKey({ columns: [table.trackId, table.contentType, table.contentId] }),
+    index('idx_tc_track').on(table.trackId),
+  ],
+);
+
+export const labsRelations = relations(labs, ({ one, many }) => ({
+  difficulty: one(difficultyLevels, { fields: [labs.difficultyId], references: [difficultyLevels.difficultyId] }),
+  category: one(categories, { fields: [labs.categoryId], references: [categories.categoryId] }),
+  proLab: one(proLabs, { fields: [labs.labId], references: [proLabs.labId] }),
+  sherlock: one(sherlocks, { fields: [labs.labId], references: [sherlocks.labId] }),
+  instances: many(pwnboxInstances),
+}));
+
+export const proLabsRelations = relations(proLabs, ({ one }) => ({
+  lab: one(labs, { fields: [proLabs.labId], references: [labs.labId] }),
+}));
+
+export const sherlocksRelations = relations(sherlocks, ({ one }) => ({
+  lab: one(labs, { fields: [sherlocks.labId], references: [labs.labId] }),
+}));
+
+export const vpnServersRelations = relations(vpnServers, ({ one, many }) => ({
+  country: one(countries, { fields: [vpnServers.countryId], references: [countries.countryId] }),
+  assignments: many(vpnAssignments),
+}));
+
+export const vpnAssignmentsRelations = relations(vpnAssignments, ({ one }) => ({
+  user: one(users, { fields: [vpnAssignments.userId], references: [users.userId] }),
+  server: one(vpnServers, { fields: [vpnAssignments.vpnId], references: [vpnServers.vpnId] }),
+}));
+
+export const pwnboxInstancesRelations = relations(pwnboxInstances, ({ one }) => ({
+  user: one(users, { fields: [pwnboxInstances.userId], references: [users.userId] }),
+  server: one(vpnServers, { fields: [pwnboxInstances.vpnId], references: [vpnServers.vpnId] }),
+}));
+
+export const tracksRelations = relations(tracks, ({ one, many }) => ({
+  difficulty: one(difficultyLevels, { fields: [tracks.difficultyId], references: [difficultyLevels.difficultyId] }),
+  category: one(categories, { fields: [tracks.categoryId], references: [categories.categoryId] }),
+  content: many(trackContent),
+}));
+
+export const trackContentRelations = relations(trackContent, ({ one }) => ({
+  track: one(tracks, { fields: [trackContent.trackId], references: [tracks.trackId] }),
+}));
+
+/**
+ * `subscriptions` — Plan entitlement store (F9 domain; read-only dependency
+ * of F6). F6 resolves the learner's plan tier through EntitlementService for
+ * the premium-lab gate and the instance TTL. F9 owns all writes.
+ */
+export const subscriptions = mysqlTable(
+  'subscriptions',
+  {
+    subscriptionId: int('subscription_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    organizationId: int('organization_id').references(() => organizations.organizationId, {
+      onDelete: 'cascade',
+    }),
+    planName: varchar('plan_name', { length: 50 }).notNull(),
+    planType: mysqlEnum('plan_type', ['free', 'premium', 'enterprise', 'student']).notNull(),
+    stripeSubscriptionId: varchar('stripe_subscription_id', { length: 255 }),
+    startDate: timestamp('start_date').notNull(),
+    endDate: timestamp('end_date'),
+    autoRenew: boolean('auto_renew').notNull().default(true),
+    isActive: boolean('is_active').notNull().default(true),
+    cancelledAt: timestamp('cancelled_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [index('idx_sub_user').on(table.userId), index('idx_sub_active').on(table.isActive)],
+);
+
+export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
+  user: one(users, { fields: [subscriptions.userId], references: [users.userId] }),
+  organization: one(organizations, {
+    fields: [subscriptions.organizationId],
+    references: [organizations.organizationId],
+  }),
+}));

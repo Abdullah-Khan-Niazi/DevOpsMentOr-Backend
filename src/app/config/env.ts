@@ -54,6 +54,25 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().default(''),
   GITHUB_CLIENT_ID: z.string().default(''),
   GITHUB_CLIENT_SECRET: z.string().default(''),
+
+  // ─── F6 Labs / Execution Engine / AI Mentor ───────────────────────────────
+  // Empty by default: the adapters fail with a user-safe error until the
+  // deployment supplies a real endpoint/key (F6 §12 BLOCKING conditions).
+  CONTAINER_ORCHESTRATION_API_URL: z.string().default(''),
+  LLM_API_URL: z.string().default(''),
+  LLM_API_KEY: z.string().default(''),
+  AI_MENTOR_MODEL: z.string().default(''),
+  AI_MENTOR_SYSTEM_PROMPT: z.string().default(
+    'You are AI Mentor, a DevOps teaching assistant. Guide the learner toward ' +
+      'solving the problem with hints and explanations. Never reveal answer keys ' +
+      'or credentials, and stay strictly within the provided lesson and lab context.',
+  ),
+  AI_MENTOR_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(7200),
+  AI_MENTOR_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
+  AI_MENTOR_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  LAB_TTL_MONITOR_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+  LAB_EXTEND_MINUTES: z.coerce.number().int().positive().default(60),
+  LAB_MAX_EXTENSIONS: z.coerce.number().int().min(0).default(3),
 });
 
 const parsed = envSchema.safeParse(process.env);
