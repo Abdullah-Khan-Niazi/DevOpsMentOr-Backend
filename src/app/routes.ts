@@ -11,6 +11,10 @@ import { adminCurriculumRoutes, curriculumRoutes } from '../features/curriculum'
 import { adminProgressRouter, progressRouter } from '../features/progress';
 import { adminLabsRouter, labsRouter } from '../features/labs';
 import { adminGamificationRouter, gamificationRouter } from '../features/gamification';
+import { adminNotificationsRouter, notificationsRouter } from '../features/notifications';
+import { adminModerationRouter, communityRouter } from '../features/community';
+import { adminOperationsRouter, operationsRouter } from '../features/operations';
+import { adminAnalyticsRouter } from '../features/analytics';
 
 export function registerRoutes(): Router {
   const router = Router();
@@ -34,6 +38,13 @@ export function registerRoutes(): Router {
   router.use('/admin', adminLabsRouter);
   router.use(gamificationRouter);
   router.use('/admin', adminGamificationRouter);
+  router.use(notificationsRouter);
+  router.use('/admin', adminNotificationsRouter);
+  router.use(communityRouter);
+  router.use('/admin', adminModerationRouter);
+  router.use(operationsRouter);
+  router.use('/admin', adminOperationsRouter);
+  router.use('/admin', adminAnalyticsRouter);
 
   return router;
 }
