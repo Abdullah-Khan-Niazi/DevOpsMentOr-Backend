@@ -1802,3 +1802,479 @@ export const seasonLeaderboardsRelations = relations(seasonLeaderboards, ({ one 
   season: one(seasons, { fields: [seasonLeaderboards.seasonId], references: [seasons.seasonId] }),
   user: one(users, { fields: [seasonLeaderboards.userId], references: [users.userId] }),
 }));
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * F8 — Analytics, Notifications & Platform Operations (§06 embedded DB mapping).
+ * Tables mirror CREATE TABLE statements in devops_db.sql verbatim; no schema
+ * alteration was required. Cybersecurity-domain enum values on reused tables
+ * (`machine`, `challenge`, `writeup`, `forum`, ...) are rejected at the Zod
+ * validation layer per AC-09/AC-10 and permanently unused in DevOps Mentor.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * `notifications` — In-app notification store (F8 §06 direct reuse). The
+ * `type` ENUM mirrors the SQL source verbatim; `is_dismissed` rows are hidden
+ * from the inbox but never deleted. Read/dismiss ownership is always enforced
+ * as `user_id = session.userId` (AC-14 IDOR mitigation).
+ */
+export const notifications = mysqlTable(
+  'notifications',
+  {
+    notificationId: int('notification_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    type: mysqlEnum('type', [
+      'system',
+      'achievement',
+      'badge',
+      'mention',
+      'comment',
+      'like',
+      'follow',
+      'team_invite',
+      'ctf',
+      'event',
+      'security',
+    ]).notNull(),
+    title: varchar('title', { length: 255 }).notNull(),
+    message: text('message'),
+    linkUrl: varchar('link_url', { length: 255 }),
+    iconUrl: varchar('icon_url', { length: 255 }),
+    isRead: boolean('is_read').notNull().default(false),
+    isDismissed: boolean('is_dismissed').notNull().default(false),
+    readAt: timestamp('read_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_user_read').on(table.userId, table.isRead),
+    index('idx_created').on(table.createdAt),
+  ],
+);
+
+/**
+ * `notification_preferences` — Per-user, per-type channel toggles (F8 §06
+ * direct reuse). Composite PK (user_id, type). `NotificationService.dispatch`
+ * reads this table before every INSERT/email dispatch (invariant 1).
+ */
+export const notificationPreferences = mysqlTable(
+  'notification_preferences',
+  {
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    type: varchar('type', { length: 50 }).notNull(),
+    emailEnabled: boolean('email_enabled').notNull().default(true),
+    pushEnabled: boolean('push_enabled').notNull().default(true),
+    inAppEnabled: boolean('in_app_enabled').notNull().default(true),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.type] })],
+);
+
+/**
+ * `announcements` — Platform announcement publishing (F8 §06 direct reuse).
+ * `priority` drives banner styling; expired rows (`expires_at < NOW()`) are
+ * excluded from every learner-facing list (AC-13). `is_published = FALSE`
+ * rows are draft state visible only to platform admins.
+ */
+export const announcements = mysqlTable(
+  'announcements',
+  {
+    announcementId: int('announcement_id').autoincrement().primaryKey(),
+    title: varchar('title', { length: 255 }).notNull(),
+    content: longtext('content').notNull(),
+    announcementType: mysqlEnum('announcement_type', [
+      'general',
+      'maintenance',
+      'feature',
+      'security',
+      'event',
+    ]).notNull(),
+    priority: mysqlEnum('priority', ['low', 'medium', 'high', 'critical'])
+      .notNull()
+      .default('medium'),
+    isPublished: boolean('is_published').notNull().default(false),
+    publishedAt: timestamp('published_at'),
+    expiresAt: timestamp('expires_at'),
+    createdBy: int('created_by')
+      .notNull()
+      .references(() => users.userId),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    index('idx_published').on(table.isPublished, table.publishedAt),
+    index('idx_expires').on(table.expiresAt),
+  ],
+);
+
+/**
+ * `announcement_reads` — Per-user announcement read tracking (F8 §06 direct
+ * reuse). Composite PK (announcement_id, user_id) makes mark-read idempotent.
+ */
+export const announcementReads = mysqlTable(
+  'announcement_reads',
+  {
+    announcementId: int('announcement_id')
+      .notNull()
+      .references(() => announcements.announcementId, { onDelete: 'cascade' }),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    readAt: timestamp('read_at').notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.announcementId, table.userId] })],
+);
+
+/**
+ * `events` — Webinar/workshop/competition catalog (F8 §06 direct reuse).
+ * `max_attendees = 0` means unlimited capacity; `is_active = FALSE` hides the
+ * event from public browse lists.
+ */
+export const events = mysqlTable(
+  'events',
+  {
+    eventId: int('event_id').autoincrement().primaryKey(),
+    title: varchar('title', { length: 255 }).notNull(),
+    description: text('description'),
+    location: varchar('location', { length: 255 }),
+    eventType: mysqlEnum('event_type', [
+      'webinar',
+      'workshop',
+      'competition',
+      'conference',
+      'meetup',
+    ]).notNull(),
+    startTime: timestamp('start_time').notNull(),
+    endTime: timestamp('end_time'),
+    timezone: varchar('timezone', { length: 50 }),
+    maxAttendees: int('max_attendees').notNull().default(0),
+    isFree: boolean('is_free').notNull().default(true),
+    price: decimal('price', { precision: 10, scale: 2 }).notNull().default('0'),
+    registrationDeadline: timestamp('registration_deadline'),
+    bannerUrl: varchar('banner_url', { length: 255 }),
+    isActive: boolean('is_active').notNull().default(true),
+    createdBy: int('created_by')
+      .notNull()
+      .references(() => users.userId),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [index('idx_dates').on(table.startTime, table.endTime)],
+);
+
+/**
+ * `event_registrations` — Event attendee records (F8 §06 direct reuse).
+ * The SQL `unique_event_user` key makes duplicate registration impossible;
+ * the service pre-checks it and returns 409 (AC-05). At capacity the row is
+ * inserted with `status = 'waitlisted'` instead of `'registered'`.
+ */
+export const eventRegistrations = mysqlTable(
+  'event_registrations',
+  {
+    registrationId: int('registration_id').autoincrement().primaryKey(),
+    eventId: int('event_id')
+      .notNull()
+      .references(() => events.eventId, { onDelete: 'cascade' }),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    attendeeName: varchar('attendee_name', { length: 100 }),
+    attendeeEmail: varchar('attendee_email', { length: 255 }),
+    company: varchar('company', { length: 100 }),
+    dietaryRestrictions: text('dietary_restrictions'),
+    specialRequirements: text('special_requirements'),
+    status: mysqlEnum('status', [
+      'registered',
+      'attended',
+      'cancelled',
+      'waitlisted',
+    ])
+      .notNull()
+      .default('registered'),
+    registeredAt: timestamp('registered_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('event_registrations_event_user_key').on(table.eventId, table.userId),
+  ],
+);
+
+/**
+ * `reviews` — Course and lab star ratings (F8 §06 adapted reuse). The SQL ENUM
+ * carries cybersecurity-domain values (`machine`, `challenge`, `writeup`);
+ * the Zod layer restricts `target_type` to `('course', 'lab')` in DevOps
+ * Mentor (invariant 2). The table has NO unique key on (user, target), so the
+ * duplicate-review check is an application-level SELECT COUNT before INSERT
+ * returning 409 (AC-02).
+ */
+export const reviews = mysqlTable(
+  'reviews',
+  {
+    reviewId: int('review_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    targetType: mysqlEnum('target_type', [
+      'machine',
+      'challenge',
+      'course',
+      'lab',
+      'writeup',
+    ]).notNull(),
+    targetId: int('target_id').notNull(),
+    rating: int('rating'),
+    title: varchar('title', { length: 255 }),
+    content: text('content'),
+    isApproved: boolean('is_approved').notNull().default(false),
+    helpfulCount: int('helpful_count').notNull().default(0),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [index('idx_target').on(table.targetType, table.targetId)],
+);
+
+/**
+ * `comments` — Threaded comments (F8 §06 adapted reuse). The SQL ENUM carries
+ * `forum`/`machine`/`challenge`/`writeup`; the Zod layer restricts
+ * `target_type` to `('course', 'lab', 'news')` (AC-10). `is_hidden = TRUE`
+ * rows are excluded from every non-admin list (AC-11); `parent_comment_id`
+ * validates against the same (target_type, target_id) pair server-side.
+ */
+export const comments = mysqlTable(
+  'comments',
+  {
+    commentId: int('comment_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    parentCommentId: int('parent_comment_id').references(
+      (): AnyMySqlColumn => comments.commentId,
+      { onDelete: 'cascade' },
+    ),
+    targetType: mysqlEnum('target_type', [
+      'machine',
+      'challenge',
+      'writeup',
+      'forum',
+      'course',
+      'lab',
+      'news',
+    ]).notNull(),
+    targetId: int('target_id').notNull(),
+    content: text('content').notNull(),
+    isPinned: boolean('is_pinned').notNull().default(false),
+    isHidden: boolean('is_hidden').notNull().default(false),
+    likesCount: int('likes_count').notNull().default(0),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    index('idx_target').on(table.targetType, table.targetId),
+    index('idx_parent').on(table.parentCommentId),
+  ],
+);
+
+/**
+ * `likes` — Reactions on comments and reviews (F8 §06 adapted reuse). The SQL
+ * `unique_user_target` key enforces one like per (user, target); a duplicate
+ * attempt returns 409 and DELETE removes the row (invariant 6). `like_type`
+ * mirrors the SQL ENUM verbatim.
+ */
+export const likes = mysqlTable(
+  'likes',
+  {
+    likeId: int('like_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    targetType: mysqlEnum('target_type', [
+      'comment',
+      'review',
+      'writeup',
+      'forum_post',
+      'solution',
+      'machine',
+    ]).notNull(),
+    targetId: int('target_id').notNull(),
+    likeType: mysqlEnum('like_type', ['like', 'love', 'useful', 'funny'])
+      .notNull()
+      .default('like'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('likes_unique_user_target').on(table.userId, table.targetType, table.targetId)],
+);
+
+/**
+ * `reports` — Content moderation queue (F8 §06 adapted reuse). The SQL ENUM
+ * carries `machine`/`writeup`/`challenge`; the Zod layer restricts
+ * `target_type` to `('user', 'comment', 'review', 'course', 'lab')` (AC-09).
+ * `status` follows the state machine pending → reviewing → resolved/dismissed.
+ * The report queue is readable only by `platform.content.moderate` holders.
+ */
+export const reports = mysqlTable(
+  'reports',
+  {
+    reportId: int('report_id').autoincrement().primaryKey(),
+    reporterUserId: int('reporter_user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    reportedUserId: int('reported_user_id').references(() => users.userId, {
+      onDelete: 'cascade',
+    }),
+    targetType: mysqlEnum('target_type', [
+      'user',
+      'comment',
+      'review',
+      'machine',
+      'writeup',
+      'challenge',
+      'course',
+    ]).notNull(),
+    targetId: int('target_id').notNull(),
+    reportReason: varchar('report_reason', { length: 100 }).notNull(),
+    description: text('description'),
+    status: mysqlEnum('status', ['pending', 'reviewing', 'resolved', 'dismissed'])
+      .notNull()
+      .default('pending'),
+    resolvedBy: int('resolved_by').references(() => users.userId, { onDelete: 'set null' }),
+    resolvedAt: timestamp('resolved_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    index('idx_status').on(table.status),
+    index('idx_target').on(table.targetType, table.targetId),
+  ],
+);
+
+/**
+ * `email_templates` — Transactional email template store (F8 §06 direct
+ * reuse). `placeholders` JSON lists the substitution keys (e.g.
+ * `["{{userName}}","{{otpCode}}"]`). Templates with `is_active = FALSE` are
+ * silently skipped by the dispatch adapter (invariant 13).
+ */
+export const emailTemplates = mysqlTable(
+  'email_templates',
+  {
+    templateId: int('template_id').autoincrement().primaryKey(),
+    templateKey: varchar('template_key', { length: 50 }).notNull(),
+    name: varchar('name', { length: 100 }).notNull(),
+    subject: varchar('subject', { length: 255 }).notNull(),
+    bodyHtml: longtext('body_html').notNull(),
+    bodyText: text('body_text'),
+    placeholders: json('placeholders').$type<string[] | null>(),
+    isActive: boolean('is_active').notNull().default(true),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('email_templates_template_key_key').on(table.templateKey)],
+);
+
+/**
+ * `media` — Media metadata attached to `files` rows (F8 §06 direct reuse).
+ * One `files` row may carry at most one media extension row; the FK cascade
+ * deletes the media row when the file is removed.
+ */
+export const media = mysqlTable(
+  'media',
+  {
+    mediaId: int('media_id').autoincrement().primaryKey(),
+    fileId: int('file_id')
+      .notNull()
+      .references(() => files.fileId, { onDelete: 'cascade' }),
+    altText: varchar('alt_text', { length: 255 }),
+    width: int('width'),
+    height: int('height'),
+    durationSeconds: int('duration_seconds'),
+    thumbnailUrl: varchar('thumbnail_url', { length: 255 }),
+  },
+  (table) => [index('idx_media_file').on(table.fileId)],
+);
+
+/**
+ * `downloads` — File download tracking (F8 §06 direct reuse). Every download
+ * by an authenticated user INSERTs a row; `files.downloads_count` is
+ * incremented atomically in the same operation (invariant 12).
+ */
+export const downloads = mysqlTable(
+  'downloads',
+  {
+    downloadId: int('download_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    fileId: int('file_id')
+      .notNull()
+      .references(() => files.fileId, { onDelete: 'cascade' }),
+    ipAddress: varchar('ip_address', { length: 45 }),
+    userAgent: text('user_agent'),
+    downloadedAt: timestamp('downloaded_at').notNull().defaultNow(),
+  },
+  (table) => [index('idx_user_file').on(table.userId, table.fileId)],
+);
+
+export const notificationsRelations = relations(notifications, ({ one }) => ({
+  user: one(users, { fields: [notifications.userId], references: [users.userId] }),
+}));
+
+export const notificationPreferencesRelations = relations(notificationPreferences, ({ one }) => ({
+  user: one(users, { fields: [notificationPreferences.userId], references: [users.userId] }),
+}));
+
+export const announcementsRelations = relations(announcements, ({ one, many }) => ({
+  creator: one(users, { fields: [announcements.createdBy], references: [users.userId] }),
+  reads: many(announcementReads),
+}));
+
+export const announcementReadsRelations = relations(announcementReads, ({ one }) => ({
+  announcement: one(announcements, {
+    fields: [announcementReads.announcementId],
+    references: [announcements.announcementId],
+  }),
+  user: one(users, { fields: [announcementReads.userId], references: [users.userId] }),
+}));
+
+export const eventsRelations = relations(events, ({ one, many }) => ({
+  creator: one(users, { fields: [events.createdBy], references: [users.userId] }),
+  registrations: many(eventRegistrations),
+}));
+
+export const eventRegistrationsRelations = relations(eventRegistrations, ({ one }) => ({
+  event: one(events, { fields: [eventRegistrations.eventId], references: [events.eventId] }),
+  user: one(users, { fields: [eventRegistrations.userId], references: [users.userId] }),
+}));
+
+export const reviewsRelations = relations(reviews, ({ one }) => ({
+  user: one(users, { fields: [reviews.userId], references: [users.userId] }),
+}));
+
+export const commentsRelations = relations(comments, ({ one, many }) => ({
+  user: one(users, { fields: [comments.userId], references: [users.userId] }),
+  parent: one(comments, {
+    fields: [comments.parentCommentId],
+    references: [comments.commentId],
+    relationName: 'comment_parent',
+  }),
+  replies: many(comments, { relationName: 'comment_parent' }),
+}));
+
+export const likesRelations = relations(likes, ({ one }) => ({
+  user: one(users, { fields: [likes.userId], references: [users.userId] }),
+}));
+
+export const reportsRelations = relations(reports, ({ one }) => ({
+  reporter: one(users, { fields: [reports.reporterUserId], references: [users.userId] }),
+  reportedUser: one(users, { fields: [reports.reportedUserId], references: [users.userId] }),
+  resolver: one(users, { fields: [reports.resolvedBy], references: [users.userId] }),
+}));
+
+export const emailTemplatesRelations = relations(emailTemplates, () => ({}));
+
+export const mediaRelations = relations(media, ({ one }) => ({
+  file: one(files, { fields: [media.fileId], references: [files.fileId] }),
+}));
+
+export const downloadsRelations = relations(downloads, ({ one }) => ({
+  user: one(users, { fields: [downloads.userId], references: [users.userId] }),
+  file: one(files, { fields: [downloads.fileId], references: [files.fileId] }),
+}));

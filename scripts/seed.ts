@@ -8,6 +8,7 @@ import {
   db,
   difficultyLevels,
   disconnectDatabase,
+  emailTemplates,
   permissions,
   rolePermissions,
   roles,
@@ -100,6 +101,16 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.GAMIFICATION_CLASS_READ, module: 'gamification', description: 'Read leaderboards of assigned classes' },
   { name: PERMISSIONS.GAMIFICATION_ORG_READ, module: 'gamification', description: 'Read leaderboards of own organization' },
   { name: PERMISSIONS.PLATFORM_GAMIFICATION_MANAGE, module: 'gamification', description: 'Manage badges, achievements, seasons, points adjustments and certificate invalidation' },
+  // ─── F8 Analytics / Notifications / Platform Operations ──────────────────
+  { name: PERMISSIONS.NOTIFICATIONS_INBOX_READ, module: 'notifications', description: 'Read and manage own notification inbox' },
+  { name: PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE, module: 'notifications', description: 'Update own notification channel preferences' },
+  { name: PERMISSIONS.CONTENT_REVIEW_CREATE, module: 'community', description: 'Submit course and lab reviews' },
+  { name: PERMISSIONS.CONTENT_COMMENT_CREATE, module: 'community', description: 'Post comments and replies on courses, lessons and labs' },
+  { name: PERMISSIONS.CONTENT_LIKE_CREATE, module: 'community', description: 'React with likes on comments and reviews' },
+  { name: PERMISSIONS.CONTENT_REPORT_CREATE, module: 'community', description: 'Submit content moderation reports' },
+  { name: PERMISSIONS.EVENTS_REGISTER, module: 'operations', description: 'Register for and cancel platform events' },
+  { name: PERMISSIONS.PLATFORM_CONTENT_MODERATE, module: 'community', description: 'Approve reviews, pin or hide comments, resolve and dismiss reports' },
+  { name: PERMISSIONS.PLATFORM_ANALYTICS_READ, module: 'analytics', description: 'Read the platform analytics dashboard (aggregated metrics only)' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -142,6 +153,13 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.GAMIFICATION_PROFILE_READ,
     PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
     PERMISSIONS.GAMIFICATION_ORG_READ,
+    PERMISSIONS.NOTIFICATIONS_INBOX_READ,
+    PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE,
+    PERMISSIONS.CONTENT_REVIEW_CREATE,
+    PERMISSIONS.CONTENT_COMMENT_CREATE,
+    PERMISSIONS.CONTENT_LIKE_CREATE,
+    PERMISSIONS.CONTENT_REPORT_CREATE,
+    PERMISSIONS.EVENTS_REGISTER,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -174,6 +192,13 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.GAMIFICATION_PROFILE_READ,
     PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
     PERMISSIONS.GAMIFICATION_CLASS_READ,
+    PERMISSIONS.NOTIFICATIONS_INBOX_READ,
+    PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE,
+    PERMISSIONS.CONTENT_REVIEW_CREATE,
+    PERMISSIONS.CONTENT_COMMENT_CREATE,
+    PERMISSIONS.CONTENT_LIKE_CREATE,
+    PERMISSIONS.CONTENT_REPORT_CREATE,
+    PERMISSIONS.EVENTS_REGISTER,
   ],
   [ROLES.ORG_STUDENT]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -199,6 +224,13 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.LABS_AI_MENTOR_USE,
     PERMISSIONS.GAMIFICATION_PROFILE_READ,
     PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
+    PERMISSIONS.NOTIFICATIONS_INBOX_READ,
+    PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE,
+    PERMISSIONS.CONTENT_REVIEW_CREATE,
+    PERMISSIONS.CONTENT_COMMENT_CREATE,
+    PERMISSIONS.CONTENT_LIKE_CREATE,
+    PERMISSIONS.CONTENT_REPORT_CREATE,
+    PERMISSIONS.EVENTS_REGISTER,
   ],
   [ROLES.INDIVIDUAL_LEARNER]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -217,6 +249,13 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.PROGRESS_SELF_WRITE,
     PERMISSIONS.GAMIFICATION_PROFILE_READ,
     PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
+    PERMISSIONS.NOTIFICATIONS_INBOX_READ,
+    PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE,
+    PERMISSIONS.CONTENT_REVIEW_CREATE,
+    PERMISSIONS.CONTENT_COMMENT_CREATE,
+    PERMISSIONS.CONTENT_LIKE_CREATE,
+    PERMISSIONS.CONTENT_REPORT_CREATE,
+    PERMISSIONS.EVENTS_REGISTER,
   ],
   [ROLES.GUEST]: [],
 };
@@ -328,6 +367,72 @@ export const systemSettingSeeds = [
     description: 'Current platform build version. Read-only.',
     isEditable: false,
   },
+  // ─── F8 platform operations settings (SCR-F8-14) ─────────────────────────
+  {
+    settingKey: 'analytics.default_days',
+    settingValue: { value: 30 },
+    groupName: 'analytics',
+    description: 'Default date range in days for analytics trend charts.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'analytics.poll_interval_seconds',
+    settingValue: { value: 60 },
+    groupName: 'analytics',
+    description: 'Notification bell polling interval in seconds.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'reports.reason_categories',
+    settingValue: {
+      value: ['spam', 'harassment', 'inappropriate_content', 'false_information', 'copyright_violation', 'other'],
+    },
+    groupName: 'moderation',
+    description: 'Allowed report reason categories for the report modal.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'platform.notifications.opt_out_all',
+    settingValue: { value: false },
+    groupName: 'notifications',
+    description: 'Master switch disabling all non-critical platform notifications.',
+    isEditable: true,
+  },
+] as const;
+
+/**
+ * F8 transactional email templates (SCR-F8-13). Placeholders follow the
+ * `{{camelCase}}` convention consumed by the EmailAdapter substitution engine.
+ */
+export const emailTemplateSeeds = [
+  {
+    templateKey: 'notification_generic',
+    name: 'Platform notification',
+    subject: '{{appName}} notification',
+    bodyHtml: '<p>Hi {{userName}},</p><p>{{message}}</p>',
+    bodyText: 'Hi {{userName}},\n\n{{message}}',
+    placeholders: ['{{userName}}', '{{message}}'],
+    isActive: true,
+  },
+  {
+    templateKey: 'event_registration_confirmation',
+    name: 'Event registration confirmation',
+    subject: 'You are registered for {{eventTitle}}',
+    bodyHtml:
+      '<p>Hi {{userName}},</p><p>Your registration for <strong>{{eventTitle}}</strong> is confirmed.</p><p>Starts: {{eventStart}}</p>',
+    bodyText: 'Hi {{userName}},\n\nYour registration for {{eventTitle}} is confirmed.\nStarts: {{eventStart}}',
+    placeholders: ['{{userName}}', '{{eventTitle}}', '{{eventStart}}'],
+    isActive: true,
+  },
+  {
+    templateKey: 'announcement_notice',
+    name: 'Announcement notice',
+    subject: '{{announcementTitle}}',
+    bodyHtml: '<p>Hi {{userName}},</p><p>{{announcementContent}}</p>',
+    bodyText: 'Hi {{userName}},\n\n{{announcementContent}}',
+    placeholders: ['{{userName}}', '{{announcementTitle}}', '{{announcementContent}}'],
+    isActive: true,
+  },
 ] as const;
 
 async function seedSkillsCatalog(): Promise<void> {
@@ -366,6 +471,23 @@ async function seedSystemSettings(): Promise<void> {
   const settings = await db.select().from(systemSettings);
   // eslint-disable-next-line no-console
   console.log(`System settings seeded (${settings.length} rows).`);
+}
+
+/** F8: seed the transactional email template catalog (idempotent). */
+async function seedEmailTemplates(): Promise<void> {
+  for (const seed of emailTemplateSeeds) {
+    const existing = await db.query.emailTemplates.findFirst({
+      where: eq(emailTemplates.templateKey, seed.templateKey),
+    });
+    if (existing) {
+      continue;
+    }
+    await db.insert(emailTemplates).values(seed);
+  }
+
+  const count = await db.$count(emailTemplates);
+  // eslint-disable-next-line no-console
+  console.log(`Email templates seeded (${count} rows).`);
 }
 
 async function seedCountriesIfMissing(): Promise<void> {
@@ -577,6 +699,7 @@ async function main(): Promise<void> {
   await seedCurriculumCatalog(adminId);
   await seedSkillsCatalog();
   await seedSystemSettings();
+  await seedEmailTemplates();
   await seedCountriesIfMissing();
 
   // eslint-disable-next-line no-console

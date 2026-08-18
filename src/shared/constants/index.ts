@@ -68,6 +68,16 @@ export const PERMISSIONS = {
   GAMIFICATION_CLASS_READ: 'gamification:class:read',
   GAMIFICATION_ORG_READ: 'gamification:org:read',
   PLATFORM_GAMIFICATION_MANAGE: 'platform.gamification.manage',
+  // ─── F8 Analytics / Notifications / Platform Operations (§04 permission values) ─
+  NOTIFICATIONS_INBOX_READ: 'notifications:inbox:read',
+  NOTIFICATIONS_PREFERENCES_WRITE: 'notifications:preferences:write',
+  CONTENT_REVIEW_CREATE: 'content:review:create',
+  CONTENT_COMMENT_CREATE: 'content:comment:create',
+  CONTENT_LIKE_CREATE: 'content:like:create',
+  CONTENT_REPORT_CREATE: 'content:report:create',
+  EVENTS_REGISTER: 'events:register',
+  PLATFORM_CONTENT_MODERATE: 'platform.content.moderate',
+  PLATFORM_ANALYTICS_READ: 'platform.analytics.read',
 } as const;
 
 /** Audit log action strings (F2 §07 contract values). */
@@ -109,6 +119,20 @@ export const AUDIT_ACTIONS = {
   CREATE_TRACK: 'create_track',
   UPDATE_TRACK: 'update_track',
   TERMINATE_INSTANCE: 'terminate_instance',
+  // ─── F8 platform operations admin mutations (§07 traceability) ────────────
+  CREATE_ANNOUNCEMENT: 'create_announcement',
+  UPDATE_ANNOUNCEMENT: 'update_announcement',
+  PUBLISH_ANNOUNCEMENT: 'publish_announcement',
+  CREATE_EVENT: 'create_event',
+  UPDATE_EVENT: 'update_event',
+  APPROVE_REVIEW: 'approve_review',
+  DELETE_REVIEW: 'delete_review',
+  PIN_COMMENT: 'pin_comment',
+  HIDE_COMMENT: 'hide_comment',
+  RESOLVE_REPORT: 'resolve_report',
+  DISMISS_REPORT: 'dismiss_report',
+  UPDATE_EMAIL_TEMPLATE: 'update_email_template',
+  UPLOAD_FILE: 'upload_file',
 } as const;
 
 /**
