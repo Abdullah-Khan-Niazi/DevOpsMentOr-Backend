@@ -8,42 +8,35 @@ function makeRepo(): Mocked<EntitlementServiceDeps['repo']> {
   return { findLabById: vi.fn(async () => null) };
 }
 
-/** Fake drizzle chain: select().from().where().orderBy().limit() */
-function planChain(rows: Array<{ planType: string }>) {
-  return {
-    select: vi.fn(() => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () => ({ limit: () => Promise.resolve(rows) }),
-        }),
-      }),
-    })),
-  };
-}
-
-vi.mock('../../src/app/database', () => ({
-  db: {
-    select: vi.fn(),
+vi.mock('../../src/features/billing/services/entitlement.service', () => ({
+  entitlementService: {
+    getUserPlanType: vi.fn(async () => 'free'),
+    assertLabAccess: vi.fn(async () => undefined),
   },
 }));
 
-import { db } from '../../src/app/database';
+import { entitlementService as billingEntitlementService } from '../../src/features/billing/services/entitlement.service';
 
-describe('F6 EntitlementService (F9 runtime gate seam)', () => {
+const mockedBillingEntitlement = billingEntitlementService as unknown as {
+  getUserPlanType: ReturnType<typeof vi.fn>;
+  assertLabAccess: ReturnType<typeof vi.fn>;
+};
+
+describe('F6 EntitlementService (F9 gate seam)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedBillingEntitlement.getUserPlanType.mockResolvedValue('free');
+    mockedBillingEntitlement.assertLabAccess.mockResolvedValue(undefined);
   });
 
-  it('resolves the plan tier from the active subscription row', async () => {
-    const chain = planChain([{ planType: 'enterprise' }]);
-    (db.select as ReturnType<typeof vi.fn>).mockImplementation(chain.select);
+  it('resolves the plan tier from the F9 entitlement service', async () => {
+    mockedBillingEntitlement.getUserPlanType.mockResolvedValue('enterprise');
     const service = new EntitlementService({ repo: makeRepo() });
     await expect(service.getPlanTier(7)).resolves.toBe('enterprise');
+    expect(mockedBillingEntitlement.getUserPlanType).toHaveBeenCalledWith(7);
   });
 
-  it('defaults to free when no active subscription exists', async () => {
-    const chain = planChain([]);
-    (db.select as ReturnType<typeof vi.fn>).mockImplementation(chain.select);
+  it('defaults to free when the F9 service reports no active subscription', async () => {
     const service = new EntitlementService({ repo: makeRepo() });
     await expect(service.getPlanTier(7)).resolves.toBe('free');
   });
@@ -56,35 +49,44 @@ describe('F6 EntitlementService (F9 runtime gate seam)', () => {
       ['premium', 4],
       ['enterprise', 8],
     ] as const) {
-      const chain = planChain([{ planType: plan }]);
-      (db.select as ReturnType<typeof vi.fn>).mockImplementation(chain.select);
+      mockedBillingEntitlement.getUserPlanType.mockResolvedValue(plan);
       await expect(service.getLabTtlHours(7)).resolves.toBe(hours);
+    }
+  });
+
+  it('maps tiers to extension limits: free 1, student 3, premium 3, enterprise 10', async () => {
+    const service = new EntitlementService({ repo: makeRepo() });
+    for (const [plan, limit] of [
+      ['free', 1],
+      ['student', 3],
+      ['premium', 3],
+      ['enterprise', 10],
+    ] as const) {
+      mockedBillingEntitlement.getUserPlanType.mockResolvedValue(plan);
+      await expect(service.getExtensionLimit(7)).resolves.toBe(limit);
     }
   });
 
   it('denies 403 on premium labs for free-tier learners; allows paid tiers', async () => {
     const repo = makeRepo();
-    repo.findLabById.mockResolvedValue({
-      labId: 1,
-      isPremium: true,
-    } as never);
+    repo.findLabById.mockResolvedValue({ labId: 1, isPremium: true } as never);
     const service = new EntitlementService({ repo });
 
-    const chain = planChain([]);
-    (db.select as ReturnType<typeof vi.fn>).mockImplementation(chain.select);
+    mockedBillingEntitlement.assertLabAccess.mockRejectedValue(
+      new ForbiddenError('This lab requires a premium subscription.'),
+    );
     await expect(service.assertLabAccess(7, 1)).rejects.toThrow(ForbiddenError);
+    expect(mockedBillingEntitlement.assertLabAccess).toHaveBeenCalledWith(7, 1);
 
-    const paid = planChain([{ planType: 'premium' }]);
-    (db.select as ReturnType<typeof vi.fn>).mockImplementation(paid.select);
+    mockedBillingEntitlement.assertLabAccess.mockResolvedValue(undefined);
     await expect(service.assertLabAccess(7, 1)).resolves.toBeUndefined();
   });
 
-  it('skips the gate for non-premium labs even without a subscription', async () => {
+  it('skips the gate for non-premium labs without consulting the F9 service', async () => {
     const repo = makeRepo();
     repo.findLabById.mockResolvedValue({ labId: 2, isPremium: false } as never);
     const service = new EntitlementService({ repo });
-    const chain = planChain([]);
-    (db.select as ReturnType<typeof vi.fn>).mockImplementation(chain.select);
     await expect(service.assertLabAccess(7, 2)).resolves.toBeUndefined();
+    expect(mockedBillingEntitlement.assertLabAccess).not.toHaveBeenCalled();
   });
 });
