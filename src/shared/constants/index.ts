@@ -78,6 +78,15 @@ export const PERMISSIONS = {
   EVENTS_REGISTER: 'events:register',
   PLATFORM_CONTENT_MODERATE: 'platform.content.moderate',
   PLATFORM_ANALYTICS_READ: 'platform.analytics.read',
+  // ─── F9 Subscription, Billing & Entitlements (§04 permission values) ───────
+  BILLING_SUBSCRIPTION_CREATE: 'billing:subscription:create',
+  BILLING_SUBSCRIPTION_READ: 'billing:subscription:read',
+  BILLING_SUBSCRIPTION_CANCEL: 'billing:subscription:cancel',
+  BILLING_PAYMENT_METHOD_MANAGE: 'billing:paymentmethod:manage',
+  BILLING_ORDER_READ: 'billing:order:read',
+  BILLING_INVOICE_READ: 'billing:invoice:read',
+  BILLING_ORG_MANAGE: 'billing:org:manage',
+  PLATFORM_BILLING_MANAGE: 'platform.billing.manage',
 } as const;
 
 /** Audit log action strings (F2 §07 contract values). */
@@ -133,6 +142,11 @@ export const AUDIT_ACTIONS = {
   DISMISS_REPORT: 'dismiss_report',
   UPDATE_EMAIL_TEMPLATE: 'update_email_template',
   UPLOAD_FILE: 'upload_file',
+  // ─── F9 billing admin mutations (§07 traceability) ────────────────────────
+  FLAG_REFUND: 'flag_refund',
+  ADJUST_SUBSCRIPTION: 'adjust_subscription',
+  CREATE_COUPON: 'create_coupon',
+  UPDATE_COUPON: 'update_coupon',
 } as const;
 
 /**

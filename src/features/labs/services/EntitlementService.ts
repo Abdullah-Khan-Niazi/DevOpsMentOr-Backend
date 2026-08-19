@@ -1,7 +1,5 @@
-import { and, desc, eq, gt, isNull, or } from 'drizzle-orm';
-import { db } from '../../../app/database';
-import { subscriptions } from '../../../app/database/schema';
-import { ForbiddenError } from '../../../shared/errors';
+import { planService } from '../../billing/services/plan.service';
+import { entitlementService as billingEntitlementService } from '../../billing/services/entitlement.service';
 import type { LabsRepository } from '../repositories/labs.repository';
 import { labsRepository } from '../repositories/labs.repository';
 
@@ -16,36 +14,19 @@ function defaultDeps(): EntitlementServiceDeps {
 }
 
 /**
- * F6 §02 F9 runtime gate seam.
+ * F6 §02 F9 gate seam.
  *
- * F9 (Subscription/Billing/Entitlements) owns all entitlement logic in its
- * wave; until then this seam resolves the learner's active subscription plan
- * from `subscriptions` (read-only, never written) and derives the premium-lab
- * gate and instance TTL. The tier defaults below are F9-owned values that F9
- * will supersede; F6 does not decide them (F6 §12).
+ * F9 (Subscription/Billing/Entitlements) is the canonical owner of all
+ * entitlement logic; this seam delegates plan resolution, premium-lab
+ * gating and TTL to the billing entitlement service while preserving the
+ * F6-facing API so LabService and existing tests keep working (F6 §12).
  */
 export class EntitlementService {
   constructor(private readonly deps: EntitlementServiceDeps = defaultDeps()) {}
 
-  /** Active subscription tier for the user, defaulting to `free`. */
+  /** Active plan tier for the user (F9-owned resolution, default `free`). */
   async getPlanTier(userId: number): Promise<PlanTier> {
-    const rows = await db
-      .select({ planType: subscriptions.planType })
-      .from(subscriptions)
-      .where(
-        and(
-          eq(subscriptions.userId, userId),
-          eq(subscriptions.isActive, true),
-          or(
-            isNull(subscriptions.endDate),
-            gt(subscriptions.endDate, new Date()),
-          ),
-        ),
-      )
-      .orderBy(desc(subscriptions.startDate))
-      .limit(1);
-    const tier = rows[0]?.planType ?? 'free';
-    return tier;
+    return billingEntitlementService.getUserPlanType(userId);
   }
 
   /** F9 gate: throws 403 when the learner's plan does not include the lab. */
@@ -57,12 +38,7 @@ export class EntitlementService {
     if (!lab.isPremium) {
       return;
     }
-    const tier = await this.getPlanTier(userId);
-    if (tier === 'free') {
-      throw new ForbiddenError(
-        'This lab requires a premium subscription. Upgrade your plan to launch it.',
-      );
-    }
+    await billingEntitlementService.assertLabAccess(userId, labId);
   }
 
   /**
@@ -71,15 +47,7 @@ export class EntitlementService {
    */
   async getLabTtlHours(userId: number): Promise<number> {
     const tier = await this.getPlanTier(userId);
-    switch (tier) {
-      case 'enterprise':
-        return 8;
-      case 'premium':
-      case 'student':
-        return 4;
-      default:
-        return 2;
-    }
+    return planService.getTier(tier).features.labTtlHours;
   }
 
   /** F9-derived per-instance extension allowance (F6 §03 journey 5). */

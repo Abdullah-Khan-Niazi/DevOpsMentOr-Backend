@@ -80,6 +80,21 @@ const envSchema = z.object({
   CERTIFICATE_VERIFY_BASE_URL: z.string().min(1, 'CERTIFICATE_VERIFY_BASE_URL is required.'),
   // Leaderboard recompute cadence (minutes) for the scheduled computation job.
   LEADERBOARD_RECOMPUTE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
+
+  // ─── F9 Subscription, Billing & Entitlements ─────────────────────────────
+  // Empty by default: the Stripe adapter fails with a user-safe error until
+  // the deployment supplies real keys (same pattern as the F6 adapters).
+  STRIPE_SECRET_KEY: z.string().default(''),
+  STRIPE_WEBHOOK_SECRET: z.string().default(''),
+  STRIPE_PRICE_ID_PREMIUM_MONTHLY: z.string().default(''),
+  STRIPE_PRICE_ID_PREMIUM_ANNUAL: z.string().default(''),
+  STRIPE_PRICE_ID_ENTERPRISE_MONTHLY: z.string().default(''),
+  STRIPE_PRICE_ID_ENTERPRISE_ANNUAL: z.string().default(''),
+  STRIPE_PRICE_ID_STUDENT_MONTHLY: z.string().default(''),
+  STRIPE_PRICE_ID_STUDENT_ANNUAL: z.string().default(''),
+  STRIPE_CURRENCY: z.string().length(3).default('usd'),
+  // Billing cycle resolution for `subscriptions.end_date` (invariant 12).
+  SUBSCRIPTION_EXPIRY_CHECK_INTERVAL_HOURS: z.coerce.number().int().positive().default(24),
 });
 
 const parsed = envSchema.safeParse(process.env);

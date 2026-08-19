@@ -20,6 +20,7 @@ export function createApp() {
       credentials: true,
     }),
   );
+  app.use(`${env.API_PREFIX}/billing/webhooks/stripe`, express.raw({ type: 'application/json' }));
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use('/uploads', express.static(UPLOAD_DIR));

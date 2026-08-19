@@ -1410,9 +1410,17 @@ export const trackContentRelations = relations(trackContent, ({ one }) => ({
 }));
 
 /**
- * `subscriptions` — Plan entitlement store (F9 domain; read-only dependency
- * of F6). F6 resolves the learner's plan tier through EntitlementService for
- * the premium-lab gate and the instance TTL. F9 owns all writes.
+ * `subscriptions` — Individual and organization plan entitlement records
+ * (F9 §06 direct reuse). `organization_id` is NULL for individual plans and
+ * populated for org-level subscriptions; `plan_type` ENUM covers Free,
+ * Premium, Enterprise and Student tiers. `is_active = TRUE` plus
+ * `end_date > NOW()` defines the authoritative "active subscription" state
+ * consumed by EntitlementService (F5/F6 gate) and the nightly expiry job.
+ * On cancellation `cancelled_at` and `auto_renew = FALSE` are set while
+ * `is_active` remains TRUE until `end_date` passes (invariant 12, AC-09).
+ * At most one active subscription per user is enforced by the application
+ * layer (invariant 1); an org admin may additionally hold an org
+ * subscription.
  */
 export const subscriptions = mysqlTable(
   'subscriptions',
@@ -1438,12 +1446,174 @@ export const subscriptions = mysqlTable(
   (table) => [index('idx_sub_user').on(table.userId), index('idx_sub_active').on(table.isActive)],
 );
 
-export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
+export const subscriptionsRelations = relations(subscriptions, ({ one, many }) => ({
   user: one(users, { fields: [subscriptions.userId], references: [users.userId] }),
   organization: one(organizations, {
     fields: [subscriptions.organizationId],
     references: [organizations.organizationId],
   }),
+  orders: many(orders),
+}));
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * F9 — Subscription, Billing & Entitlements (§06 embedded DB mapping).
+ * Tables mirror CREATE TABLE statements in devops_db.sql verbatim; no schema
+ * alteration was required. `invoices.pdf_data` LONGBLOB is intentionally
+ * unmapped for writes: PDF storage is external and `invoice_url` holds the
+ * reference (F9 §05 invariant 14, AC-11).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * `payment_methods` — Tokenized payment instrument vault (F9 §06 direct
+ * reuse). Only Stripe token references are stored: `last4_digits`,
+ * `card_brand` and `stripe_payment_method_id`. Raw card numbers, CVVs and
+ * full PANs NEVER reach this table or any F9 code path (absolute security
+ * invariant, AC-07). `method_type` uses `'credit_card'`, `'paypal'` and
+ * `'enterprise_invoice'` in V1; `'crypto'` and `'bank_transfer'` are
+ * reserved for future use. Exactly one `is_default = TRUE` row is enforced
+ * per user by the application layer (invariant 9).
+ */
+export const paymentMethods = mysqlTable(
+  'payment_methods',
+  {
+    paymentMethodId: int('payment_method_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    methodType: mysqlEnum('method_type', [
+      'credit_card',
+      'paypal',
+      'crypto',
+      'bank_transfer',
+      'enterprise_invoice',
+    ]).notNull(),
+    last4Digits: varchar('last4_digits', { length: 4 }),
+    cardBrand: varchar('card_brand', { length: 20 }),
+    stripePaymentMethodId: varchar('stripe_payment_method_id', { length: 255 }),
+    paypalEmail: varchar('paypal_email', { length: 255 }),
+    isDefault: boolean('is_default').notNull().default(false),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [index('idx_pm_user').on(table.userId)],
+);
+
+/**
+ * `coupons` — Discount code catalog (F9 §06 direct reuse). Codes are stored
+ * in uppercase (normalized at INSERT) and compared case-insensitively at
+ * validation (invariant 4). `used_count` increments are atomic:
+ * `UPDATE coupons SET used_count = used_count + 1 WHERE used_count <
+ * max_uses` (invariant 3, AC-03), preventing over-redemption under
+ * concurrent requests.
+ */
+export const coupons = mysqlTable(
+  'coupons',
+  {
+    couponId: int('coupon_id').autoincrement().primaryKey(),
+    code: varchar('code', { length: 50 }).notNull(),
+    description: text('description'),
+    discountType: mysqlEnum('discount_type', ['percentage', 'fixed_amount']).notNull(),
+    discountValue: decimal('discount_value', { precision: 10, scale: 2 }).notNull(),
+    maxUses: int('max_uses').notNull().default(1),
+    usedCount: int('used_count').notNull().default(0),
+    expiresAt: timestamp('expires_at').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('coupons_code_key').on(table.code),
+    index('idx_coupons_code').on(table.code),
+  ],
+);
+
+/**
+ * `orders` — Purchase transaction records (F9 §06 direct reuse). One order is
+ * created per subscription purchase; `status` follows the state machine
+ * `pending → paid / failed / refunded / cancelled`. `order_number` is a
+ * unique sequence `DM-ORD-{YYYY}-{NNNNNN}` (invariant 6). `final_amount` is
+ * computed once at creation (`total - discount + tax`) and never recomputed
+ * (invariant 5). `stripe_payment_intent_id` reconciles the row with Stripe
+ * webhook events.
+ */
+export const orders = mysqlTable(
+  'orders',
+  {
+    orderId: int('order_id').autoincrement().primaryKey(),
+    userId: int('user_id')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    subscriptionId: int('subscription_id').references(() => subscriptions.subscriptionId, {
+      onDelete: 'set null',
+    }),
+    orderNumber: varchar('order_number', { length: 50 }).notNull(),
+    totalAmount: decimal('total_amount', { precision: 12, scale: 2 }).notNull(),
+    discountAmount: decimal('discount_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+    taxAmount: decimal('tax_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+    finalAmount: decimal('final_amount', { precision: 12, scale: 2 }).notNull(),
+    currency: varchar('currency', { length: 3 }).notNull().default('USD'),
+    status: mysqlEnum('status', ['pending', 'paid', 'failed', 'refunded', 'cancelled']).notNull().default('pending'),
+    paymentMethodId: int('payment_method_id').references(() => paymentMethods.paymentMethodId, {
+      onDelete: 'set null',
+    }),
+    stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
+    paidAt: timestamp('paid_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('orders_order_number_key').on(table.orderNumber),
+    index('idx_orders_user').on(table.userId),
+    index('idx_orders_order_number').on(table.orderNumber),
+  ],
+);
+
+/**
+ * `invoices` — Billing invoices (F9 §06 direct reuse). `invoice_number` is a
+ * unique sequence `DM-INV-{YYYY}-{NNNNNN}` (invariant 7). `invoice_url`
+ * stores the signed URL to the externally generated PDF; the `pdf_data`
+ * LONGBLOB column exists in the SQL source but is NEVER written by any F9
+ * code path (invariant 14, AC-11).
+ */
+export const invoices = mysqlTable(
+  'invoices',
+  {
+    invoiceId: int('invoice_id').autoincrement().primaryKey(),
+    orderId: int('order_id')
+      .notNull()
+      .references(() => orders.orderId, { onDelete: 'cascade' }),
+    invoiceNumber: varchar('invoice_number', { length: 50 }).notNull(),
+    invoiceUrl: varchar('invoice_url', { length: 255 }),
+    dueDate: timestamp('due_date'),
+    paidAt: timestamp('paid_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('invoices_invoice_number_key').on(table.invoiceNumber),
+    index('idx_invoices_invoice_number').on(table.invoiceNumber),
+  ],
+);
+
+export const paymentMethodsRelations = relations(paymentMethods, ({ one }) => ({
+  user: one(users, { fields: [paymentMethods.userId], references: [users.userId] }),
+}));
+
+export const couponsRelations = relations(coupons, () => ({}));
+
+export const ordersRelations = relations(orders, ({ one, many }) => ({
+  user: one(users, { fields: [orders.userId], references: [users.userId] }),
+  subscription: one(subscriptions, {
+    fields: [orders.subscriptionId],
+    references: [subscriptions.subscriptionId],
+  }),
+  paymentMethod: one(paymentMethods, {
+    fields: [orders.paymentMethodId],
+    references: [paymentMethods.paymentMethodId],
+  }),
+  invoices: many(invoices),
+}));
+
+export const invoicesRelations = relations(invoices, ({ one }) => ({
+  order: one(orders, { fields: [invoices.orderId], references: [orders.orderId] }),
 }));
 
 /* ────────────────────────────────────────────────────────────────────────────

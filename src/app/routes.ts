@@ -15,6 +15,7 @@ import { adminNotificationsRouter, notificationsRouter } from '../features/notif
 import { adminModerationRouter, communityRouter } from '../features/community';
 import { adminOperationsRouter, operationsRouter } from '../features/operations';
 import { adminAnalyticsRouter } from '../features/analytics';
+import { billingRoutes } from '../features/billing';
 
 export function registerRoutes(): Router {
   const router = Router();
@@ -45,6 +46,7 @@ export function registerRoutes(): Router {
   router.use(operationsRouter);
   router.use('/admin', adminOperationsRouter);
   router.use('/admin', adminAnalyticsRouter);
+  router.use('/billing', billingRoutes);
 
   return router;
 }
