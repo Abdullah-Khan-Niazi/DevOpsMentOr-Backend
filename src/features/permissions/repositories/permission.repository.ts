@@ -1,45 +1,35 @@
-import { and, asc, count, desc, eq, ilike, or } from 'drizzle-orm';
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import { and, asc, count, desc, eq, like, or } from 'drizzle-orm';
+import type { AnyMySqlColumn } from 'drizzle-orm/mysql-core';
 import { db, permissions } from '../../../app/database';
-import { createId, getSkipTake } from '../../../shared/utils';
+import { getSkipTake } from '../../../shared/utils';
 import type { ListPermissionsFilter, PermissionEntity } from '../types';
 
 export interface IPermissionRepository {
-  findById(id: string): Promise<PermissionEntity | null>;
+  findById(id: number): Promise<PermissionEntity | null>;
   findByName(name: string): Promise<PermissionEntity | null>;
   findMany(filter: ListPermissionsFilter): Promise<{ items: PermissionEntity[]; total: number }>;
-  create(data: {
-    name: string;
-    description?: string;
-    resource: string;
-    action: string;
-  }): Promise<PermissionEntity>;
+  create(data: { permissionName: string; description?: string; module?: string }): Promise<PermissionEntity>;
   update(
-    id: string,
-    data: {
-      name?: string;
-      description?: string;
-      resource?: string;
-      action?: string;
-    },
+    id: number,
+    data: { permissionName?: string; description?: string; module?: string },
   ): Promise<PermissionEntity>;
-  delete(id: string): Promise<void>;
+  delete(id: number): Promise<void>;
   count(): Promise<number>;
 }
 
 export class PermissionRepository implements IPermissionRepository {
-  async findById(id: string): Promise<PermissionEntity | null> {
+  async findById(id: number): Promise<PermissionEntity | null> {
     const permission = await db.query.permissions.findFirst({
-      where: eq(permissions.id, id),
+      where: eq(permissions.permissionId, id),
     });
-    return permission ?? null;
+    return permission ? this.toEntity(permission) : null;
   }
 
   async findByName(name: string): Promise<PermissionEntity | null> {
     const permission = await db.query.permissions.findFirst({
-      where: eq(permissions.name, name),
+      where: eq(permissions.permissionName, name),
     });
-    return permission ?? null;
+    return permission ? this.toEntity(permission) : null;
   }
 
   async findMany(
@@ -52,24 +42,22 @@ export class PermissionRepository implements IPermissionRepository {
       const search = `%${filter.search}%`;
       conditions.push(
         or(
-          ilike(permissions.name, search),
-          ilike(permissions.description, search),
-          ilike(permissions.resource, search),
+          like(permissions.permissionName, search),
+          like(permissions.description, search),
+          like(permissions.module, search),
         ),
       );
     }
 
-    if (filter.resource) {
-      conditions.push(eq(permissions.resource, filter.resource));
+    if (filter.module) {
+      conditions.push(eq(permissions.module, filter.module));
     }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
-    const sortableFields: Record<string, AnyPgColumn> = {
+    const sortableFields: Record<string, AnyMySqlColumn> = {
       createdAt: permissions.createdAt,
-      updatedAt: permissions.updatedAt,
-      name: permissions.name,
-      resource: permissions.resource,
-      action: permissions.action,
+      permissionName: permissions.permissionName,
+      module: permissions.module,
     };
     const sortColumn = sortableFields[filter.sortBy ?? ''] ?? permissions.createdAt;
     const orderBy = filter.sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
@@ -79,30 +67,29 @@ export class PermissionRepository implements IPermissionRepository {
       db.select({ value: count() }).from(permissions).where(where),
     ]);
 
-    return { items, total: totalResult[0]?.value ?? 0 };
+    return { items: items.map((permission) => this.toEntity(permission)), total: totalResult[0]?.value ?? 0 };
   }
 
   async create(data: {
-    name: string;
+    permissionName: string;
     description?: string;
-    resource: string;
-    action: string;
+    module?: string;
   }): Promise<PermissionEntity> {
-    const id = createId();
-    const now = new Date();
-    const [created] = await db
+    const [inserted] = await db
       .insert(permissions)
       .values({
-        id,
-        name: data.name,
+        permissionName: data.permissionName,
         description: data.description,
-        resource: data.resource,
-        action: data.action,
-        createdAt: now,
-        updatedAt: now,
+        module: data.module,
       })
-      .returning();
+      .$returningId();
 
+    const createdId = inserted?.permissionId;
+    if (!createdId) {
+      throw new Error('Failed to create permission.');
+    }
+
+    const created = await this.findById(createdId);
     if (!created) {
       throw new Error('Failed to create permission.');
     }
@@ -110,39 +97,42 @@ export class PermissionRepository implements IPermissionRepository {
   }
 
   async update(
-    id: string,
-    data: {
-      name?: string;
-      description?: string;
-      resource?: string;
-      action?: string;
-    },
+    id: number,
+    data: { permissionName?: string; description?: string; module?: string },
   ): Promise<PermissionEntity> {
-    const [updated] = await db
+    await db
       .update(permissions)
       .set({
-        name: data.name,
+        permissionName: data.permissionName,
         description: data.description,
-        resource: data.resource,
-        action: data.action,
-        updatedAt: new Date(),
+        module: data.module,
       })
-      .where(eq(permissions.id, id))
-      .returning();
+      .where(eq(permissions.permissionId, id));
 
+    const updated = await this.findById(id);
     if (!updated) {
       throw new Error('Failed to update permission.');
     }
     return updated;
   }
 
-  async delete(id: string): Promise<void> {
-    await db.delete(permissions).where(eq(permissions.id, id));
+  async delete(id: number): Promise<void> {
+    await db.delete(permissions).where(eq(permissions.permissionId, id));
   }
 
   async count(): Promise<number> {
     const result = await db.select({ value: count() }).from(permissions);
     return result[0]?.value ?? 0;
+  }
+
+  private toEntity(permission: typeof permissions.$inferSelect): PermissionEntity {
+    return {
+      id: permission.permissionId,
+      permissionName: permission.permissionName,
+      description: permission.description,
+      module: permission.module,
+      createdAt: permission.createdAt,
+    };
   }
 }
 

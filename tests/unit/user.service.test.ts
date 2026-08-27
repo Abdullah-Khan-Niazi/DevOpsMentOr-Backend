@@ -14,24 +14,47 @@ vi.mock('../../src/shared/services', () => ({
 }));
 
 const baseUser: UserWithRoles = {
-  id: '11111111-1111-1111-1111-111111111111',
+  userId: 1,
+  username: 'janedoe',
   email: 'jane@example.com',
   passwordHash: 'hashed-password',
-  firstName: 'Jane',
-  lastName: 'Doe',
+  salt: '',
+  fullName: 'Jane Doe',
+  isActive: true,
+  isBanned: false,
+  deletedAt: null,
   status: UserStatus.ACTIVE,
+  bio: null,
+  avatarUrl: null,
+  coverPhotoUrl: null,
+  isVerified: false,
+  banReason: null,
+  lastLoginAt: null,
+  lastLoginIp: null,
+  registrationIp: null,
+  timezone: 'UTC',
+  language: 'en',
+  twoFactorEnabled: false,
+  twoFactorSecret: null,
+  displayName: null,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   updatedAt: new Date('2026-01-01T00:00:00.000Z'),
   roles: [
     {
       role: {
-        id: '22222222-2222-2222-2222-222222222222',
-        name: 'USER',
+        id: 1,
+        roleName: 'USER',
+        description: null,
+        priority: 0,
+        createdAt: new Date(),
         permissions: [
           {
             permission: {
-              id: '33333333-3333-3333-3333-333333333333',
-              name: 'dashboard:read',
+              id: 1,
+              permissionName: 'dashboard:read',
+              description: null,
+              module: null,
+              createdAt: new Date(),
             },
           },
         ],
@@ -48,6 +71,7 @@ describe('UserService', () => {
     repository = {
       findById: vi.fn(),
       findByEmail: vi.fn(),
+      findByUsername: vi.fn(),
       findMany: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
@@ -65,8 +89,8 @@ describe('UserService', () => {
     const result = await service.createUser({
       email: 'jane@example.com',
       password: 'Password123!',
-      firstName: 'Jane',
-      lastName: 'Doe',
+      username: 'janedoe',
+      fullName: 'Jane Doe',
     });
 
     expect(result.email).toBe('jane@example.com');
@@ -81,8 +105,8 @@ describe('UserService', () => {
       service.createUser({
         email: 'jane@example.com',
         password: 'Password123!',
-        firstName: 'Jane',
-        lastName: 'Doe',
+        username: 'janedoe',
+        fullName: 'Jane Doe',
       }),
     ).rejects.toBeInstanceOf(ConflictError);
   });
@@ -90,7 +114,7 @@ describe('UserService', () => {
   it('throws NotFoundError when user does not exist', async () => {
     vi.mocked(repository.findById).mockResolvedValue(null);
 
-    await expect(service.getUserById(baseUser.id)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(service.getUserById(999)).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it('extracts unique permissions from roles', () => {

@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # DevOps Mentor API
 
 Enterprise-grade Node.js + TypeScript backend using feature-based modular architecture.
@@ -7,13 +6,13 @@ Enterprise-grade Node.js + TypeScript backend using feature-based modular archit
 
 - Node.js 20 LTS + TypeScript
 - Express.js
-- PostgreSQL + Drizzle ORM
+- MySQL 8 + Drizzle ORM
+- Redis (session blacklist, rate limiting, admin invites)
 - JWT authentication + RBAC
 - Zod validation
 - Pino logging
 - Swagger/OpenAPI
 - Vitest
-- Docker
 
 ## Architecture
 
@@ -34,6 +33,10 @@ src/
 
 Each feature contains: `controllers`, `services`, `repositories`, `routes`, `dto`, `validators`, `types.ts`, `index.ts`.
 
+## Prerequisites
+
+MySQL 8 and Redis must be running locally (e.g. `devops-mentor` database, Redis on `localhost:6379`).
+
 ## Getting Started
 
 ### 1. Install dependencies
@@ -42,34 +45,27 @@ Each feature contains: `controllers`, `services`, `repositories`, `routes`, `dto
 npm install
 ```
 
-### 2. Start PostgreSQL
+### 2. Configure environment
+
+Copy `.env.example` to `.env` and set a valid `DATABASE_URL` and `REDIS_URL`.
+
+### 3. Apply schema and seed
 
 ```bash
-docker compose up -d postgres
-```
-
-### 3. Configure environment
-
-Copy `.env.example` to `.env` and set a valid `DATABASE_URL`.
-
-### 4. Apply schema and seed
-
-```bash
-npm run db:push
+npm run db:migrate
 npm run db:seed
 ```
 
-### 5. Start API
+### 4. Start API
 
 ```bash
 npm run dev
 ```
 
-- API: `http://localhost:3000/api/v1`
-- Health: `http://localhost:3000/health`
-- Swagger: `http://localhost:3000/api-docs`
+- API: `http://localhost:3001/api/v1`
+- Swagger: `http://localhost:3001/api-docs`
 
-### Default admin
+### Default admin (dev)
 
 - Email: `admin@devopsmentor.local`
 - Password: `Admin@12345`
@@ -82,7 +78,7 @@ npm run dev
 | `npm run build` | Compile TypeScript |
 | `npm start` | Start production server |
 | `npm test` | Run unit tests |
-| `npm run db:push` | Push Drizzle schema to database |
+| `npm run db:generate` | Generate Drizzle migrations |
 | `npm run db:migrate` | Run Drizzle migrations |
 | `npm run db:seed` | Seed roles/permissions/admin |
 
@@ -107,6 +103,3 @@ Failure:
   "errors": []
 }
 ```
-=======
-# Devops-Mentor-Backend
->>>>>>> d3844b0a1f0128b30aae218a428cd46d84c8fef7

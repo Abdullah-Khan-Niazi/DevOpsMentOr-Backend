@@ -6,7 +6,7 @@ import {
   validateRequest,
 } from '../../../shared/middleware';
 import { asyncHandler } from '../../../shared/utils';
-import { uuidParamSchema } from '../../../shared/validators';
+import { numberParamSchema } from '../../../shared/validators';
 import { permissionController } from '../controllers/permission.controller';
 import {
   createPermissionSchema,
@@ -28,7 +28,7 @@ permissionRoutes.get(
 permissionRoutes.get(
   '/:id',
   authorizePermissions(PERMISSIONS.PERMISSIONS_READ),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   asyncHandler((req, res) => permissionController.getPermissionById(req, res)),
 );
 
@@ -42,7 +42,7 @@ permissionRoutes.post(
 permissionRoutes.patch(
   '/:id',
   authorizePermissions(PERMISSIONS.PERMISSIONS_MANAGE),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   validateRequest(updatePermissionSchema, 'body'),
   asyncHandler((req, res) => permissionController.updatePermission(req, res)),
 );
@@ -50,7 +50,7 @@ permissionRoutes.patch(
 permissionRoutes.delete(
   '/:id',
   authorizePermissions(PERMISSIONS.PERMISSIONS_MANAGE),
-  validateRequest(uuidParamSchema, 'params'),
+  validateRequest(numberParamSchema, 'params'),
   asyncHandler((req, res) => permissionController.deletePermission(req, res)),
 );
 

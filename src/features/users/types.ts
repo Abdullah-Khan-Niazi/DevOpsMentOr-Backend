@@ -9,8 +9,21 @@ export interface UserEntity {
   passwordHash: string;
   salt: string;
   fullName: string | null;
+  displayName: string | null;
+  bio: string | null;
+  avatarUrl: string | null;
+  coverPhotoUrl: string | null;
   isActive: boolean;
   isBanned: boolean;
+  isVerified: boolean;
+  twoFactorEnabled: boolean;
+  twoFactorSecret: string | null;
+  banReason: string | null;
+  lastLoginAt: Date | null;
+  lastLoginIp: string | null;
+  registrationIp: string | null;
+  timezone: string;
+  language: string;
   deletedAt: Date | null;
   /** Derived application status; not a persisted MySQL column. */
   status: UserStatus;

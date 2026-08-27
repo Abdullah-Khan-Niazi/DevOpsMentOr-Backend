@@ -25,18 +25,18 @@ export class RoleController {
   }
 
   async getRoleById(req: Request, res: Response): Promise<Response> {
-    const role = await roleService.getRoleById(req.params.id);
+    const role = await roleService.getRoleById(Number(req.params.id));
     return sendSuccess(res, role, 'Role retrieved successfully.');
   }
 
   async updateRole(req: Request, res: Response): Promise<Response> {
     const body = req.body as UpdateRoleDto;
-    const role = await roleService.updateRole(req.params.id, body);
+    const role = await roleService.updateRole(Number(req.params.id), body);
     return sendSuccess(res, role, 'Role updated successfully.');
   }
 
   async deleteRole(req: Request, res: Response): Promise<Response> {
-    await roleService.deleteRole(req.params.id);
+    await roleService.deleteRole(Number(req.params.id));
     return sendSuccess(res, null, 'Role deleted successfully.');
   }
 }

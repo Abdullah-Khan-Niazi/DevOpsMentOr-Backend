@@ -8,6 +8,7 @@ import { requestLogger } from './middleware/request-logger.middleware';
 import { swaggerSpec } from '../docs/swagger';
 import { errorMiddleware, notFoundMiddleware } from '../shared/middleware';
 import { sendSuccess } from '../shared/utils';
+import { UPLOAD_DIR } from '../features/users/services/upload.service';
 
 export function createApp() {
   const app = express();
@@ -19,8 +20,10 @@ export function createApp() {
       credentials: true,
     }),
   );
+  app.use(`${env.API_PREFIX}/billing/webhooks/stripe`, express.raw({ type: 'application/json' }));
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
+  app.use('/uploads', express.static(UPLOAD_DIR));
   app.use(requestLogger);
 
   app.get('/health', (_req, res) => {

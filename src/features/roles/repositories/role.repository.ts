@@ -94,15 +94,16 @@ export class RoleRepository implements IRoleRepository {
         })
         .$returningId();
 
-      roleId = inserted[0]?.roleId;
-      if (!roleId) {
+      const newRoleId = inserted[0]?.roleId;
+      if (!newRoleId) {
         throw new Error('Failed to create role.');
       }
+      roleId = newRoleId;
 
       if (data.permissionIds && data.permissionIds.length > 0) {
         await tx.insert(rolePermissions).values(
           data.permissionIds.map((permissionId) => ({
-            roleId,
+            roleId: newRoleId,
             permissionId,
           })),
         );

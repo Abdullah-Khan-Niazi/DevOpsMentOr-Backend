@@ -12,5 +12,10 @@ export const uuidParamSchema = z.object({
   id: z.string().uuid('Invalid id format.'),
 });
 
+export const numberParamSchema = z.object({
+  id: z.coerce.number().int().positive('Invalid id format.'),
+});
+
 export type PaginationQueryDto = z.infer<typeof paginationQuerySchema>;
 export type UuidParamDto = z.infer<typeof uuidParamSchema>;
+export type NumberParamDto = z.infer<typeof numberParamSchema>;

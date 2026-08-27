@@ -10,10 +10,45 @@ export interface RegisterDto {
 export interface LoginDto {
   email: string;
   password: string;
+  totpCode?: string;
+}
+
+export interface VerifyEmailDto {
+  email: string;
+  code: string;
+}
+
+export interface ResendVerificationDto {
+  email: string;
+}
+
+export interface ForgotPasswordDto {
+  email: string;
+}
+
+export interface ResetPasswordDto {
+  email: string;
+  code: string;
+  newPassword: string;
 }
 
 export interface RefreshTokenDto {
   refreshToken: string;
+}
+
+export interface LogoutDto {
+  refreshToken: string;
+}
+
+export interface Enable2faDto {
+  /** Optional manual confirmation code; when absent a fresh secret is issued. */
+  code?: string;
+}
+
+export interface Verify2faDto {
+  code: string;
+  /** Pending secret issued by enable2fa; required for first-time activation. */
+  secret?: string;
 }
 
 export interface AuthTokensDto {
@@ -24,4 +59,99 @@ export interface AuthTokensDto {
 export interface AuthResponseDto {
   user: UserResponseDto;
   tokens: AuthTokensDto;
+}
+
+export type OAuthProvider = 'google' | 'github';
+
+export interface OAuthLoginDto {
+  provider: OAuthProvider;
+  code: string;
+  redirectUri: string;
+}
+
+export interface OAuthSignupDto {
+  provider: OAuthProvider;
+  code: string;
+  redirectUri: string;
+  username: string;
+  fullName: string;
+}
+
+export interface OAuthUserInfo {
+  provider: OAuthProvider;
+  providerId: string;
+  email: string;
+  name: string;
+  avatarUrl?: string;
+}
+
+export interface MeResponseDto {
+  userId: number;
+  email: string;
+  fullName: string | null;
+  roles: string[];
+  permissions: string[];
+}
+
+export interface AdminLoginDto {
+  email: string;
+  password: string;
+  totpCode?: string;
+}
+
+export interface AdminInviteDto {
+  email: string;
+  fullName: string;
+}
+
+export interface AcceptAdminInviteDto {
+  token: string;
+  email: string;
+  password: string;
+  fullName: string;
+  username: string;
+}
+
+export interface PendingAdminInvite {
+  id: string;
+  email: string;
+  fullName: string;
+  expiresAt: string;
+}
+
+export interface CreateApiTokenDto {
+  tokenName: string;
+  expiresInDays?: number;
+}
+
+export interface ApiTokenResponseDto {
+  tokenId: number;
+  tokenName: string;
+  createdAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+}
+
+export interface ApiTokenCreatedDto extends ApiTokenResponseDto {
+  /** Raw token, returned exactly once at creation. */
+  rawToken: string;
+}
+
+export interface LoginHistoryEntryDto {
+  loginId: number;
+  createdAt: string;
+  loginType: 'email' | 'google' | 'github';
+  isSuccessful: boolean;
+  failureReason: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+}
+
+export interface TwoFactorSetupDto {
+  secret: string;
+  otpAuthUri: string;
+}
+
+export interface MessageResponseDto {
+  message: string;
 }

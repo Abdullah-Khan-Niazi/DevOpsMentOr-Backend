@@ -10,7 +10,7 @@ export class RoleService {
   constructor(private readonly roles: IRoleRepository = roleRepository) {}
 
   async createRole(input: CreateRoleDto): Promise<RoleResponseDto> {
-    const existing = await this.roles.findByName(input.name);
+    const existing = await this.roles.findByName(input.roleName);
     if (existing) {
       throw new ConflictError('A role with this name already exists.');
     }
@@ -27,7 +27,7 @@ export class RoleService {
     };
   }
 
-  async getRoleById(id: string): Promise<RoleResponseDto> {
+  async getRoleById(id: number): Promise<RoleResponseDto> {
     const role = await this.roles.findById(id);
     if (!role) {
       throw new NotFoundError('Role not found.');
@@ -35,14 +35,14 @@ export class RoleService {
     return this.toResponse(role);
   }
 
-  async updateRole(id: string, input: UpdateRoleDto): Promise<RoleResponseDto> {
+  async updateRole(id: number, input: UpdateRoleDto): Promise<RoleResponseDto> {
     const existing = await this.roles.findById(id);
     if (!existing) {
       throw new NotFoundError('Role not found.');
     }
 
-    if (input.name && input.name !== existing.name) {
-      const duplicate = await this.roles.findByName(input.name);
+    if (input.roleName && input.roleName !== existing.roleName) {
+      const duplicate = await this.roles.findByName(input.roleName);
       if (duplicate) {
         throw new ConflictError('A role with this name already exists.');
       }
@@ -52,7 +52,7 @@ export class RoleService {
     return this.toResponse(role);
   }
 
-  async deleteRole(id: string): Promise<void> {
+  async deleteRole(id: number): Promise<void> {
     const existing = await this.roles.findById(id);
     if (!existing) {
       throw new NotFoundError('Role not found.');
@@ -63,11 +63,11 @@ export class RoleService {
   private toResponse(role: RoleWithPermissions): RoleResponseDto {
     return {
       id: role.id,
-      name: role.name,
+      roleName: role.roleName,
       description: role.description,
-      permissions: role.permissions.map((item) => item.permission.name),
+      priority: role.priority,
+      permissions: role.permissions.map((item) => item.permission.permissionName),
       createdAt: role.createdAt,
-      updatedAt: role.updatedAt,
     };
   }
 }

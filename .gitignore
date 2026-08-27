@@ -8,3 +8,8 @@ coverage/
 .idea/
 .vscode/
 *.tsbuildinfo
+*.md
+.gitignore
+.git/
+uploads/
+.gitignore
