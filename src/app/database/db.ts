@@ -18,7 +18,13 @@ const useSsl = sslMode !== null && sslMode.toUpperCase() !== 'DISABLED';
 
 const poolConfig: mysql.PoolOptions = { uri: env.DATABASE_URL };
 if (useSsl) {
-  const ca = env.DB_SSL_CA ? readFileSync(env.DB_SSL_CA, 'utf8') : undefined;
+  const rawCa = env.DB_SSL_CA;
+  const ca =
+    rawCa && rawCa.includes('-----BEGIN CERTIFICATE-----')
+      ? rawCa
+      : rawCa
+        ? readFileSync(rawCa, 'utf8')
+        : undefined;
   poolConfig.ssl = ca
     ? { rejectUnauthorized: true, ca }
     : { rejectUnauthorized: false };
