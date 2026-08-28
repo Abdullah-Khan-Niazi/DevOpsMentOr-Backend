@@ -6,8 +6,13 @@ const globalForRedis = globalThis as unknown as {
   redisClient?: Redis;
 };
 
+// Render/Vercel store env values literally, so a value copied from a quoted
+// local `.env` (e.g. "rediss://...") keeps its surrounding quotes and ioredis
+// fails with `connect EINVAL`. Strip any leading/trailing quotes and whitespace.
+const redisUrl = env.REDIS_URL.replace(/^["']|["']$/g, '').trim();
+
 export const redisClient =
-  globalForRedis.redisClient ?? new Redis(env.REDIS_URL, { lazyConnect: false });
+  globalForRedis.redisClient ?? new Redis(redisUrl, { lazyConnect: false });
 
 if (env.NODE_ENV !== 'production') {
   globalForRedis.redisClient = redisClient;
