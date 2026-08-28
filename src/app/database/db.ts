@@ -15,8 +15,9 @@ const globalForDb = globalThis as unknown as {
 const dbUrl = new URL(env.DATABASE_URL);
 const sslMode = dbUrl.searchParams.get('ssl-mode');
 const useSsl = sslMode !== null && sslMode.toUpperCase() !== 'DISABLED';
+dbUrl.searchParams.delete('ssl-mode');
 
-const poolConfig: mysql.PoolOptions = { uri: env.DATABASE_URL };
+const poolConfig: mysql.PoolOptions = { uri: dbUrl.toString() };
 if (useSsl) {
   const rawCa = env.DB_SSL_CA;
   const ca =
