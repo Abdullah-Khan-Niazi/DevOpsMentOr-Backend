@@ -3,6 +3,7 @@ export {
   BadRequestError,
   UnauthorizedError,
   ForbiddenError,
+  PaymentRequiredError,
   NotFoundError,
   ConflictError,
   ValidationError,

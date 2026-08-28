@@ -1,2 +1,9 @@
 export { authRoutes } from './routes/auth.routes';
 export { authService } from './services/auth.service';
+export { apiTokenService } from './services/api-token.service';
+export { adminInviteService } from './services/admin-invite.service';
+export { oauthService } from './services/oauth.service';
+export { sessionRepository } from './repositories/session.repository';
+export { otpRepository } from './repositories/otp.repository';
+export { apiTokenRepository } from './repositories/api-token.repository';
+export { loginHistoryRepository } from './repositories/login-history.repository';

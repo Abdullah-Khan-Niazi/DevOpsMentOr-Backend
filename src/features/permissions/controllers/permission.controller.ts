@@ -13,31 +13,31 @@ export class PermissionController {
   }
 
   async getPermissions(req: Request, res: Response): Promise<Response> {
-    const query = req.query as unknown as PaginationQueryDto & { resource?: string };
+    const query = req.query as unknown as PaginationQueryDto & { module?: string };
     const result = await permissionService.getPermissions({
       page: query.page,
       limit: query.limit,
       search: query.search,
       sortBy: query.sortBy,
       sortOrder: query.sortOrder,
-      resource: query.resource,
+      module: query.module,
     });
     return sendSuccess(res, result, 'Permissions retrieved successfully.');
   }
 
   async getPermissionById(req: Request, res: Response): Promise<Response> {
-    const permission = await permissionService.getPermissionById(req.params.id);
+    const permission = await permissionService.getPermissionById(Number(req.params.id));
     return sendSuccess(res, permission, 'Permission retrieved successfully.');
   }
 
   async updatePermission(req: Request, res: Response): Promise<Response> {
     const body = req.body as UpdatePermissionDto;
-    const permission = await permissionService.updatePermission(req.params.id, body);
+    const permission = await permissionService.updatePermission(Number(req.params.id), body);
     return sendSuccess(res, permission, 'Permission updated successfully.');
   }
 
   async deletePermission(req: Request, res: Response): Promise<Response> {
-    await permissionService.deletePermission(req.params.id);
+    await permissionService.deletePermission(Number(req.params.id));
     return sendSuccess(res, null, 'Permission deleted successfully.');
   }
 }

@@ -30,4 +30,7 @@ export interface JwtPayload {
   roles: string[];
   permissions: string[];
   type: 'access' | 'refresh';
+  jti?: string;
+  iat?: number;
+  exp?: number;
 }

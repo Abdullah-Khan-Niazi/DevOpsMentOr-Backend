@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { env } from '../../app/config/env';
 import { UnauthorizedError } from '../errors';
@@ -15,16 +16,24 @@ export class TokenService {
     } as jwt.SignOptions);
   }
 
-  signRefreshToken(payload: Omit<JwtPayload, 'type'>): string {
+  signRefreshToken(payload: Pick<JwtPayload, 'sub' | 'email' | 'jti'>): string {
     return jwt.sign({ ...payload, type: 'refresh' }, env.JWT_REFRESH_SECRET, {
       expiresIn: env.JWT_REFRESH_EXPIRES_IN,
     } as jwt.SignOptions);
   }
 
   createTokenPair(payload: Omit<JwtPayload, 'type'>): TokenPair {
+    const jti = randomUUID();
+
+    const extendedPayload = { ...payload, jti };
+
     return {
-      accessToken: this.signAccessToken(payload),
-      refreshToken: this.signRefreshToken(payload),
+      accessToken: this.signAccessToken(extendedPayload),
+      refreshToken: this.signRefreshToken({
+        sub: extendedPayload.sub,
+        email: extendedPayload.email,
+        jti,
+      }),
     };
   }
 
@@ -50,6 +59,15 @@ export class TokenService {
     } catch {
       throw new UnauthorizedError('Invalid or expired refresh token.');
     }
+  }
+
+  /** Decodes an unsigned JWT without signature verification (own issued tokens). */
+  decodeToken(token: string): JwtPayload {
+    const payload = jwt.decode(token) as JwtPayload | null;
+    if (!payload) {
+      throw new UnauthorizedError('Malformed token.');
+    }
+    return payload;
   }
 
   getRefreshTokenExpiryDate(): Date {
