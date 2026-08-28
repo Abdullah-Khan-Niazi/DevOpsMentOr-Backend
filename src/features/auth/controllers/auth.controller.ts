@@ -7,6 +7,7 @@ import type {
   Enable2faDto,
   ForgotPasswordDto,
   LoginDto,
+  OAuthCompleteDto,
   OAuthLoginDto,
   OAuthSignupDto,
   RefreshTokenDto,
@@ -19,12 +20,18 @@ import type {
 
 export class AuthController {
   async register(req: Request, res: Response): Promise<Response> {
-    const result = await authService.register(req.body as RegisterDto);
+    const result = await authService.register(req.body as RegisterDto, {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
     return sendSuccess(res, result, 'Registration successful.', HTTP_STATUS.CREATED);
   }
 
   async verifyEmail(req: Request, res: Response): Promise<Response> {
-    const result = await authService.verifyEmail(req.body as VerifyEmailDto);
+    const result = await authService.verifyEmail(req.body as VerifyEmailDto, {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
     return sendSuccess(res, result, 'Email verified.', HTTP_STATUS.OK);
   }
 
@@ -65,6 +72,10 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
     });
 
+    if ('exists' in result && !result.exists) {
+      return sendSuccess(res, result, 'OAuth account setup required.', HTTP_STATUS.OK);
+    }
+
     return sendSuccess(res, result, 'OAuth login successful.', HTTP_STATUS.OK);
   }
 
@@ -74,7 +85,20 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
     });
 
+    if ('exists' in result && !result.exists) {
+      return sendSuccess(res, result, 'OAuth account setup required.', HTTP_STATUS.OK);
+    }
+
     return sendSuccess(res, result, 'OAuth signup successful.', HTTP_STATUS.CREATED);
+  }
+
+  async oauthComplete(req: Request, res: Response): Promise<Response> {
+    const result = await authService.completeOAuthRegistration(req.body as OAuthCompleteDto, {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    return sendSuccess(res, result, 'OAuth account created.', HTTP_STATUS.CREATED);
   }
 
   async forgotPassword(req: Request, res: Response): Promise<Response> {
