@@ -3,6 +3,9 @@ import { env } from './config';
 import { logger } from '../shared/logger';
 import { connectDatabase, disconnectDatabase } from './database';
 import { connectRedis, disconnectRedis } from './cache/redis';
+import { labTtlMonitorJob } from '../features/labs';
+import { leaderboardComputationJob } from '../features/gamification';
+import { subscriptionExpiryJob } from '../features/billing';
 
 export async function startServer(): Promise<void> {
   await connectDatabase();
@@ -15,8 +18,15 @@ export async function startServer(): Promise<void> {
     logger.info(`Swagger docs: http://localhost:${env.PORT}/api-docs`);
   });
 
+  labTtlMonitorJob.start();
+  leaderboardComputationJob.start();
+  subscriptionExpiryJob.start();
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`${signal} received. Shutting down gracefully...`);
+    labTtlMonitorJob.stop();
+    leaderboardComputationJob.stop();
+    subscriptionExpiryJob.stop();
     server.close(() => {
       void (async () => {
         await disconnectRedis();

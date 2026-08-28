@@ -7,6 +7,15 @@ import { reportRoutes } from '../features/reports';
 import { dashboardRoutes } from '../features/dashboard';
 import { adminRoutes } from '../features/admin';
 import { orgRoutes } from '../features/orgs';
+import { adminCurriculumRoutes, curriculumRoutes } from '../features/curriculum';
+import { adminProgressRouter, progressRouter } from '../features/progress';
+import { adminLabsRouter, labsRouter } from '../features/labs';
+import { adminGamificationRouter, gamificationRouter } from '../features/gamification';
+import { adminNotificationsRouter, notificationsRouter } from '../features/notifications';
+import { adminModerationRouter, communityRouter } from '../features/community';
+import { adminOperationsRouter, operationsRouter } from '../features/operations';
+import { adminAnalyticsRouter } from '../features/analytics';
+import { billingRoutes } from '../features/billing';
 
 export function registerRoutes(): Router {
   const router = Router();
@@ -22,6 +31,22 @@ export function registerRoutes(): Router {
   router.use('/reports', reportRoutes);
   router.use('/dashboard', dashboardRoutes);
   router.use('/', orgRoutes);
+  router.use('/curriculum', curriculumRoutes);
+  router.use('/admin', adminCurriculumRoutes);
+  router.use('/progress', progressRouter);
+  router.use('/admin', adminProgressRouter);
+  router.use(labsRouter);
+  router.use('/admin', adminLabsRouter);
+  router.use(gamificationRouter);
+  router.use('/admin', adminGamificationRouter);
+  router.use(notificationsRouter);
+  router.use('/admin', adminNotificationsRouter);
+  router.use(communityRouter);
+  router.use('/admin', adminModerationRouter);
+  router.use(operationsRouter);
+  router.use('/admin', adminOperationsRouter);
+  router.use('/admin', adminAnalyticsRouter);
+  router.use('/billing', billingRoutes);
 
   return router;
 }

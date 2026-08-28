@@ -2,14 +2,19 @@ import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import dotenv from 'dotenv';
 import {
+  academyCourses,
+  categories,
   countries,
   db,
+  difficultyLevels,
   disconnectDatabase,
+  emailTemplates,
   permissions,
   rolePermissions,
   roles,
   skills,
   systemSettings,
+  tags,
   teams,
   userRoles,
   users,
@@ -71,6 +76,41 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.CLASS_STUDENTS_READ, module: 'organizations', description: 'Read class roster and invitations' },
   { name: PERMISSIONS.CLASS_STUDENTS_INVITE, module: 'organizations', description: 'Invite, import and withdraw students' },
   { name: PERMISSIONS.ENROLLMENT_READ, module: 'organizations', description: 'Read own enrollment and accept invitations' },
+  // ─── F4 Canonical Curriculum / Course Content ────────────────────────────
+  { name: PERMISSIONS.CURRICULUM_READ, module: 'curriculum', description: 'Browse published course, modules, lessons and quiz metadata' },
+  { name: PERMISSIONS.PLATFORM_CURRICULUM_READ, module: 'curriculum', description: 'Read all curriculum content including drafts' },
+  { name: PERMISSIONS.PLATFORM_CURRICULUM_MANAGE, module: 'curriculum', description: 'Create, edit, publish, archive and reorder curriculum content' },
+  // ─── F5 Learning Experience / Progress Tracking ─────────────────────────
+  { name: PERMISSIONS.PROGRESS_SELF_READ, module: 'progress', description: 'Read own lesson, module and course progress' },
+  { name: PERMISSIONS.PROGRESS_SELF_WRITE, module: 'progress', description: 'Start or complete own lessons and submit quiz attempts' },
+  { name: PERMISSIONS.PROGRESS_CLASS_READ, module: 'progress', description: 'Read progress of students in assigned classes' },
+  { name: PERMISSIONS.PROGRESS_ORG_READ, module: 'progress', description: 'Read progress of all students in own organization' },
+  { name: PERMISSIONS.PLATFORM_PROGRESS_READ, module: 'progress', description: 'Read any user progress platform-wide' },
+  // ─── F6 Labs, Execution Engine & AI Mentor ─────────────────────────────
+  { name: PERMISSIONS.LABS_INSTANCE_CREATE, module: 'labs', description: 'Provision, start and extend own lab instances' },
+  { name: PERMISSIONS.LABS_INSTANCE_READ, module: 'labs', description: 'Read own lab instances, run checks and submit answers' },
+  { name: PERMISSIONS.LABS_INSTANCE_DELETE, module: 'labs', description: 'Stop or terminate own lab instances' },
+  { name: PERMISSIONS.LABS_AI_MENTOR_USE, module: 'labs', description: 'Use the AI Mentor assistant in lessons and labs' },
+  { name: PERMISSIONS.LABS_CLASS_READ, module: 'labs', description: 'Read lab activity of students in assigned classes' },
+  { name: PERMISSIONS.LABS_ORG_READ, module: 'labs', description: 'Read lab activity of all students in own organization' },
+  { name: PERMISSIONS.PLATFORM_LABS_MANAGE, module: 'labs', description: 'Create, edit and publish labs and tracks' },
+  { name: PERMISSIONS.PLATFORM_LABS_ADMIN, module: 'labs', description: 'Monitor and force-terminate any lab instance' },
+  // ─── F7 Achievements / Gamification / Certification ─────────────────────
+  { name: PERMISSIONS.GAMIFICATION_PROFILE_READ, module: 'gamification', description: 'Read own gamification profile, badges, achievements and points history' },
+  { name: PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD, module: 'gamification', description: 'Download own certificates' },
+  { name: PERMISSIONS.GAMIFICATION_CLASS_READ, module: 'gamification', description: 'Read leaderboards of assigned classes' },
+  { name: PERMISSIONS.GAMIFICATION_ORG_READ, module: 'gamification', description: 'Read leaderboards of own organization' },
+  { name: PERMISSIONS.PLATFORM_GAMIFICATION_MANAGE, module: 'gamification', description: 'Manage badges, achievements, seasons, points adjustments and certificate invalidation' },
+  // ─── F8 Analytics / Notifications / Platform Operations ──────────────────
+  { name: PERMISSIONS.NOTIFICATIONS_INBOX_READ, module: 'notifications', description: 'Read and manage own notification inbox' },
+  { name: PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE, module: 'notifications', description: 'Update own notification channel preferences' },
+  { name: PERMISSIONS.CONTENT_REVIEW_CREATE, module: 'community', description: 'Submit course and lab reviews' },
+  { name: PERMISSIONS.CONTENT_COMMENT_CREATE, module: 'community', description: 'Post comments and replies on courses, lessons and labs' },
+  { name: PERMISSIONS.CONTENT_LIKE_CREATE, module: 'community', description: 'React with likes on comments and reviews' },
+  { name: PERMISSIONS.CONTENT_REPORT_CREATE, module: 'community', description: 'Submit content moderation reports' },
+  { name: PERMISSIONS.EVENTS_REGISTER, module: 'operations', description: 'Register for and cancel platform events' },
+  { name: PERMISSIONS.PLATFORM_CONTENT_MODERATE, module: 'community', description: 'Approve reviews, pin or hide comments, resolve and dismiss reports' },
+  { name: PERMISSIONS.PLATFORM_ANALYTICS_READ, module: 'analytics', description: 'Read the platform analytics dashboard (aggregated metrics only)' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -99,6 +139,27 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CLASS_STUDENTS_READ,
     PERMISSIONS.CLASS_STUDENTS_INVITE,
     PERMISSIONS.ENROLLMENT_READ,
+    PERMISSIONS.CURRICULUM_READ,
+    PERMISSIONS.PROGRESS_SELF_READ,
+    PERMISSIONS.PROGRESS_SELF_WRITE,
+    PERMISSIONS.PROGRESS_CLASS_READ,
+    PERMISSIONS.PROGRESS_ORG_READ,
+    PERMISSIONS.LABS_INSTANCE_CREATE,
+    PERMISSIONS.LABS_INSTANCE_READ,
+    PERMISSIONS.LABS_INSTANCE_DELETE,
+    PERMISSIONS.LABS_AI_MENTOR_USE,
+    PERMISSIONS.LABS_CLASS_READ,
+    PERMISSIONS.LABS_ORG_READ,
+    PERMISSIONS.GAMIFICATION_PROFILE_READ,
+    PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
+    PERMISSIONS.GAMIFICATION_ORG_READ,
+    PERMISSIONS.NOTIFICATIONS_INBOX_READ,
+    PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE,
+    PERMISSIONS.CONTENT_REVIEW_CREATE,
+    PERMISSIONS.CONTENT_COMMENT_CREATE,
+    PERMISSIONS.CONTENT_LIKE_CREATE,
+    PERMISSIONS.CONTENT_REPORT_CREATE,
+    PERMISSIONS.EVENTS_REGISTER,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -119,6 +180,25 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CLASS_STUDENTS_READ,
     PERMISSIONS.CLASS_STUDENTS_INVITE,
     PERMISSIONS.ENROLLMENT_READ,
+    PERMISSIONS.CURRICULUM_READ,
+    PERMISSIONS.PROGRESS_SELF_READ,
+    PERMISSIONS.PROGRESS_SELF_WRITE,
+    PERMISSIONS.PROGRESS_CLASS_READ,
+    PERMISSIONS.LABS_INSTANCE_CREATE,
+    PERMISSIONS.LABS_INSTANCE_READ,
+    PERMISSIONS.LABS_INSTANCE_DELETE,
+    PERMISSIONS.LABS_AI_MENTOR_USE,
+    PERMISSIONS.LABS_CLASS_READ,
+    PERMISSIONS.GAMIFICATION_PROFILE_READ,
+    PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
+    PERMISSIONS.GAMIFICATION_CLASS_READ,
+    PERMISSIONS.NOTIFICATIONS_INBOX_READ,
+    PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE,
+    PERMISSIONS.CONTENT_REVIEW_CREATE,
+    PERMISSIONS.CONTENT_COMMENT_CREATE,
+    PERMISSIONS.CONTENT_LIKE_CREATE,
+    PERMISSIONS.CONTENT_REPORT_CREATE,
+    PERMISSIONS.EVENTS_REGISTER,
   ],
   [ROLES.ORG_STUDENT]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -135,6 +215,22 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.ORG_READ,
     PERMISSIONS.CLASS_STUDENTS_READ,
     PERMISSIONS.ENROLLMENT_READ,
+    PERMISSIONS.CURRICULUM_READ,
+    PERMISSIONS.PROGRESS_SELF_READ,
+    PERMISSIONS.PROGRESS_SELF_WRITE,
+    PERMISSIONS.LABS_INSTANCE_CREATE,
+    PERMISSIONS.LABS_INSTANCE_READ,
+    PERMISSIONS.LABS_INSTANCE_DELETE,
+    PERMISSIONS.LABS_AI_MENTOR_USE,
+    PERMISSIONS.GAMIFICATION_PROFILE_READ,
+    PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
+    PERMISSIONS.NOTIFICATIONS_INBOX_READ,
+    PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE,
+    PERMISSIONS.CONTENT_REVIEW_CREATE,
+    PERMISSIONS.CONTENT_COMMENT_CREATE,
+    PERMISSIONS.CONTENT_LIKE_CREATE,
+    PERMISSIONS.CONTENT_REPORT_CREATE,
+    PERMISSIONS.EVENTS_REGISTER,
   ],
   [ROLES.INDIVIDUAL_LEARNER]: [
     PERMISSIONS.DASHBOARD_READ,
@@ -148,6 +244,18 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.USERS_PROFILE_UPDATE,
     PERMISSIONS.USERS_SKILLS_MANAGE,
     PERMISSIONS.USERS_FOLLOW_MANAGE,
+    PERMISSIONS.CURRICULUM_READ,
+    PERMISSIONS.PROGRESS_SELF_READ,
+    PERMISSIONS.PROGRESS_SELF_WRITE,
+    PERMISSIONS.GAMIFICATION_PROFILE_READ,
+    PERMISSIONS.GAMIFICATION_CERTIFICATE_DOWNLOAD,
+    PERMISSIONS.NOTIFICATIONS_INBOX_READ,
+    PERMISSIONS.NOTIFICATIONS_PREFERENCES_WRITE,
+    PERMISSIONS.CONTENT_REVIEW_CREATE,
+    PERMISSIONS.CONTENT_COMMENT_CREATE,
+    PERMISSIONS.CONTENT_LIKE_CREATE,
+    PERMISSIONS.CONTENT_REPORT_CREATE,
+    PERMISSIONS.EVENTS_REGISTER,
   ],
   [ROLES.GUEST]: [],
 };
@@ -259,6 +367,72 @@ export const systemSettingSeeds = [
     description: 'Current platform build version. Read-only.',
     isEditable: false,
   },
+  // ─── F8 platform operations settings (SCR-F8-14) ─────────────────────────
+  {
+    settingKey: 'analytics.default_days',
+    settingValue: { value: 30 },
+    groupName: 'analytics',
+    description: 'Default date range in days for analytics trend charts.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'analytics.poll_interval_seconds',
+    settingValue: { value: 60 },
+    groupName: 'analytics',
+    description: 'Notification bell polling interval in seconds.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'reports.reason_categories',
+    settingValue: {
+      value: ['spam', 'harassment', 'inappropriate_content', 'false_information', 'copyright_violation', 'other'],
+    },
+    groupName: 'moderation',
+    description: 'Allowed report reason categories for the report modal.',
+    isEditable: true,
+  },
+  {
+    settingKey: 'platform.notifications.opt_out_all',
+    settingValue: { value: false },
+    groupName: 'notifications',
+    description: 'Master switch disabling all non-critical platform notifications.',
+    isEditable: true,
+  },
+] as const;
+
+/**
+ * F8 transactional email templates (SCR-F8-13). Placeholders follow the
+ * `{{camelCase}}` convention consumed by the EmailAdapter substitution engine.
+ */
+export const emailTemplateSeeds = [
+  {
+    templateKey: 'notification_generic',
+    name: 'Platform notification',
+    subject: '{{appName}} notification',
+    bodyHtml: '<p>Hi {{userName}},</p><p>{{message}}</p>',
+    bodyText: 'Hi {{userName}},\n\n{{message}}',
+    placeholders: ['{{userName}}', '{{message}}'],
+    isActive: true,
+  },
+  {
+    templateKey: 'event_registration_confirmation',
+    name: 'Event registration confirmation',
+    subject: 'You are registered for {{eventTitle}}',
+    bodyHtml:
+      '<p>Hi {{userName}},</p><p>Your registration for <strong>{{eventTitle}}</strong> is confirmed.</p><p>Starts: {{eventStart}}</p>',
+    bodyText: 'Hi {{userName}},\n\nYour registration for {{eventTitle}} is confirmed.\nStarts: {{eventStart}}',
+    placeholders: ['{{userName}}', '{{eventTitle}}', '{{eventStart}}'],
+    isActive: true,
+  },
+  {
+    templateKey: 'announcement_notice',
+    name: 'Announcement notice',
+    subject: '{{announcementTitle}}',
+    bodyHtml: '<p>Hi {{userName}},</p><p>{{announcementContent}}</p>',
+    bodyText: 'Hi {{userName}},\n\n{{announcementContent}}',
+    placeholders: ['{{userName}}', '{{announcementTitle}}', '{{announcementContent}}'],
+    isActive: true,
+  },
 ] as const;
 
 async function seedSkillsCatalog(): Promise<void> {
@@ -297,6 +471,23 @@ async function seedSystemSettings(): Promise<void> {
   const settings = await db.select().from(systemSettings);
   // eslint-disable-next-line no-console
   console.log(`System settings seeded (${settings.length} rows).`);
+}
+
+/** F8: seed the transactional email template catalog (idempotent). */
+async function seedEmailTemplates(): Promise<void> {
+  for (const seed of emailTemplateSeeds) {
+    const existing = await db.query.emailTemplates.findFirst({
+      where: eq(emailTemplates.templateKey, seed.templateKey),
+    });
+    if (existing) {
+      continue;
+    }
+    await db.insert(emailTemplates).values(seed);
+  }
+
+  const count = await db.$count(emailTemplates);
+  // eslint-disable-next-line no-console
+  console.log(`Email templates seeded (${count} rows).`);
 }
 
 async function seedCountriesIfMissing(): Promise<void> {
@@ -345,6 +536,93 @@ async function seedOrgInviteSentinel(ownerUserId: number): Promise<void> {
   });
   // eslint-disable-next-line no-console
   console.log('Organization invitation sentinel team seeded.');
+}
+
+const difficultyLevelSeeds = [
+  { name: 'Very Easy', levelValue: 1, colorHex: '#00cc66', pointsMultiplier: '1.00' },
+  { name: 'Easy', levelValue: 2, colorHex: '#00b4d8', pointsMultiplier: '1.20' },
+  { name: 'Medium', levelValue: 3, colorHex: '#ffb703', pointsMultiplier: '1.50' },
+  { name: 'Hard', levelValue: 4, colorHex: '#f94144', pointsMultiplier: '2.00' },
+  { name: 'Insane', levelValue: 5, colorHex: '#7209b7', pointsMultiplier: '2.50' },
+] as const;
+
+const categorySeeds = [
+  { name: 'Web', slug: 'web', description: 'Web application development and security' },
+  { name: 'Reverse Engineering', slug: 'reverse-engineering', description: 'Reverse engineering and binary analysis' },
+  { name: 'Forensics', slug: 'forensics', description: 'Digital forensics and analysis' },
+  { name: 'Cryptography', slug: 'cryptography', description: 'Cryptographic challenges' },
+  { name: 'Network', slug: 'network', description: 'Networking fundamentals and protocols' },
+  { name: 'Cloud', slug: 'cloud', description: 'Cloud computing and infrastructure' },
+  { name: 'AI/ML', slug: 'ai-ml', description: 'Artificial intelligence and machine learning security' },
+] as const;
+
+const tagSeeds = [
+  { tagName: 'docker', slug: 'docker', colorHex: '#0db7ed' },
+  { tagName: 'kubernetes', slug: 'kubernetes', colorHex: '#326ce5' },
+  { tagName: 'aws', slug: 'aws', colorHex: '#ff9900' },
+  { tagName: 'linux', slug: 'linux', colorHex: '#fcc624' },
+  { tagName: 'terraform', slug: 'terraform', colorHex: '#7b42bc' },
+  { tagName: 'ci-cd', slug: 'ci-cd', colorHex: '#e4482d' },
+  { tagName: 'networking', slug: 'networking', colorHex: '#00b4d8' },
+  { tagName: 'security', slug: 'security', colorHex: '#e5484d' },
+] as const;
+
+/** F4: difficulty taxonomy, categories, tags and the canonical course. */
+async function seedCurriculumCatalog(adminUserId: number): Promise<void> {
+  for (const seed of difficultyLevelSeeds) {
+    const existing = await db.query.difficultyLevels.findFirst({
+      where: eq(difficultyLevels.name, seed.name),
+    });
+    if (!existing) {
+      await db.insert(difficultyLevels).values(seed);
+    }
+  }
+
+  for (const seed of categorySeeds) {
+    const existing = await db.query.categories.findFirst({
+      where: eq(categories.slug, seed.slug),
+    });
+    if (!existing) {
+      await db.insert(categories).values(seed);
+    }
+  }
+
+  for (const seed of tagSeeds) {
+    const existing = await db.query.tags.findFirst({
+      where: eq(tags.slug, seed.slug),
+    });
+    if (!existing) {
+      await db.insert(tags).values(seed);
+    }
+  }
+
+  // §05 invariant 1: exactly one canonical course per deployment.
+  const existingCourse = await db.query.academyCourses.findFirst({
+    orderBy: (row, { asc }) => [asc(row.courseId)],
+  });
+  if (!existingCourse) {
+    const medium = await db.query.difficultyLevels.findFirst({
+      where: eq(difficultyLevels.name, 'Medium'),
+    });
+    const cloud = await db.query.categories.findFirst({
+      where: eq(categories.slug, 'cloud'),
+    });
+    await db.insert(academyCourses).values({
+      title: 'DevOps Mentor',
+      slug: 'devops-mentor',
+      description: 'End-to-end DevOps engineering curriculum.',
+      difficultyId: medium?.difficultyId ?? 3,
+      categoryId: cloud?.categoryId ?? null,
+      instructorId: adminUserId,
+      estimatedHours: 40,
+      isPublished: true,
+      prerequisites: null,
+      learningObjectives: null,
+    });
+  }
+
+  // eslint-disable-next-line no-console
+  console.log('Curriculum catalog seeded (difficulties, categories, tags, course).');
 }
 
 async function main(): Promise<void> {
@@ -418,8 +696,10 @@ async function main(): Promise<void> {
   await db.insert(userRoles).values({ userId: adminId, roleId: adminRole.roleId });
 
   await seedOrgInviteSentinel(adminId);
+  await seedCurriculumCatalog(adminId);
   await seedSkillsCatalog();
   await seedSystemSettings();
+  await seedEmailTemplates();
   await seedCountriesIfMissing();
 
   // eslint-disable-next-line no-console

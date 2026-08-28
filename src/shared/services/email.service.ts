@@ -77,6 +77,34 @@ export class EmailService {
       text: `Accept your invitation here: ${inviteUrl}`,
     });
   }
+
+  /**
+   * F8 transactional dispatch used by the notification email adapter.
+   * Same SMTP fallback policy: development logs the message, production
+   * requires SMTP configuration.
+   */
+  async sendEmail(to: string, subject: string, html: string, text: string | null): Promise<void> {
+    if (!env.SMTP_HOST) {
+      if (env.NODE_ENV === 'production') {
+        throw new Error('SMTP_HOST is not configured; email delivery is unavailable.');
+      }
+
+      logger.info(
+        { to, subject, text: text?.slice(0, 500) },
+        'SMTP not configured (development) - transactional email delivered via log',
+      );
+      return;
+    }
+
+    const transporter = this.ensureTransport();
+    await transporter.sendMail({
+      from: env.SMTP_FROM,
+      to,
+      subject,
+      html,
+      text: text ?? undefined,
+    });
+  }
 }
 
 export const emailService = new EmailService();

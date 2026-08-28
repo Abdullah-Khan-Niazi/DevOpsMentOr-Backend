@@ -54,6 +54,47 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().default(''),
   GITHUB_CLIENT_ID: z.string().default(''),
   GITHUB_CLIENT_SECRET: z.string().default(''),
+
+  // ─── F6 Labs / Execution Engine / AI Mentor ───────────────────────────────
+  // Empty by default: the adapters fail with a user-safe error until the
+  // deployment supplies a real endpoint/key (F6 §12 BLOCKING conditions).
+  CONTAINER_ORCHESTRATION_API_URL: z.string().default(''),
+  LLM_API_URL: z.string().default(''),
+  LLM_API_KEY: z.string().default(''),
+  AI_MENTOR_MODEL: z.string().default(''),
+  AI_MENTOR_SYSTEM_PROMPT: z.string().default(
+    'You are AI Mentor, a DevOps teaching assistant. Guide the learner toward ' +
+      'solving the problem with hints and explanations. Never reveal answer keys ' +
+      'or credentials, and stay strictly within the provided lesson and lab context.',
+  ),
+  AI_MENTOR_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(7200),
+  AI_MENTOR_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
+  AI_MENTOR_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  LAB_TTL_MONITOR_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+  LAB_EXTEND_MINUTES: z.coerce.number().int().positive().default(60),
+  LAB_MAX_EXTENSIONS: z.coerce.number().int().min(0).default(3),
+
+  // ─── F7 Achievements / Gamification / Certification ───────────────────────
+  // Certificate public verification page origin (BLOCKING per F7 §12: a missing
+  // value must halt boot). Used to build the shareable `certificates.certificate_url`.
+  CERTIFICATE_VERIFY_BASE_URL: z.string().min(1, 'CERTIFICATE_VERIFY_BASE_URL is required.'),
+  // Leaderboard recompute cadence (minutes) for the scheduled computation job.
+  LEADERBOARD_RECOMPUTE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
+
+  // ─── F9 Subscription, Billing & Entitlements ─────────────────────────────
+  // Empty by default: the Stripe adapter fails with a user-safe error until
+  // the deployment supplies real keys (same pattern as the F6 adapters).
+  STRIPE_SECRET_KEY: z.string().default(''),
+  STRIPE_WEBHOOK_SECRET: z.string().default(''),
+  STRIPE_PRICE_ID_PREMIUM_MONTHLY: z.string().default(''),
+  STRIPE_PRICE_ID_PREMIUM_ANNUAL: z.string().default(''),
+  STRIPE_PRICE_ID_ENTERPRISE_MONTHLY: z.string().default(''),
+  STRIPE_PRICE_ID_ENTERPRISE_ANNUAL: z.string().default(''),
+  STRIPE_PRICE_ID_STUDENT_MONTHLY: z.string().default(''),
+  STRIPE_PRICE_ID_STUDENT_ANNUAL: z.string().default(''),
+  STRIPE_CURRENCY: z.string().length(3).default('usd'),
+  // Billing cycle resolution for `subscriptions.end_date` (invariant 12).
+  SUBSCRIPTION_EXPIRY_CHECK_INTERVAL_HOURS: z.coerce.number().int().positive().default(24),
 });
 
 const parsed = envSchema.safeParse(process.env);

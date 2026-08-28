@@ -41,4 +41,12 @@ export const cacheKeys = {
   learnerPoolStats: (): string => 'lp_stats',
   /** `admin_kpi` → JSON AdminDashboardDto; TTL = 5min (ADM-06). */
   adminDashboard: (): string => 'admin_kpi',
+  /** `course_progress:{userId}` → JSON CourseProgressDto; TTL = 60s (F5 §08). */
+  courseProgress: (userId: number): string => `course_progress:${userId}`,
+  /** `ai_mentor:{userId}:{lessonId}` → JSON AiMentorSession; TTL = 7200s (F6 §05 invariant 9). */
+  aiMentorSession: (userId: number, lessonId: number): string => `ai_mentor:${userId}:${lessonId}`,
+  /** `ai_mentor_rate:{userId}` → message count; TTL = 3600s (F6 §05 invariant 10). */
+  aiMentorRate: (userId: number): string => `ai_mentor_rate:${userId}`,
+  /** `lab_extend:{instanceId}` → extension count; TTL until instance expiry (F6 §05). */
+  labExtendCount: (instanceId: number): string => `lab_extend:${instanceId}`,
 } as const;
