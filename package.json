@@ -30,7 +30,7 @@
   "author": "",
   "license": "MIT",
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
