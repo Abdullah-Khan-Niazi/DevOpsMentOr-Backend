@@ -14,6 +14,7 @@ import {
   forgotPasswordSchema,
   loginSchema,
   logoutSchema,
+  oAuthCompleteSchema,
   oAuthLoginSchema,
   oAuthSignupSchema,
   refreshTokenSchema,
@@ -110,6 +111,13 @@ authRoutes.post(
   '/oauth/signup',
   validateRequest(oAuthSignupSchema, 'body'),
   asyncHandler((req, res) => authController.oauthSignup(req, res)),
+);
+
+authRoutes.post(
+  '/oauth/complete',
+  authLimiter,
+  validateRequest(oAuthCompleteSchema, 'body'),
+  asyncHandler((req, res) => authController.oauthComplete(req, res)),
 );
 
 // ─── Two-factor authentication ─────────────────────────────────────────────

@@ -30,7 +30,9 @@ import type {
   LogoutDto,
   MeResponseDto,
   MessageResponseDto,
+  OAuthCompleteDto,
   OAuthLoginDto,
+  OAuthLoginResultDto,
   OAuthSignupDto,
   RefreshTokenDto,
   RegisterDto,
@@ -58,6 +60,11 @@ import type { ILoginHistoryRepository } from '../repositories/login-history.repo
 import { loginHistoryRepository } from '../repositories/login-history.repository';
 
 import { oauthService } from './oauth.service';
+import { createPendingOAuth, consumePendingOAuth } from '../repositories/oauth-pending.repository';
+import { orgService } from '../../orgs/services/org.service';
+import { classService } from '../../orgs/services/class.service';
+import { invitationRepository } from '../../orgs/repositories/invitation.repository';
+import type { OrgActor } from '../../orgs/dto/org.dto';
 import type { JwtPayload } from '../../../shared/types';
 import type { UserWithRoles } from '../../users/types';
 
@@ -73,7 +80,10 @@ export class AuthService {
     private readonly loginHistoryRepo: ILoginHistoryRepository = loginHistoryRepository,
   ) {}
 
-  async register(input: RegisterDto): Promise<MessageResponseDto> {
+  async register(
+    input: RegisterDto,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<MessageResponseDto> {
     const existingEmail = await this.usersRepo.findByEmail(input.email);
     if (existingEmail) {
       throw new ConflictError('A user with this email already exists.');
@@ -84,13 +94,29 @@ export class AuthService {
       throw new ConflictError('A user with this username already exists.');
     }
 
+    const passwordHash = await passwordService.hash(input.password);
+    const salt = randomBytes(16).toString('hex');
+
+    if (input.accountType === 'organization') {
+      return this.registerOrganization(input, passwordHash, salt, meta);
+    }
+
+    if (input.accountType === 'member') {
+      return this.registerMember(input, passwordHash, salt);
+    }
+
+    return this.registerIndividual(input, passwordHash, salt);
+  }
+
+  private async registerIndividual(
+    input: Extract<RegisterDto, { accountType: 'individual' }>,
+    passwordHash: string,
+    salt: string,
+  ): Promise<MessageResponseDto> {
     const defaultRole = await this.roles.findByName(ROLES.INDIVIDUAL_LEARNER);
     if (!defaultRole) {
       throw new Error('individual_learner role is not seeded.');
     }
-
-    const passwordHash = await passwordService.hash(input.password);
-    const salt = randomBytes(16).toString('hex');
 
     const user = await this.usersRepo.create({
       username: input.username,
@@ -101,17 +127,104 @@ export class AuthService {
       roleIds: [defaultRole.id],
     });
 
-    const otpCode = await this.issueOtp(user.userId, 'email_verification');
-    await emailService.sendOtpEmail(input.email, otpCode, 'email verification');
+    await this.issueAndSendVerification(user.userId, input.email);
 
-    logger.info({ userId: user.userId }, 'User registered; verification OTP issued');
+    logger.info({ userId: user.userId }, 'Individual user registered; verification OTP issued');
+    return { message: 'Registration successful. Please verify your email.' };
+  }
 
+  private async registerOrganization(
+    input: Extract<RegisterDto, { accountType: 'organization' }>,
+    passwordHash: string,
+    salt: string,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<MessageResponseDto> {
+    const user = await this.usersRepo.create({
+      username: input.username,
+      email: input.email,
+      passwordHash,
+      salt,
+      fullName: input.fullName,
+      roleIds: [],
+    });
+
+    const actor: OrgActor = {
+      userId: user.userId,
+      ipAddress: meta?.ipAddress ?? null,
+      userAgent: meta?.userAgent ?? null,
+    };
+
+    const organization = await orgService.createOrg(actor, {
+      name: input.organization.name,
+      slug: input.organization.slug,
+      description: input.organization.description,
+      website: input.organization.website || undefined,
+      industry: input.organization.industry,
+      billingEmail: input.organization.billingEmail,
+    });
+
+    await orgService.assignOrgAdmin(actor, organization.organizationId, user.userId);
+
+    await this.issueAndSendVerification(user.userId, input.email);
+
+    logger.info(
+      { userId: user.userId, organizationId: organization.organizationId },
+      'Organization admin registered; org created, verification OTP issued',
+    );
     return {
-      message: 'Registration successful. Please verify your email.',
+      message: 'Registration successful. Your organization has been created. Please verify your email.',
     };
   }
 
-  async verifyEmail(input: VerifyEmailDto): Promise<MessageResponseDto> {
+  private async registerMember(
+    input: Extract<RegisterDto, { accountType: 'member' }>,
+    passwordHash: string,
+    salt: string,
+  ): Promise<MessageResponseDto> {
+    const invite = await invitationRepository.findByToken(input.invitationCode);
+    if (!invite) {
+      throw new BadRequestError('INVALID_INVITATION: this invitation code is not valid.');
+    }
+    if (invite.status !== 'pending') {
+      throw new BadRequestError('INVITE_ALREADY_USED: this invitation has already been used.');
+    }
+    if (invite.expiresAt.getTime() < Date.now()) {
+      throw new BadRequestError('INVITE_EXPIRED: this invitation has expired.');
+    }
+    if (invite.inviteeEmail.trim().toLowerCase() !== input.email.trim().toLowerCase()) {
+      throw new ForbiddenError('This invitation was issued to a different email address.');
+    }
+
+    const user = await this.usersRepo.create({
+      username: input.username,
+      email: input.email,
+      passwordHash,
+      salt,
+      fullName: input.fullName,
+      roleIds: [],
+    });
+
+    const accepted = await classService.acceptInvitation(user.userId, input.invitationCode);
+    await this.issueAndSendVerification(user.userId, input.email);
+
+    logger.info(
+      { userId: user.userId, kind: accepted.kind, organization: accepted.organizationName },
+      'Member registered via invitation; verification OTP issued',
+    );
+    return {
+      message: 'Registration successful. You have been enrolled in the organization. Please verify your email.',
+    };
+  }
+
+  private async issueAndSendVerification(userId: number, email: string): Promise<void> {
+    const otpCode = await this.issueOtp(userId, 'email_verification');
+    await emailService.sendOtpEmail(email, otpCode, 'email verification');
+  }
+
+  async verifyEmail(
+    input: VerifyEmailDto,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<AuthResponseDto> {
     const user = await this.usersRepo.findByEmail(input.email);
 
     if (!user) {
@@ -131,7 +244,12 @@ export class AuthService {
 
     logger.info({ userId: user.userId }, 'Email verified');
 
-    return { message: 'Email verified successfully. You can now sign in.' };
+    const tokens = await this.createSession(user, 'email', meta, true);
+
+    return {
+      user: this.userSvc.toResponse(user),
+      tokens,
+    };
   }
 
   async resendVerification(input: ResendVerificationDto): Promise<MessageResponseDto> {
@@ -165,11 +283,6 @@ export class AuthService {
     if (!isPasswordValid) {
       await this.recordLoginFailure(user.userId, 'Invalid password', 'email', meta);
       throw new UnauthorizedError('Invalid email or password.');
-    }
-
-    if (user.isVerified === false) {
-      await this.recordLoginFailure(user.userId, 'Account not verified', 'email', meta);
-      throw new ForbiddenError('ACCOUNT_NOT_VERIFIED');
     }
 
     const accountStatus = getUserStatus(user);
@@ -455,7 +568,7 @@ export class AuthService {
   async oauthLogin(
     input: OAuthLoginDto,
     meta?: { ipAddress?: string; userAgent?: string },
-  ): Promise<AuthResponseDto> {
+  ): Promise<OAuthLoginResultDto> {
     const oauthUser = await oauthService.getUserInfo(input.provider, input.code, input.redirectUri);
 
     const existingUser = await this.usersRepo.findByEmail(oauthUser.email);
@@ -483,94 +596,221 @@ export class AuthService {
       };
     }
 
-    const tokens = await this.createOAuthAccount(oauthUser, input.provider, meta);
-
-    const created = await this.usersRepo.findByEmail(oauthUser.email);
-    if (!created) {
-      throw new Error('OAuth account creation failed.');
-    }
+    // New identity: hand back a single-use pending token and let the wizard
+    // collect the account type before we mint the local account.
+    const pendingToken = await createPendingOAuth({
+      email: oauthUser.email,
+      name: oauthUser.name,
+      provider: oauthUser.provider,
+      providerId: oauthUser.providerId,
+      ipAddress: meta?.ipAddress ?? null,
+      userAgent: meta?.userAgent ?? null,
+    });
 
     return {
-      user: this.userSvc.toResponse(created),
-      tokens,
+      exists: false,
+      pendingToken,
+      email: oauthUser.email,
+      name: oauthUser.name,
+      provider: oauthUser.provider,
     };
   }
 
   async oauthSignup(
     input: OAuthSignupDto,
     meta?: { ipAddress?: string; userAgent?: string },
-  ): Promise<AuthResponseDto> {
+  ): Promise<OAuthLoginResultDto> {
     const oauthUser = await oauthService.getUserInfo(input.provider, input.code, input.redirectUri);
 
-    const existingEmail = await this.usersRepo.findByEmail(oauthUser.email);
-    if (existingEmail) {
+    const existingUser = await this.usersRepo.findByEmail(oauthUser.email);
+    if (existingUser) {
       throw new ConflictError('An account with this email already exists. Please log in instead.');
     }
 
-    const existingUsername = await this.usersRepo.findByUsername(input.username);
-    if (existingUsername) {
-      throw new ConflictError('A user with this username already exists.');
-    }
-
-    const tokens = await this.createOAuthAccount(
-      { ...oauthUser, name: input.fullName ?? oauthUser.name },
-      input.provider,
-      meta,
-    );
-
-    // Assign the chosen username to the freshly created account.
-    const created = await this.usersRepo.findByEmail(oauthUser.email);
-    if (!created) {
-      throw new Error('OAuth account creation failed.');
-    }
-
-    await db.update(users).set({ username: input.username }).where(eq(users.userId, created.userId));
-
-    const finalUser = await this.usersRepo.findById(created.userId);
-    if (!finalUser) {
-      throw new Error('OAuth account creation failed.');
-    }
+    const pendingToken = await createPendingOAuth({
+      email: oauthUser.email,
+      name: input.fullName ?? oauthUser.name,
+      provider: oauthUser.provider,
+      providerId: oauthUser.providerId,
+      ipAddress: meta?.ipAddress ?? null,
+      userAgent: meta?.userAgent ?? null,
+    });
 
     return {
-      user: this.userSvc.toResponse(finalUser),
-      tokens,
+      exists: false,
+      pendingToken,
+      email: oauthUser.email,
+      name: input.fullName ?? oauthUser.name,
+      provider: oauthUser.provider,
     };
   }
 
-  private async createOAuthAccount(
-    oauthUser: { provider: 'google' | 'github'; email: string; name: string },
-    provider: 'google' | 'github',
+  async completeOAuthRegistration(
+    input: OAuthCompleteDto,
     meta?: { ipAddress?: string; userAgent?: string },
-  ): Promise<AuthTokensDto> {
-    const emailPrefix = oauthUser.email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '_');
+  ): Promise<AuthResponseDto> {
+    const pending = await consumePendingOAuth(input.pendingToken);
 
-    let username = emailPrefix;
+    if (!pending) {
+      throw new BadRequestError(
+        'Your OAuth session has expired. Please sign in with your provider again.',
+      );
+    }
+
+    const fullName = input.fullName?.trim() || pending.name;
+
+    if (input.accountType === 'member') {
+      return this.completeOAuthMember(pending, input, fullName, meta);
+    }
+
+    if (input.accountType === 'organization') {
+      return this.completeOAuthOrganization(pending, input, fullName, meta);
+    }
+
+    return this.completeOAuthIndividual(pending, input, fullName, meta);
+  }
+
+  private async deriveOAuthUsername(email: string, requested?: string): Promise<string> {
+    const base = (requested ?? email.split('@')[0]).replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+
+    let username = base;
     let suffix = 1;
     while (await this.usersRepo.findByUsername(username)) {
-      username = `${emailPrefix}_${suffix}`;
+      username = `${base}_${suffix}`;
       suffix++;
     }
 
+    return username;
+  }
+
+  private async completeOAuthIndividual(
+    pending: { email: string; name: string; provider: 'google' | 'github'; providerId: string },
+    input: Extract<OAuthCompleteDto, { accountType: 'individual' }>,
+    fullName: string,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<AuthResponseDto> {
     const defaultRole = await this.roles.findByName(ROLES.INDIVIDUAL_LEARNER);
     if (!defaultRole) {
       throw new Error('individual_learner role is not seeded.');
     }
 
     const user = await this.usersRepo.create({
-      username,
-      email: oauthUser.email,
+      username: await this.deriveOAuthUsername(pending.email, input.username),
+      email: pending.email,
       passwordHash: '',
       salt: '',
-      fullName: oauthUser.name ?? emailPrefix,
+      fullName,
       roleIds: [defaultRole.id],
     });
 
-    await db
-      .update(users)
-      .set({ isVerified: true, updatedAt: new Date() })
-      .where(eq(users.userId, user.userId));
+    await db.update(users).set({ isVerified: true, updatedAt: new Date() }).where(eq(users.userId, user.userId));
 
-    return this.createSession(user, provider, meta, true);
+    logger.info({ userId: user.userId, provider: pending.provider }, 'OAuth individual account created');
+
+    return this.oauthAuthResponse(user.userId, pending.provider, meta);
+  }
+
+  private async completeOAuthOrganization(
+    pending: { email: string; name: string; provider: 'google' | 'github'; providerId: string },
+    input: Extract<OAuthCompleteDto, { accountType: 'organization' }>,
+    fullName: string,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<AuthResponseDto> {
+    const user = await this.usersRepo.create({
+      username: await this.deriveOAuthUsername(pending.email, input.username),
+      email: pending.email,
+      passwordHash: '',
+      salt: '',
+      fullName,
+      roleIds: [],
+    });
+
+    const actor: OrgActor = {
+      userId: user.userId,
+      ipAddress: meta?.ipAddress ?? null,
+      userAgent: meta?.userAgent ?? null,
+    };
+
+    const organization = await orgService.createOrg(actor, {
+      name: input.organization.name,
+      slug: input.organization.slug,
+      description: input.organization.description,
+      website: input.organization.website || undefined,
+      industry: input.organization.industry,
+      billingEmail: input.organization.billingEmail,
+    });
+
+    await orgService.assignOrgAdmin(actor, organization.organizationId, user.userId);
+
+    await db.update(users).set({ isVerified: true, updatedAt: new Date() }).where(eq(users.userId, user.userId));
+
+    logger.info(
+      { userId: user.userId, organizationId: organization.organizationId, provider: pending.provider },
+      'OAuth organization account created; org admin assigned',
+    );
+
+    return this.oauthAuthResponse(user.userId, pending.provider, meta);
+  }
+
+  private async completeOAuthMember(
+    pending: { email: string; name: string; provider: 'google' | 'github'; providerId: string },
+    input: Extract<OAuthCompleteDto, { accountType: 'member' }>,
+    fullName: string,
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<AuthResponseDto> {
+    const invite = await invitationRepository.findByToken(input.invitationCode);
+    if (!invite) {
+      throw new BadRequestError('INVALID_INVITATION: this invitation code is not valid.');
+    }
+    if (invite.status !== 'pending') {
+      throw new BadRequestError('INVITE_ALREADY_USED: this invitation has already been used.');
+    }
+    if (invite.expiresAt.getTime() < Date.now()) {
+      throw new BadRequestError('INVITE_EXPIRED: this invitation has expired.');
+    }
+    if (invite.inviteeEmail.trim().toLowerCase() !== pending.email.trim().toLowerCase()) {
+      throw new ForbiddenError(
+        'This invitation was issued to a different email address than your provider account.',
+      );
+    }
+
+    const user = await this.usersRepo.create({
+      username: await this.deriveOAuthUsername(pending.email, input.username),
+      email: pending.email,
+      passwordHash: '',
+      salt: '',
+      fullName,
+      roleIds: [],
+    });
+
+    const accepted = await classService.acceptInvitation(user.userId, input.invitationCode);
+
+    await db.update(users).set({ isVerified: true, updatedAt: new Date() }).where(eq(users.userId, user.userId));
+
+    logger.info(
+      { userId: user.userId, kind: accepted.kind, organization: accepted.organizationName, provider: pending.provider },
+      'OAuth member account created via invitation',
+    );
+
+    return this.oauthAuthResponse(user.userId, pending.provider, meta);
+  }
+
+  private async oauthAuthResponse(
+    userId: number,
+    provider: 'google' | 'github',
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<AuthResponseDto> {
+    const user = await this.usersRepo.findById(userId);
+    if (!user) {
+      throw new Error('OAuth account creation failed.');
+    }
+
+    const tokens = await this.createSession(user, provider, meta, true);
+
+    return {
+      user: this.userSvc.toResponse(user),
+      tokens,
+    };
   }
 
   private async createSession(

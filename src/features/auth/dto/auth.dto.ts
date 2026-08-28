@@ -1,6 +1,22 @@
 import type { UserResponseDto } from '../../users/dto/user.dto';
 
-export interface RegisterDto {
+export type AccountType = 'individual' | 'organization' | 'member';
+
+export interface OrganizationInput {
+  name: string;
+  slug: string;
+  description?: string;
+  website?: string;
+  industry?: string;
+  billingEmail?: string;
+}
+
+export type RegisterDto =
+  | (BaseRegister & { accountType: 'individual' })
+  | (BaseRegister & { accountType: 'organization'; organization: OrganizationInput })
+  | (BaseRegister & { accountType: 'member'; invitationCode: string });
+
+interface BaseRegister {
   username: string;
   email: string;
   password: string;
@@ -73,9 +89,35 @@ export interface OAuthSignupDto {
   provider: OAuthProvider;
   code: string;
   redirectUri: string;
-  username: string;
-  fullName: string;
+  username?: string;
+  fullName?: string;
 }
+
+/**
+ * Returned by oauth login/signup when no local account exists yet. The caller
+ * must finish onboarding (choose account type + details) and exchange this
+ * single-use token at /auth/oauth/complete.
+ */
+export interface OAuthPendingResultDto {
+  exists: false;
+  pendingToken: string;
+  email: string;
+  name: string;
+  provider: OAuthProvider;
+}
+
+export type OAuthLoginResultDto = AuthResponseDto | OAuthPendingResultDto;
+
+interface BaseOAuthComplete {
+  pendingToken: string;
+  username?: string;
+  fullName?: string;
+}
+
+export type OAuthCompleteDto =
+  | (BaseOAuthComplete & { accountType: 'individual' })
+  | (BaseOAuthComplete & { accountType: 'organization'; organization: OrganizationInput })
+  | (BaseOAuthComplete & { accountType: 'member'; invitationCode: string });
 
 export interface OAuthUserInfo {
   provider: OAuthProvider;
