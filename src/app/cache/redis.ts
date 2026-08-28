@@ -11,8 +11,24 @@ const globalForRedis = globalThis as unknown as {
 // fails with `connect EINVAL`. Strip any leading/trailing quotes and whitespace.
 const redisUrl = env.REDIS_URL.replace(/^["']|["']$/g, '').trim();
 
+// Upstash resets IPv6 connections from some hosts (e.g. Render), causing
+// `ECONNRESET`. Force IPv4, and set the TLS SNI servername explicitly so the
+// `rediss://` TLS handshake routes to the correct Upstash database.
+const isRediss = redisUrl.startsWith('rediss://');
+let tlsServername: string | undefined;
+try {
+  tlsServername = new URL(redisUrl).hostname;
+} catch {
+  tlsServername = undefined;
+}
+
 export const redisClient =
-  globalForRedis.redisClient ?? new Redis(redisUrl, { lazyConnect: false });
+  globalForRedis.redisClient ??
+  new Redis(redisUrl, {
+    lazyConnect: false,
+    family: 4,
+    ...(isRediss ? { tls: { rejectUnauthorized: true, servername: tlsServername } } : {}),
+  });
 
 if (env.NODE_ENV !== 'production') {
   globalForRedis.redisClient = redisClient;
