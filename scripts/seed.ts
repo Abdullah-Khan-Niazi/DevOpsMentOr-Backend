@@ -111,6 +111,15 @@ const permissionDefinitions: PermissionDefinition[] = [
   { name: PERMISSIONS.EVENTS_REGISTER, module: 'operations', description: 'Register for and cancel platform events' },
   { name: PERMISSIONS.PLATFORM_CONTENT_MODERATE, module: 'community', description: 'Approve reviews, pin or hide comments, resolve and dismiss reports' },
   { name: PERMISSIONS.PLATFORM_ANALYTICS_READ, module: 'analytics', description: 'Read the platform analytics dashboard (aggregated metrics only)' },
+  // ─── F9 Subscription / Billing / Entitlements ────────────────────────────
+  { name: PERMISSIONS.BILLING_SUBSCRIPTION_CREATE, module: 'billing', description: 'Create and subscribe to plans' },
+  { name: PERMISSIONS.BILLING_SUBSCRIPTION_READ, module: 'billing', description: 'Read own subscription status' },
+  { name: PERMISSIONS.BILLING_SUBSCRIPTION_CANCEL, module: 'billing', description: 'Cancel own subscription' },
+  { name: PERMISSIONS.BILLING_PAYMENT_METHOD_MANAGE, module: 'billing', description: 'Manage saved payment methods' },
+  { name: PERMISSIONS.BILLING_ORDER_READ, module: 'billing', description: 'Read own orders and checkout sessions' },
+  { name: PERMISSIONS.BILLING_INVOICE_READ, module: 'billing', description: 'Read and download own invoices' },
+  { name: PERMISSIONS.BILLING_ORG_MANAGE, module: 'billing', description: 'Manage organization subscription and seats' },
+  { name: PERMISSIONS.PLATFORM_BILLING_MANAGE, module: 'billing', description: 'Manage platform billing, subscriptions and coupons' },
 ];
 
 const rolePermissionMatrix: Record<string, string[]> = {
@@ -160,6 +169,11 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CONTENT_LIKE_CREATE,
     PERMISSIONS.CONTENT_REPORT_CREATE,
     PERMISSIONS.EVENTS_REGISTER,
+    PERMISSIONS.BILLING_SUBSCRIPTION_READ,
+    PERMISSIONS.BILLING_PAYMENT_METHOD_MANAGE,
+    PERMISSIONS.BILLING_ORDER_READ,
+    PERMISSIONS.BILLING_INVOICE_READ,
+    PERMISSIONS.BILLING_ORG_MANAGE,
   ],
   [ROLES.PROFESSOR]: [
     PERMISSIONS.USERS_READ,
@@ -256,6 +270,12 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.CONTENT_LIKE_CREATE,
     PERMISSIONS.CONTENT_REPORT_CREATE,
     PERMISSIONS.EVENTS_REGISTER,
+    PERMISSIONS.BILLING_SUBSCRIPTION_CREATE,
+    PERMISSIONS.BILLING_SUBSCRIPTION_READ,
+    PERMISSIONS.BILLING_SUBSCRIPTION_CANCEL,
+    PERMISSIONS.BILLING_PAYMENT_METHOD_MANAGE,
+    PERMISSIONS.BILLING_ORDER_READ,
+    PERMISSIONS.BILLING_INVOICE_READ,
   ],
   [ROLES.GUEST]: [],
 };
