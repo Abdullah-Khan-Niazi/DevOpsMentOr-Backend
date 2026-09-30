@@ -16,7 +16,10 @@ export function errorMiddleware(
       path: issue.path.join('.'),
       message: issue.message,
     }));
-    return sendFailure(res, 'Validation failed.', HTTP_STATUS.UNPROCESSABLE_ENTITY, errors);
+    logger.warn({ path: _req.path, method: _req.method, errors }, 'Request validation failed');
+    const firstMessage = errors[0]?.message;
+    const message = firstMessage || 'Validation failed.';
+    return sendFailure(res, message, HTTP_STATUS.UNPROCESSABLE_ENTITY, errors);
   }
 
   if (err instanceof AppError) {

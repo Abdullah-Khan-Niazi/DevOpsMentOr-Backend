@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 import {
   BadRequestError,
   ConflictError,
@@ -282,7 +282,7 @@ export class AuthService {
     const isPasswordValid = await passwordService.compare(input.password, user.passwordHash);
     if (!isPasswordValid) {
       await this.recordLoginFailure(user.userId, 'Invalid password', 'email', meta);
-      throw new UnauthorizedError('Invalid email or password.');
+      throw new UnauthorizedError('INCORRECT_PASSWORD');
     }
 
     const accountStatus = getUserStatus(user);
@@ -294,6 +294,11 @@ export class AuthService {
     if (accountStatus === UserStatus.INACTIVE) {
       await this.recordLoginFailure(user.userId, 'Account inactive', 'email', meta);
       throw new ForbiddenError('ACCOUNT_INACTIVE');
+    }
+
+    if (!user.isVerified) {
+      await this.issueAndSendVerification(user.userId, user.email);
+      throw new ForbiddenError('ACCOUNT_NOT_VERIFIED');
     }
 
     if (user.twoFactorEnabled) {
@@ -383,10 +388,16 @@ export class AuthService {
       throw new NotFoundError('User not found.');
     }
 
+    const accountStatus = getUserStatus(user);
+
     return {
       userId: user.userId,
+      username: user.username,
       email: user.email,
       fullName: user.fullName,
+      status: accountStatus,
+      isVerified: user.isVerified,
+      twoFactorEnabled: user.twoFactorEnabled,
       roles: user.roles.map((r) => r.role.roleName),
       permissions: this.extractPermissions(user.roles),
     };
@@ -518,7 +529,23 @@ export class AuthService {
     const isPasswordValid = await passwordService.compare(input.password, user.passwordHash);
     if (!isPasswordValid) {
       await this.recordLoginFailure(user.userId, 'Invalid password', 'email', meta);
-      throw new UnauthorizedError('Invalid email or password.');
+      throw new UnauthorizedError('INCORRECT_PASSWORD');
+    }
+
+    const accountStatus = getUserStatus(user);
+    if (accountStatus === UserStatus.SUSPENDED) {
+      await this.recordLoginFailure(user.userId, 'Account suspended', 'email', meta);
+      throw new ForbiddenError('ACCOUNT_BANNED');
+    }
+
+    if (accountStatus === UserStatus.INACTIVE) {
+      await this.recordLoginFailure(user.userId, 'Account inactive', 'email', meta);
+      throw new ForbiddenError('ACCOUNT_INACTIVE');
+    }
+
+    if (!user.isVerified) {
+      await this.issueAndSendVerification(user.userId, user.email);
+      throw new ForbiddenError('ACCOUNT_NOT_VERIFIED');
     }
 
     const permissions = this.extractPermissions(user.roles);
@@ -570,10 +597,19 @@ export class AuthService {
     meta?: { ipAddress?: string; userAgent?: string },
   ): Promise<OAuthLoginResultDto> {
     const oauthUser = await oauthService.getUserInfo(input.provider, input.code, input.redirectUri);
+    const normalizedEmail = oauthUser.email.trim().toLowerCase();
 
-    const existingUser = await this.usersRepo.findByEmail(oauthUser.email);
+    const existingUser = await this.usersRepo.findByEmail(normalizedEmail);
 
     if (existingUser) {
+      if (!existingUser.isVerified) {
+        await db
+          .update(users)
+          .set({ isVerified: true, updatedAt: new Date() })
+          .where(eq(users.userId, existingUser.userId));
+        existingUser.isVerified = true;
+      }
+
       const accountStatus = getUserStatus(existingUser);
 
       if (accountStatus !== UserStatus.ACTIVE) {
@@ -599,7 +635,7 @@ export class AuthService {
     // New identity: hand back a single-use pending token and let the wizard
     // collect the account type before we mint the local account.
     const pendingToken = await createPendingOAuth({
-      email: oauthUser.email,
+      email: normalizedEmail,
       name: oauthUser.name,
       provider: oauthUser.provider,
       providerId: oauthUser.providerId,
@@ -671,7 +707,8 @@ export class AuthService {
   }
 
   private async deriveOAuthUsername(email: string, requested?: string): Promise<string> {
-    const base = (requested ?? email.split('@')[0]).replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+    const raw = (requested ?? email.split('@')[0]).replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
+    const base = raw.length >= 3 ? raw : `${raw}_usr`;
 
     let username = base;
     let suffix = 1;
@@ -694,13 +731,15 @@ export class AuthService {
       throw new Error('individual_learner role is not seeded.');
     }
 
+    const normalizedEmail = pending.email.trim().toLowerCase();
     const user = await this.usersRepo.create({
-      username: await this.deriveOAuthUsername(pending.email, input.username),
-      email: pending.email,
+      username: await this.deriveOAuthUsername(normalizedEmail, input.username),
+      email: normalizedEmail,
       passwordHash: '',
       salt: '',
       fullName,
       roleIds: [defaultRole.id],
+      isVerified: true,
     });
 
     await db.update(users).set({ isVerified: true, updatedAt: new Date() }).where(eq(users.userId, user.userId));
@@ -716,13 +755,15 @@ export class AuthService {
     fullName: string,
     meta?: { ipAddress?: string; userAgent?: string },
   ): Promise<AuthResponseDto> {
+    const normalizedEmail = pending.email.trim().toLowerCase();
     const user = await this.usersRepo.create({
-      username: await this.deriveOAuthUsername(pending.email, input.username),
-      email: pending.email,
+      username: await this.deriveOAuthUsername(normalizedEmail, input.username),
+      email: normalizedEmail,
       passwordHash: '',
       salt: '',
       fullName,
       roleIds: [],
+      isVerified: true,
     });
 
     const actor: OrgActor = {
@@ -774,13 +815,15 @@ export class AuthService {
       );
     }
 
+    const normalizedEmail = pending.email.trim().toLowerCase();
     const user = await this.usersRepo.create({
-      username: await this.deriveOAuthUsername(pending.email, input.username),
-      email: pending.email,
+      username: await this.deriveOAuthUsername(normalizedEmail, input.username),
+      email: normalizedEmail,
       passwordHash: '',
       salt: '',
       fullName,
       roleIds: [],
+      isVerified: true,
     });
 
     const accepted = await classService.acceptInvitation(user.userId, input.invitationCode);
@@ -865,14 +908,11 @@ export class AuthService {
     const pair = tokenService.createTokenPair(jwtPayload);
     const refreshExpiresAt = tokenService.getRefreshTokenExpiryDate();
 
-    const decoded = tokenService.decodeToken(pair.accessToken);
-    const decodedRefresh = tokenService.decodeToken(pair.refreshToken);
-
     return {
       accessToken: pair.accessToken,
       refreshToken: pair.refreshToken,
-      accessJti: decoded.jti ?? '',
-      refreshJti: decodedRefresh.jti ?? '',
+      accessJti: pair.accessJti,
+      refreshJti: pair.refreshJti,
       refreshExpiresAt,
     };
   }
@@ -896,7 +936,7 @@ export class AuthService {
     type: 'email_verification' | 'password_reset' | 'two_factor',
   ): Promise<string> {
     const code = Array.from({ length: OTP_CODE_LENGTH }, () =>
-      Math.floor(Math.random() * 10).toString(),
+      randomInt(0, 10).toString(),
     ).join('');
 
     await this.otps.create({

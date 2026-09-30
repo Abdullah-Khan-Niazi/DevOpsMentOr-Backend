@@ -33,7 +33,7 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
 
-  OTP_TTL_MINUTES: z.coerce.number().int().positive().default(2),
+  OTP_TTL_MINUTES: z.coerce.number().int().positive().default(15),
   INVITE_TTL_HOURS: z.coerce.number().int().positive().default(48),
   IDENTITY_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(60),
 

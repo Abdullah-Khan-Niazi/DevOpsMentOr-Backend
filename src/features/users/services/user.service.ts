@@ -150,9 +150,12 @@ export class UserService {
       email: user.email,
       fullName: user.fullName,
       status: user.status,
+      isVerified: user.isVerified,
+      twoFactorEnabled: user.twoFactorEnabled,
       roles: user.roles.map(
         (item) => item.role.roleName,
       ),
+      permissions: this.extractPermissions(user),
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };

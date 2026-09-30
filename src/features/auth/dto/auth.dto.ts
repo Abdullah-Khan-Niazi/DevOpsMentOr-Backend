@@ -129,8 +129,12 @@ export interface OAuthUserInfo {
 
 export interface MeResponseDto {
   userId: number;
+  username: string;
   email: string;
   fullName: string | null;
+  status: string;
+  isVerified: boolean;
+  twoFactorEnabled: boolean;
   roles: string[];
   permissions: string[];
 }

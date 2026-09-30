@@ -20,6 +20,8 @@ vi.mock('../../src/shared/services', () => ({
     createTokenPair: vi.fn(() => ({
       accessToken: 'access-token',
       refreshToken: 'refresh-token',
+      accessJti: 'test-jti',
+      refreshJti: 'test-refresh-jti',
     })),
     getRefreshTokenExpiryDate: vi.fn(() => new Date(Date.now() + 86400000)),
     decodeToken: vi.fn(() => ({ jti: 'test-jti' })),

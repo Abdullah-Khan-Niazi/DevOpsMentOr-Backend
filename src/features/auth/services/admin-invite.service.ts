@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { cacheKeys, redisClient } from '../../../app/cache/redis';
 import { db, userRoles, users, roles } from '../../../app/database';
@@ -6,7 +6,7 @@ import { ROLES } from '../../../shared/constants';
 import { BadRequestError, ConflictError } from '../../../shared/errors';
 import { logger } from '../../../shared/logger';
 import { env } from '../../../app/config/env';
-import { passwordService } from '../../../shared/services';
+import { emailService, passwordService } from '../../../shared/services';
 import type {
   AcceptAdminInviteDto,
   AdminInviteDto,
@@ -49,6 +49,10 @@ export class AdminInviteService {
     });
 
     await redisClient.set(cacheKeys.adminInvite(token), payload, 'EX', this.ttlSeconds);
+
+    const inviteUrl = `${env.FRONTEND_URL}/admin/accept-invite?token=${token}&email=${encodeURIComponent(input.email)}`;
+    await emailService.sendInvitationEmail(input.email, inviteUrl);
+    logger.info({ email: input.email }, 'Platform admin invitation sent');
   }
 
   async acceptInvite(input: AcceptAdminInviteDto): Promise<void> {
@@ -78,13 +82,14 @@ export class AdminInviteService {
     }
 
     const passwordHash = await passwordService.hash(input.password);
+    const salt = randomBytes(16).toString('hex');
 
     await db.transaction(async (tx) => {
       const inserted = await tx.insert(users).values({
         username: input.username,
         email: input.email,
         passwordHash,
-        salt: '',
+        salt,
         fullName: input.fullName,
         isVerified: true,
         isActive: true,

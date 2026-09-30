@@ -22,7 +22,10 @@ export interface UserResponseDto {
   email: string;
   fullName: string | null;
   status: UserStatus;
+  isVerified?: boolean;
+  twoFactorEnabled?: boolean;
   roles: string[];
+  permissions?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
