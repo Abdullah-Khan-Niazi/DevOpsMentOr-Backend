@@ -464,8 +464,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "announcement_reads_announcement_id_announcements_announcement_id_fk": {
-          "name": "announcement_reads_announcement_id_announcements_announcement_id_fk",
+        "announcement_reads_announcement_id_fk": {
+          "name": "announcement_reads_announcement_id_fk",
           "tableFrom": "announcement_reads",
           "tableTo": "announcements",
           "columnsFrom": [
