@@ -7,6 +7,8 @@ import type { JwtPayload } from '../types';
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
+  accessJti: string;
+  refreshJti: string;
 }
 
 export class TokenService {
@@ -23,17 +25,20 @@ export class TokenService {
   }
 
   createTokenPair(payload: Omit<JwtPayload, 'type'>): TokenPair {
-    const jti = randomUUID();
+    const accessJti = randomUUID();
+    const refreshJti = randomUUID();
 
-    const extendedPayload = { ...payload, jti };
+    const accessPayload = { ...payload, jti: accessJti };
 
     return {
-      accessToken: this.signAccessToken(extendedPayload),
+      accessToken: this.signAccessToken(accessPayload),
       refreshToken: this.signRefreshToken({
-        sub: extendedPayload.sub,
-        email: extendedPayload.email,
-        jti,
+        sub: payload.sub,
+        email: payload.email,
+        jti: refreshJti,
       }),
+      accessJti,
+      refreshJti,
     };
   }
 

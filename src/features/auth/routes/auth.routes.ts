@@ -49,6 +49,7 @@ authRoutes.post(
 
 authRoutes.post(
   '/verify-email',
+  authLimiter,
   validateRequest(verifyEmailSchema, 'body'),
   asyncHandler((req, res) => authController.verifyEmail(req, res)),
 );
@@ -76,6 +77,7 @@ authRoutes.post(
 
 authRoutes.post(
   '/reset-password',
+  authLimiter,
   validateRequest(resetPasswordSchema, 'body'),
   asyncHandler((req, res) => authController.resetPassword(req, res)),
 );

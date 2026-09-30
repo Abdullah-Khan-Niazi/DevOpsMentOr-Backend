@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, like, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, like, or, sql } from 'drizzle-orm';
 import { db } from '../../../app/database';
 import { permissions, rolePermissions, roles, userRoles, users } from '../../../app/database/schema';
 import { UserStatus } from '../../../shared/constants';
@@ -19,6 +19,7 @@ export interface IUserRepository {
     displayName?: string;
     status?: UserStatus;
     roleIds?: number[];
+    isVerified?: boolean;
   }): Promise<UserWithRoles>;
   update(
     id: number,
@@ -46,8 +47,9 @@ export class UserRepository implements IUserRepository {
   }
 
   async findByEmail(email: string): Promise<UserWithRoles | null> {
+    const normalized = email.trim().toLowerCase();
     const user = await db.query.users.findFirst({
-      where: eq(users.email, email),
+      where: eq(sql`LOWER(${users.email})`, normalized),
     });
     if (!user) {
       return null;
@@ -115,16 +117,18 @@ export class UserRepository implements IUserRepository {
     displayName?: string;
     status?: UserStatus;
     roleIds?: number[];
+    isVerified?: boolean;
   }): Promise<UserWithRoles> {
     let userId: number | undefined;
 
     await db.transaction(async (tx) => {
       const inserted = await tx.insert(users).values({
-        email: data.email,
+        email: data.email.trim().toLowerCase(),
         passwordHash: data.passwordHash,
-        username: data.username,
+        username: data.username.trim(),
         salt: data.salt,
-        fullName: data.fullName,
+        fullName: data.fullName?.trim(),
+        isVerified: data.isVerified ?? false,
         isActive: (data.status ?? UserStatus.ACTIVE) === UserStatus.ACTIVE,
         isBanned: false,
         deletedAt: null,
