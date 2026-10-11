@@ -30,6 +30,7 @@ export interface InvitationPage {
 
 export interface IInvitationRepository {
   ensureSentinelTeam(): Promise<number>;
+  findById(invitationId: number): Promise<InvitationRow | null>;
   findByToken(token: string): Promise<InvitationRow | null>;
   findPendingByClassAndEmail(classId: number, email: string): Promise<InvitationRow | null>;
   insertMany(
@@ -40,6 +41,10 @@ export interface IInvitationRepository {
       token: string;
       expiresAt: Date;
     }>,
+  ): Promise<void>;
+  updateInvitation(
+    invitationId: number,
+    data: { token?: string; expiresAt?: Date; status?: InvitationStatus },
   ): Promise<void>;
   markAccepted(invitationId: number, userId: number): Promise<void>;
   listByClass(classId: number, page: number, pageSize: number): Promise<InvitationPage>;
@@ -57,6 +62,15 @@ export class InvitationRepository implements IInvitationRepository {
       return existing[0].teamId;
     }
     throw new Error('Org invite sentinel team is missing; seed the F3 sentinel team.');
+  }
+
+  async findById(invitationId: number): Promise<InvitationRow | null> {
+    const rows = await db
+      .select()
+      .from(teamInvitations)
+      .where(eq(teamInvitations.invitationId, invitationId))
+      .limit(1);
+    return rows[0] ?? null;
   }
 
   async findByToken(token: string): Promise<InvitationRow | null> {
@@ -94,6 +108,16 @@ export class InvitationRepository implements IInvitationRepository {
       return;
     }
     await db.insert(teamInvitations).values(rows);
+  }
+
+  async updateInvitation(
+    invitationId: number,
+    data: { token?: string; expiresAt?: Date; status?: InvitationStatus },
+  ): Promise<void> {
+    await db
+      .update(teamInvitations)
+      .set(data)
+      .where(eq(teamInvitations.invitationId, invitationId));
   }
 
   async markAccepted(invitationId: number, userId: number): Promise<void> {

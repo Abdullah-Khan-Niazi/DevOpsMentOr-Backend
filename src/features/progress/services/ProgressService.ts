@@ -238,11 +238,22 @@ export class ProgressService {
     classId: number,
     actor: ProgressActor,
   ): Promise<{ className: string; students: StudentProgressDto[]; moduleAverages: ModuleAverageDto[] }> {
-    if (!(await this.deps.repo.isProfessorOfClass(classId, actor.userId)) && !this.isPlatformAdmin(actor)) {
+    const cls = await this.deps.repo.findClass(classId);
+    if (!cls) {
+      throw new NotFoundError('Class not found.');
+    }
+    const callerOrgId = await this.deps.repo.getOrgId(actor.userId);
+    const isProfessor = await this.deps.repo.isProfessorOfClass(classId, actor.userId);
+    const isOrgScope =
+      this.isOrgAdmin(actor) &&
+      callerOrgId !== null &&
+      cls.organizationId !== null &&
+      callerOrgId === cls.organizationId;
+    const isOwner = typeof cls.teamOwnerId === 'number' && cls.teamOwnerId === actor.userId;
+    if (!isProfessor && !isOrgScope && !isOwner && !this.isPlatformAdmin(actor)) {
       throw new ForbiddenError('You do not have access to this class.');
     }
-    const cls = await this.deps.repo.findClass(classId);
-    const className = cls?.className ?? 'Class';
+    const className = cls.className ?? 'Class';
     const snapshot = await curriculumService.getCourseSnapshot();
     const students = await this.deps.repo.listClassStudents(classId);
     const studentUserIds = students.map((student) => student.userId);
@@ -279,8 +290,13 @@ export class ProgressService {
     }
     const callerOrgId = await this.deps.repo.getOrgId(actor.userId);
     const isProfessor = await this.deps.repo.isProfessorOfClass(classId, actor.userId);
-    const isOrgScope = callerOrgId !== null && callerOrgId === cls.organizationId;
-    if (!isProfessor && !isOrgScope && !this.isPlatformAdmin(actor)) {
+    const isOrgScope =
+      this.isOrgAdmin(actor) &&
+      callerOrgId !== null &&
+      cls.organizationId !== null &&
+      callerOrgId === cls.organizationId;
+    const isOwner = typeof cls.teamOwnerId === 'number' && cls.teamOwnerId === actor.userId;
+    if (!isProfessor && !isOrgScope && !isOwner && !this.isPlatformAdmin(actor)) {
       throw new ForbiddenError('You do not have access to this class.');
     }
     const student = await this.deps.repo.findUser(studentUserId);
@@ -443,7 +459,22 @@ export class ProgressService {
   }
 
   private isPlatformAdmin(actor: ProgressActor): boolean {
-    return actor.roles.includes('platform_admin') || actor.permissions.includes(this.deps.platformProgressPermission);
+    return (
+      actor.roles.includes('platform_admin') ||
+      actor.roles.includes('admin') ||
+      actor.permissions.includes(this.deps.platformProgressPermission) ||
+      actor.permissions.includes('platform.organizations.manage') ||
+      actor.permissions.includes('platform.admin.access')
+    );
+  }
+
+  private isOrgAdmin(actor: ProgressActor): boolean {
+    return (
+      actor.roles.includes('org_admin') ||
+      actor.permissions.includes('progress.org.read') ||
+      actor.permissions.includes('org:manage') ||
+      actor.permissions.includes('org:classes:manage')
+    );
   }
 
   private toLessonProgressDto(row: LessonProgressRow): LessonProgressDto {

@@ -1,7 +1,17 @@
-import { and, asc, countDistinct, desc, eq, inArray, isNull, like, or } from 'drizzle-orm';
+import { and, asc, countDistinct, desc, eq, inArray, isNotNull, isNull, like, or } from 'drizzle-orm';
 import { db } from '../../../app/database';
-import { loginHistory, roles, userFollows, userRoles, users } from '../../../app/database/schema';
-import { ROLES } from '../../../shared/constants';
+import {
+  countries,
+  loginHistory,
+  organizations,
+  roles,
+  userFollows,
+  userProfiles,
+  userRoles,
+  userSettings,
+  users,
+} from '../../../app/database/schema';
+import { ORG_CONSTANTS, ROLES } from '../../../shared/constants';
 import { getSkipTake } from '../../../shared/utils';
 import type { AdminListFilter, AdminUserDetailDto, PlatformAdminDto } from '../dto/admin.dto';
 
@@ -15,6 +25,9 @@ export interface AdminUserRow {
   isVerified: boolean;
   createdAt: Date;
   deletedAt: Date | null;
+  organizationId?: number | null;
+  organizationName?: string | null;
+  country?: string | null;
 }
 
 export interface IAdminUserRepository {
@@ -23,6 +36,7 @@ export interface IAdminUserRepository {
   findUserRoles(userId: number): Promise<string[]>;
   setBan(userId: number, isBanned: boolean, banReason: string | null): Promise<void>;
   softDelete(userId: number): Promise<void>;
+  restore(userId: number): Promise<void>;
   listPlatformAdmins(): Promise<PlatformAdminDto[]>;
 }
 
@@ -42,9 +56,45 @@ export class AdminUserRepository implements IAdminUserRepository {
     if (filter.isActive !== undefined) {
       conditions.push(eq(users.isActive, filter.isActive));
     }
+    if (filter.isDeleted !== undefined) {
+      conditions.push(filter.isDeleted ? isNotNull(users.deletedAt) : isNull(users.deletedAt));
+    }
+    if (filter.organizationId !== undefined) {
+      conditions.push(
+        inArray(
+          users.userId,
+          db
+            .select({ userId: userSettings.userId })
+            .from(userSettings)
+            .where(
+              and(
+                eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+                eq(userSettings.settingValue, String(filter.organizationId)),
+              ),
+            ),
+        ),
+      );
+    }
+    if (filter.country) {
+      conditions.push(
+        inArray(
+          users.userId,
+          db
+            .select({ userId: userProfiles.userId })
+            .from(userProfiles)
+            .innerJoin(countries, eq(countries.countryId, userProfiles.countryId))
+            .where(
+              or(
+                eq(countries.countryCode, filter.country),
+                like(countries.countryName, `%${filter.country}%`),
+              ),
+            ),
+        ),
+      );
+    }
 
     // Admin views include soft-deleted users (F2 §05 invariant 6); no
-    // deleted_at filter is applied here. Role filtering (when present)
+    // deleted_at filter is applied by default unless requested. Role filtering
     // participates in the WHERE clause and in the count query.
     const roleCondition = filter.role ? eq(roles.roleName, filter.role) : undefined;
 
@@ -79,22 +129,79 @@ export class AdminUserRepository implements IAdminUserRepository {
 
     const userIds = rows.map((row) => row.userId);
     const rolesByUser = new Map<number, string[]>();
+    const orgByUser = new Map<number, { id: number; name: string }>();
+    const countryByUser = new Map<number, string>();
+
     if (userIds.length > 0) {
-      const roleRows = await db
-        .select({ userId: userRoles.userId, roleName: roles.roleName })
-        .from(userRoles)
-        .innerJoin(roles, eq(roles.roleId, userRoles.roleId))
-        .where(inArray(userRoles.userId, userIds));
+      const [roleRows, orgSettingsRows, profileRows] = await Promise.all([
+        db
+          .select({ userId: userRoles.userId, roleName: roles.roleName })
+          .from(userRoles)
+          .innerJoin(roles, eq(roles.roleId, userRoles.roleId))
+          .where(inArray(userRoles.userId, userIds)),
+        db
+          .select({
+            userId: userSettings.userId,
+            orgId: userSettings.settingValue,
+          })
+          .from(userSettings)
+          .where(
+            and(
+              inArray(userSettings.userId, userIds),
+              eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+            ),
+          ),
+        db
+          .select({
+            userId: userProfiles.userId,
+            countryName: countries.countryName,
+            countryCode: countries.countryCode,
+          })
+          .from(userProfiles)
+          .leftJoin(countries, eq(countries.countryId, userProfiles.countryId))
+          .where(inArray(userProfiles.userId, userIds)),
+      ]);
 
       for (const row of roleRows) {
         const current = rolesByUser.get(row.userId) ?? [];
         current.push(row.roleName);
         rolesByUser.set(row.userId, current);
       }
+
+      for (const p of profileRows) {
+        if (p.countryName || p.countryCode) {
+          countryByUser.set(p.userId, p.countryName ?? p.countryCode ?? '');
+        }
+      }
+
+      const orgIds = orgSettingsRows
+        .map((r) => Number(r.orgId))
+        .filter((id) => !Number.isNaN(id) && id > 0);
+
+      if (orgIds.length > 0) {
+        const orgsList = await db
+          .select({ id: organizations.organizationId, name: organizations.name })
+          .from(organizations)
+          .where(inArray(organizations.organizationId, orgIds));
+        const orgMap = new Map(orgsList.map((o) => [o.id, o.name]));
+        for (const s of orgSettingsRows) {
+          const orgId = Number(s.orgId);
+          if (orgMap.has(orgId)) {
+            orgByUser.set(s.userId, { id: orgId, name: orgMap.get(orgId)! });
+          }
+        }
+      }
     }
 
+    const data: AdminUserRow[] = rows.map((row) => ({
+      ...row,
+      organizationId: orgByUser.get(row.userId)?.id ?? null,
+      organizationName: orgByUser.get(row.userId)?.name ?? null,
+      country: countryByUser.get(row.userId) ?? null,
+    }));
+
     return {
-      data: rows as AdminUserRow[],
+      data,
       rolesByUser,
       total: totalRow[0]?.value ?? 0,
     };
@@ -201,6 +308,10 @@ export class AdminUserRepository implements IAdminUserRepository {
 
   async softDelete(userId: number): Promise<void> {
     await db.update(users).set({ deletedAt: new Date() }).where(eq(users.userId, userId));
+  }
+
+  async restore(userId: number): Promise<void> {
+    await db.update(users).set({ deletedAt: null }).where(eq(users.userId, userId));
   }
 
   async listPlatformAdmins(): Promise<PlatformAdminDto[]> {

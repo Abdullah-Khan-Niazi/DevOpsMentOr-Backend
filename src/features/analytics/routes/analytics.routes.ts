@@ -32,4 +32,11 @@ adminAnalyticsRouter.get(
   asyncHandler((req, res) => analyticsController.getActivityTrend(req, res)),
 );
 
+/** Granular analytics: GET /api/admin/analytics/detailed */
+adminAnalyticsRouter.get(
+  '/analytics/detailed',
+  authorizePermissions(PERMISSIONS.PLATFORM_ANALYTICS_READ),
+  asyncHandler((req, res) => analyticsController.getDetailedAnalytics(req, res)),
+);
+
 export { adminAnalyticsRouter };

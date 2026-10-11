@@ -1,3 +1,8 @@
+import { randomUUID } from 'crypto';
+import { cacheKeys, redisClient } from '../../../app/cache/redis';
+import { env } from '../../../app/config/env';
+import { logger } from '../../../shared/logger';
+import { emailService } from '../../../shared/services';
 import { AUDIT_ACTIONS, ROLES } from '../../../shared/constants';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../../shared/errors';
 import type { AdminActor, AdminListFilter, AdminUserDetailDto, AdminUserListItem, PaginatedAdminData, PlatformAdminDto } from '../dto/admin.dto';
@@ -26,6 +31,9 @@ export class AdminUserService {
       roles: rolesByUser.get(user.userId) ?? [],
       createdAt: user.createdAt.toISOString(),
       deletedAt: user.deletedAt ? user.deletedAt.toISOString() : null,
+      organizationId: user.organizationId ?? null,
+      organizationName: user.organizationName ?? null,
+      country: user.country ?? null,
     }));
 
     return {
@@ -35,6 +43,56 @@ export class AdminUserService {
       pageSize: filter.pageSize,
       totalPages: total === 0 ? 0 : Math.ceil(total / filter.pageSize),
     };
+  }
+
+  async inviteUsers(
+    actor: AdminActor,
+    payload: {
+      emails: string[];
+      type: 'individual_learner' | 'organization';
+      organizationId?: number;
+      role?: 'individual_learner' | 'org_admin' | 'professor' | 'org_student' | 'platform_admin';
+    },
+  ): Promise<{ sent: number; failed: number }> {
+    let sent = 0;
+    let failed = 0;
+    const roleToAssign = payload.role ?? (payload.type === 'organization' ? 'org_student' : 'individual_learner');
+
+    for (const email of payload.emails) {
+      const normalized = email.trim().toLowerCase();
+      if (!normalized) continue;
+      try {
+        const token = randomUUID();
+        const invitePayload = JSON.stringify({
+          email: normalized,
+          type: payload.type,
+          organizationId: payload.organizationId ?? null,
+          role: roleToAssign,
+          invitedBy: actor.userId,
+          createdAt: new Date().toISOString(),
+        });
+        await redisClient.set(cacheKeys.adminInvite(token), invitePayload, 'EX', 72 * 3600);
+
+        const inviteUrl = `${env.FRONTEND_URL}/register?token=${token}&email=${encodeURIComponent(normalized)}`;
+        await emailService.sendInvitationEmail(normalized, inviteUrl, token);
+        sent++;
+      } catch (err) {
+        logger.error({ err, email: normalized }, 'Failed to dispatch user invite');
+        failed++;
+      }
+    }
+
+    await this.audit.record({
+      adminUserId: actor.userId,
+      action: AUDIT_ACTIONS.CREATE_USER,
+      targetType: 'user_invites',
+      targetId: payload.organizationId ?? null,
+      changes: { type: payload.type, count: payload.emails.length, sent, failed, role: roleToAssign },
+      ipAddress: actor.ipAddress,
+      userAgent: actor.userAgent,
+    });
+
+    return { sent, failed };
   }
 
   async getUserDetail(userId: number): Promise<AdminUserDetailDto> {
@@ -125,6 +183,32 @@ export class AdminUserService {
     });
 
     return { message: 'User deleted successfully.' };
+  }
+
+  async restoreUser(actor: AdminActor, targetUserId: number): Promise<{ message: string }> {
+    const target = await this.admins.findDetail(targetUserId);
+    if (!target) {
+      throw new NotFoundError('User not found.');
+    }
+
+    if (!target.deletedAt) {
+      throw new BadRequestError('User is not deleted.');
+    }
+
+    const before = { deletedAt: target.deletedAt };
+    await this.admins.restore(targetUserId);
+
+    await this.audit.record({
+      adminUserId: actor.userId,
+      action: AUDIT_ACTIONS.RESTORE_USER,
+      targetType: 'user',
+      targetId: targetUserId,
+      changes: { before, after: { deletedAt: null } },
+      ipAddress: actor.ipAddress,
+      userAgent: actor.userAgent,
+    });
+
+    return { message: 'User restored successfully.' };
   }
 
   async listPlatformAdmins(): Promise<PlatformAdminDto[]> {

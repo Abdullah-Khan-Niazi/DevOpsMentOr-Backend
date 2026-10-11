@@ -149,3 +149,22 @@ export interface OrgActor {
   ipAddress: string | null;
   userAgent: string | null;
 }
+
+/** Org members/users view */
+export interface OrgUserDto {
+  userId: number;
+  email: string;
+  fullName: string | null;
+  username: string;
+  status: string;
+  role: 'org_admin' | 'professor' | 'org_student';
+  classes: Array<{ classId: number; className: string }>;
+  enrolledAt: string;
+  completedModules: number;
+}
+
+export interface OrgUserDetailDto extends OrgUserDto {
+  countryCode: string | null;
+  quizzesPassed: number;
+  labHours: number;
+}

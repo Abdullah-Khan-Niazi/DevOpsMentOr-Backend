@@ -13,11 +13,34 @@ import { logger } from '../logger';
 export class EmailService {
   private transporter: Transporter | null = null;
 
+  private isConfigured(): boolean {
+    const hasGoogleOAuth = Boolean(
+      env.GOOGLE_MAIL_REFRESH_TOKEN && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET,
+    );
+    return hasGoogleOAuth || Boolean(env.SMTP_HOST);
+  }
+
   private ensureTransport(): Transporter {
     if (this.transporter) {
       return this.transporter;
     }
 
+    // Google OAuth2 transport (bypasses blocked SMTP ports via HTTPS token exchange)
+    if (env.GOOGLE_MAIL_REFRESH_TOKEN && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
+      this.transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          type: 'OAuth2',
+          user: env.GMAIL_USER || env.SMTP_USER,
+          clientId: env.GOOGLE_CLIENT_ID,
+          clientSecret: env.GOOGLE_CLIENT_SECRET,
+          refreshToken: env.GOOGLE_MAIL_REFRESH_TOKEN,
+        },
+      });
+      return this.transporter;
+    }
+
+    // Standard SMTP transport
     this.transporter = nodemailer.createTransport({
       host: env.SMTP_HOST,
       port: env.SMTP_PORT,
@@ -33,14 +56,14 @@ export class EmailService {
   async sendOtpEmail(to: string, code: string, purpose: string): Promise<void> {
     const subject = `Your ${env.APP_NAME} ${purpose} code`;
 
-    if (!env.SMTP_HOST) {
+    if (!this.isConfigured()) {
       if (env.NODE_ENV === 'production') {
-        throw new Error('SMTP_HOST is not configured; email delivery is unavailable.');
+        throw new Error('Email service is not configured; email delivery is unavailable.');
       }
 
       logger.info(
         { to, purpose, code, ttlMinutes: env.OTP_TTL_MINUTES },
-        'SMTP not configured (development) - OTP delivered via log',
+        'Email service not configured (development) - OTP delivered via log',
       );
       return;
     }
@@ -55,17 +78,23 @@ export class EmailService {
   }
 
   /**
-   * F3 invitation dispatch. Same SMTP fallback policy as OTP emails:
-   * dev logs the invite link, production requires SMTP. The invite URL
-   * always points at the frontend accept screen (SCR-F3-08).
+   * F3 invitation dispatch. Same fallback policy as OTP emails:
+   * dev logs the invite link, production requires configured email transport.
+   * The invite URL always points at the frontend accept screen (SCR-F3-08).
    */
-  async sendInvitationEmail(to: string, inviteUrl: string): Promise<void> {
-    if (!env.SMTP_HOST) {
+  async sendInvitationEmail(to: string, inviteUrl: string, inviteCode?: string): Promise<void> {
+    const code = inviteCode ?? (new URL(inviteUrl).searchParams.get('token') || '');
+    const gatewayUrl = `${env.FRONTEND_URL}/enroll/accept`;
+
+    if (!this.isConfigured()) {
       if (env.NODE_ENV === 'production') {
-        throw new Error('SMTP_HOST is not configured; email delivery is unavailable.');
+        throw new Error('Email service is not configured; email delivery is unavailable.');
       }
 
-      logger.info({ to, inviteUrl }, 'SMTP not configured (development) - invitation delivered via log');
+      logger.info(
+        { to, inviteUrl, inviteCode: code, gatewayUrl },
+        'Email service not configured (development) - invitation delivered via log',
+      );
       return;
     }
 
@@ -74,24 +103,50 @@ export class EmailService {
       from: env.SMTP_FROM,
       to,
       subject: `You have been invited to join ${env.APP_NAME}`,
-      text: `Accept your invitation here: ${inviteUrl}`,
+      text:
+        `You have been invited to join ${env.APP_NAME}.\n\n` +
+        `Join by clicking this link:\n${inviteUrl}\n\n` +
+        `Or join by entering your invitation code directly:\n${code}\n` +
+        `at: ${gatewayUrl}\n\n` +
+        `This invitation expires in ${env.INVITE_TTL_HOURS} hours.`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #111;">You're invited to join ${env.APP_NAME}</h2>
+          <p>You have been invited to join an organization on ${env.APP_NAME}. You can get started right away using either option below:</p>
+          <div style="margin: 24px 0;">
+            <a href="${inviteUrl}" style="background-color: #2563eb; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
+              Join by clicking this link
+            </a>
+          </div>
+          <p style="margin-top: 24px; color: #555;">Or enter your invitation code directly:</p>
+          <div style="background-color: #f3f4f6; padding: 12px 16px; border-radius: 6px; font-family: monospace; font-size: 16px; font-weight: bold; letter-spacing: 1px; color: #111;">
+            ${code}
+          </div>
+          <p style="margin-top: 12px; font-size: 14px; color: #666;">
+            Enter this code at <a href="${gatewayUrl}">${gatewayUrl}</a>.
+          </p>
+          <p style="margin-top: 24px; font-size: 12px; color: #888;">
+            This invitation expires in ${env.INVITE_TTL_HOURS} hours.
+          </p>
+        </div>
+      `,
     });
   }
 
   /**
    * F8 transactional dispatch used by the notification email adapter.
-   * Same SMTP fallback policy: development logs the message, production
-   * requires SMTP configuration.
+   * Same fallback policy: development logs the message, production
+   * requires email configuration.
    */
   async sendEmail(to: string, subject: string, html: string, text: string | null): Promise<void> {
-    if (!env.SMTP_HOST) {
+    if (!this.isConfigured()) {
       if (env.NODE_ENV === 'production') {
-        throw new Error('SMTP_HOST is not configured; email delivery is unavailable.');
+        throw new Error('Email service is not configured; email delivery is unavailable.');
       }
 
       logger.info(
         { to, subject, text: text?.slice(0, 500) },
-        'SMTP not configured (development) - transactional email delivered via log',
+        'Email service not configured (development) - transactional email delivered via log',
       );
       return;
     }

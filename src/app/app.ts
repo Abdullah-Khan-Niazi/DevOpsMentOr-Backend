@@ -10,6 +10,7 @@ import { HTTP_STATUS } from '../shared/constants';
 import { errorMiddleware, notFoundMiddleware } from '../shared/middleware';
 import { sendSuccess } from '../shared/utils';
 import { UPLOAD_DIR } from '../features/users/services/upload.service';
+import { systemTelemetryService } from '../shared/services/system-telemetry.service';
 
 export function createApp() {
   const app = express();
@@ -26,6 +27,10 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
   app.use('/uploads', express.static(UPLOAD_DIR));
   app.use(requestLogger);
+  app.use((_req, _res, next) => {
+    systemTelemetryService.recordRequest();
+    next();
+  });
 
   // ─── Open Keep-Alive & Health Check Endpoints ──────────────────────────────
   // Can be pinged by external cron jobs (e.g., cron-job.org, UptimeRobot, BetterUptime)

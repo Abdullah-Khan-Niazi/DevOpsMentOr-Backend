@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
+import { env } from '../../../app/config/env';
 import { AUDIT_ACTIONS, HTTP_STATUS, ORG_CONSTANTS, ROLES } from '../../../shared/constants';
 import { AppError, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../../shared/errors';
 import { emailService } from '../../../shared/services/email.service';
@@ -188,6 +189,41 @@ export class ClassService {
     return this.inviteEmails(actor, classId, emails);
   }
 
+  async resendInvitation(
+    actor: OrgActor,
+    classId: number,
+    invitationId: number,
+  ): Promise<{ success: boolean; email: string }> {
+    const invitation = await this.deps.invitations.findById(invitationId);
+    if (!invitation || invitation.teamId !== classId) {
+      throw new NotFoundError('Invitation not found.');
+    }
+    if (invitation.status !== 'pending') {
+      throw new ConflictError('Only pending invitations can be resent.');
+    }
+
+    const newToken = randomUUID();
+    const newExpiresAt = new Date(Date.now() + ORG_CONSTANTS.INVITE_TTL_SECONDS * 1000);
+    await this.deps.invitations.updateInvitation(invitationId, {
+      token: newToken,
+      expiresAt: newExpiresAt,
+    });
+
+    await this.deps.email.sendInvitationEmail(
+      invitation.inviteeEmail,
+      buildInviteUrl(newToken),
+      newToken,
+    );
+
+    crashAudit(this.deps.audit, actor, AUDIT_ACTIONS.INVITE_STUDENTS, 'team', classId, {
+      resend: true,
+      invitationId,
+      email: invitation.inviteeEmail,
+    });
+
+    return { success: true, email: invitation.inviteeEmail };
+  }
+
   /** CLS-08: fixed 200-row cap (excess rejects the entire upload), error report. */
   async importStudents(actor: OrgActor, classId: number, file: Express.Multer.File): Promise<ImportSummaryDto> {
     if (!file || !file.buffer) {
@@ -314,8 +350,11 @@ export class ClassService {
       throw new NotFoundError('The inviting class no longer exists.');
     }
 
+    const isAlreadyMember = await this.deps.members.isActiveMember(invitation.teamId, userId);
+    if (!isAlreadyMember) {
+      await this.deps.members.insertStudent(invitation.teamId, userId);
+    }
     await this.deps.invitations.markAccepted(invitation.invitationId, userId);
-    await this.deps.members.insertStudent(invitation.teamId, userId);
 
     // Grant the student role + org scope so ENR-03 (/student/my-class) is
     // immediately reachable after acceptance (F3 §04 RBAC matrix).
@@ -410,7 +449,7 @@ export class ClassService {
 
     await this.deps.invitations.insertMany(rows);
     for (const row of rows) {
-      await this.deps.email.sendInvitationEmail(row.inviteeEmail, buildInviteUrl(row.token));
+      await this.deps.email.sendInvitationEmail(row.inviteeEmail, buildInviteUrl(row.token), row.token);
     }
 
     if (invited.length > 0) {
@@ -451,7 +490,7 @@ function slugify(value: string): string {
 }
 
 function buildInviteUrl(token: string): string {
-  const base = process.env.APP_BASE_URL ?? 'http://localhost:3000';
+  const base = env.FRONTEND_URL || process.env.APP_BASE_URL || 'http://localhost:5173';
   return `${base}/enroll/accept?token=${token}`;
 }
 

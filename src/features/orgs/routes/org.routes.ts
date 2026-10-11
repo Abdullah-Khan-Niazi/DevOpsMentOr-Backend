@@ -15,6 +15,7 @@ import {
   adminOrgListQuerySchema,
   assignOrgAdminSchema,
   assignProfessorSchema,
+  classAndInvitationParamSchema,
   classAndStudentParamSchema,
   classIdParamSchema,
   createClassSchema,
@@ -23,12 +24,14 @@ import {
   inviteProfessorSchema,
   inviteStudentsSchema,
   inviteTokenSchema,
+  orgAndClassParamSchema,
   orgIdParamSchema,
   orgListQuerySchema,
   rosterQuerySchema,
   updateClassSchema,
   updateOrgSchema,
 } from '../validators/org.validator';
+import { userIdParamSchema } from '../../users/validators/user.validator';
 
 const orgRoutes = Router();
 const upload = multer({
@@ -79,6 +82,44 @@ orgRoutes.post(
   asyncHandler((req, res) => orgController.assignOrgAdmin(req, res)),
 );
 
+orgRoutes.get(
+  '/admin/organizations/:orgId/classes',
+  authenticate,
+  authorizePermissions(PERMISSIONS.PLATFORM_ORGANIZATIONS_READ),
+  validateRequest(orgIdParamSchema, 'params'),
+  asyncHandler((req, res) => orgController.listAdminClasses(req, res)),
+);
+
+orgRoutes.get(
+  '/admin/organizations/:orgId/classes/:classId',
+  authenticate,
+  authorizePermissions(PERMISSIONS.PLATFORM_ORGANIZATIONS_READ),
+  validateRequest(orgAndClassParamSchema, 'params'),
+  asyncHandler((req, res) => orgController.getAdminClassDetail(req, res)),
+);
+
+orgRoutes.get(
+  '/admin/organizations/:orgId/analytics',
+  authenticate,
+  authorizePermissions(PERMISSIONS.PLATFORM_ORGANIZATIONS_READ),
+  validateRequest(orgIdParamSchema, 'params'),
+  asyncHandler((req, res) => orgController.getOrgAnalytics(req, res)),
+);
+
+orgRoutes.post(
+  '/admin/organizations/:orgId/invite-admin',
+  authenticate,
+  authorizePermissions(PERMISSIONS.PLATFORM_ORGANIZATIONS_MANAGE),
+  validateRequest(orgIdParamSchema, 'params'),
+  asyncHandler((req, res) => orgController.inviteOrgAdmin(req, res)),
+);
+
+orgRoutes.post(
+  '/admin/organizations/accept-admin',
+  authenticate,
+  asyncHandler((req, res) => orgController.acceptOrgAdmin(req, res)),
+);
+
 /** ── Org-scoped dashboard & administration (ORG-06..ORG-10) ──────────── */
 orgRoutes.get(
   '/org/me',
@@ -118,6 +159,31 @@ orgRoutes.get(
   authenticate,
   authorizePermissions(PERMISSIONS.ORG_READ),
   asyncHandler((req, res) => orgController.listProfessors(req, res)),
+);
+
+orgRoutes.get(
+  '/org/users',
+  authenticate,
+  authorizePermissions(PERMISSIONS.ORG_READ),
+  requireOrgMembership(),
+  asyncHandler((req, res) => orgController.listOrgUsers(req, res)),
+);
+
+orgRoutes.get(
+  '/org/users/:userId',
+  authenticate,
+  authorizePermissions(PERMISSIONS.ORG_READ),
+  requireOrgMembership(),
+  validateRequest(userIdParamSchema, 'params'),
+  asyncHandler((req, res) => orgController.getOrgUserDetail(req, res)),
+);
+
+orgRoutes.get(
+  '/org/analytics',
+  authenticate,
+  authorizePermissions(PERMISSIONS.ORG_READ),
+  requireOrgMembership(),
+  asyncHandler((req, res) => orgController.getMyOrgAnalytics(req, res)),
 );
 
 /** ── Classes (CLS-01..CLS-09) ────────────────────────────────────────── */
@@ -193,6 +259,15 @@ orgRoutes.post(
   requireClassMembershipFromParams(),
   validateRequest(inviteStudentsSchema, 'body'),
   asyncHandler((req, res) => classController.inviteStudents(req, res)),
+);
+
+orgRoutes.post(
+  '/org/classes/:classId/invitations/:invitationId/resend',
+  authenticate,
+  authorizeAnyPermissions(PERMISSIONS.CLASS_STUDENTS_INVITE, PERMISSIONS.ORG_STUDENTS_INVITE),
+  validateRequest(classAndInvitationParamSchema, 'params'),
+  requireClassMembershipFromParams(),
+  asyncHandler((req, res) => classController.resendInvitation(req, res)),
 );
 
 orgRoutes.post(

@@ -84,6 +84,60 @@ export class OrgController {
     );
     return sendSuccess(res, result, 'Invitations retrieved successfully.');
   }
+
+  async listAdminClasses(req: Request, res: Response): Promise<Response> {
+    const orgId = Number(req.params.orgId);
+    const query = req.query as unknown as { page?: number; pageSize?: number };
+    const result = await classService.listClasses(
+      orgId,
+      query.page ? Number(query.page) : 1,
+      query.pageSize ? Number(query.pageSize) : 50,
+    );
+    return sendSuccess(res, result, 'Classes retrieved successfully.');
+  }
+
+  async getAdminClassDetail(req: Request, res: Response): Promise<Response> {
+    const orgId = Number(req.params.orgId);
+    const classId = Number(req.params.classId);
+    const detail = await orgService.getAdminClassDetail(orgId, classId);
+    return sendSuccess(res, detail, 'Class details retrieved successfully.');
+  }
+
+  async getOrgAnalytics(req: Request, res: Response): Promise<Response> {
+    const orgId = Number(req.params.orgId);
+    const analytics = await orgService.getOrgAnalytics(orgId);
+    return sendSuccess(res, analytics, 'Organization analytics retrieved successfully.');
+  }
+
+  async inviteOrgAdmin(req: Request, res: Response): Promise<Response> {
+    const orgId = Number(req.params.orgId);
+    const result = await orgService.inviteOrgAdmin(actorFrom(req), orgId, req.body.email ?? req.body.userId);
+    return sendSuccess(res, result, 'Admin invitation dispatched successfully.', HTTP_STATUS.CREATED);
+  }
+
+  async acceptOrgAdmin(req: Request, res: Response): Promise<Response> {
+    const token = req.body?.token ?? req.query?.token;
+    const detail = await orgService.acceptOrgAdmin(userIdFrom(req), String(token));
+    return sendSuccess(res, detail, 'Organization admin role accepted successfully.');
+  }
+
+  async listOrgUsers(req: Request, res: Response): Promise<Response> {
+    const orgId = await orgService.resolveScopedOrg(userIdFrom(req));
+    const members = await orgService.listOrgUsers(actorFrom(req), orgId);
+    return sendSuccess(res, members, 'Organization members retrieved successfully.');
+  }
+
+  async getOrgUserDetail(req: Request, res: Response): Promise<Response> {
+    const orgId = await orgService.resolveScopedOrg(userIdFrom(req));
+    const detail = await orgService.getOrgUserDetail(actorFrom(req), orgId, Number(req.params.userId));
+    return sendSuccess(res, detail, 'Organization member detail retrieved successfully.');
+  }
+
+  async getMyOrgAnalytics(req: Request, res: Response): Promise<Response> {
+    const orgId = await orgService.resolveScopedOrg(userIdFrom(req));
+    const analytics = await orgService.getOrgAnalytics(orgId);
+    return sendSuccess(res, analytics, 'Organization analytics retrieved successfully.');
+  }
 }
 
 export class ClassController {
@@ -146,6 +200,15 @@ export class ClassController {
       req.body.emails,
     );
     return sendSuccess(res, result, 'Student invitations processed.', HTTP_STATUS.CREATED);
+  }
+
+  async resendInvitation(req: Request, res: Response): Promise<Response> {
+    const result = await classService.resendInvitation(
+      actorFrom(req),
+      Number(req.params.classId),
+      Number(req.params.invitationId),
+    );
+    return sendSuccess(res, result, 'Invitation resent successfully.');
   }
 
   async importStudents(req: Request, res: Response): Promise<Response> {

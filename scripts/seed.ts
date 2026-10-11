@@ -9,14 +9,20 @@ import {
   difficultyLevels,
   disconnectDatabase,
   emailTemplates,
+  organizations,
   permissions,
   rolePermissions,
   roles,
   skills,
   systemSettings,
   tags,
+  teamInvitations,
+  teamMembers,
   teams,
+  userProfiles,
   userRoles,
+  userSettings,
+  userSkills,
   users,
 } from '../src/app/database';
 import { PERMISSIONS, ORG_CONSTANTS, ROLES } from '../src/shared/constants';
@@ -715,17 +721,369 @@ async function main(): Promise<void> {
   await db.delete(userRoles).where(eq(userRoles.userId, adminId));
   await db.insert(userRoles).values({ userId: adminId, roleId: adminRole.roleId });
 
+  const usCountry = await db.query.countries.findFirst({ where: eq(countries.countryCode, 'US') });
+  await db
+    .insert(userProfiles)
+    .values({
+      userId: adminId,
+      countryId: usCountry?.countryId ?? null,
+      occupation: 'Platform Director / Root Administrator',
+      company: 'DevOps Mentor',
+      website: 'https://devopsmentor.local',
+      githubUrl: 'https://github.com/devopsmentor',
+      city: 'San Francisco',
+      isPublic: true,
+    })
+    .onDuplicateKeyUpdate({
+      set: {
+        countryId: usCountry?.countryId ?? null,
+        occupation: 'Platform Director / Root Administrator',
+        company: 'DevOps Mentor',
+        website: 'https://devopsmentor.local',
+        githubUrl: 'https://github.com/devopsmentor',
+        city: 'San Francisco',
+        isPublic: true,
+      },
+    });
+
   await seedOrgInviteSentinel(adminId);
   await seedCurriculumCatalog(adminId);
   await seedSkillsCatalog();
   await seedSystemSettings();
   await seedEmailTemplates();
   await seedCountriesIfMissing();
+  await seedTestOrganizationsAndUsers(passwordHash);
 
   // eslint-disable-next-line no-console
-  console.log('Seed completed.');
+  console.log('Seed completed successfully.');
+}
+
+async function seedTestOrganizationsAndUsers(passwordHash: string): Promise<void> {
+  const orgAdminRole = await db.query.roles.findFirst({ where: eq(roles.roleName, ROLES.ORG_ADMIN) });
+  const professorRole = await db.query.roles.findFirst({ where: eq(roles.roleName, ROLES.PROFESSOR) });
+  const studentRole = await db.query.roles.findFirst({ where: eq(roles.roleName, ROLES.ORG_STUDENT) });
+  const learnerRole = await db.query.roles.findFirst({ where: eq(roles.roleName, ROLES.INDIVIDUAL_LEARNER) });
+
+  if (!orgAdminRole || !professorRole || !studentRole || !learnerRole) {
+    throw new Error('Core roles missing before seeding test users.');
+  }
+
+  const usCountry = await db.query.countries.findFirst({ where: eq(countries.countryCode, 'US') });
+  const sampleSkills = await db.select().from(skills).limit(5);
+
+  type ProfileSeedInput = {
+    occupation: string;
+    company: string;
+    website?: string;
+    githubUrl?: string;
+    linkedinUrl?: string;
+    city?: string;
+  };
+
+  // 1. Seed Organization
+  let org = await db.query.organizations.findFirst({ where: eq(organizations.slug, 'acme-engineering') });
+  let orgId: number;
+  if (!org) {
+    const inserted = await db.insert(organizations).values({
+      name: 'Acme Engineering Academy',
+      slug: 'acme-engineering',
+      description: 'University and Enterprise Cloud Infrastructure Cohorts',
+      website: 'https://acme.local',
+      industry: 'Higher Education',
+      billingEmail: 'billing@acme.local',
+      isVerified: true,
+    });
+    const id = inserted[0]?.insertId;
+    if (!id) throw new Error('Failed to insert test organization');
+    orgId = id;
+  } else {
+    orgId = org.organizationId;
+  }
+
+  // Helper to upsert test user with role, optional org scope, and profile data
+  async function upsertTestUser(
+    email: string,
+    username: string,
+    fullName: string,
+    roleId: number,
+    orgScopeId?: number,
+    profileInput?: ProfileSeedInput,
+  ): Promise<number> {
+    const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
+    let userId: number;
+    if (existing) {
+      userId = existing.userId;
+      await db
+        .update(users)
+        .set({ passwordHash, isVerified: true, isActive: true, isBanned: false, deletedAt: null })
+        .where(eq(users.userId, userId));
+    } else {
+      const inserted = await db.insert(users).values({
+        email,
+        username,
+        fullName,
+        passwordHash,
+        salt: '',
+        isVerified: true,
+      });
+      const id = inserted[0]?.insertId;
+      if (!id) throw new Error(`Failed to create test user ${email}`);
+      userId = id;
+    }
+
+    await db.delete(userRoles).where(eq(userRoles.userId, userId));
+    await db.insert(userRoles).values({ userId, roleId });
+
+    if (orgScopeId) {
+      await db
+        .insert(userSettings)
+        .values({
+          userId,
+          settingKey: ORG_CONSTANTS.ORG_ID_SETTING_KEY,
+          settingValue: orgScopeId,
+        })
+        .onDuplicateKeyUpdate({ set: { settingValue: orgScopeId } });
+    }
+
+    if (profileInput) {
+      await db
+        .insert(userProfiles)
+        .values({
+          userId,
+          countryId: usCountry?.countryId ?? null,
+          occupation: profileInput.occupation,
+          company: profileInput.company,
+          website: profileInput.website ?? null,
+          githubUrl: profileInput.githubUrl ?? null,
+          linkedinUrl: profileInput.linkedinUrl ?? null,
+          city: profileInput.city ?? 'San Francisco',
+          isPublic: true,
+        })
+        .onDuplicateKeyUpdate({
+          set: {
+            countryId: usCountry?.countryId ?? null,
+            occupation: profileInput.occupation,
+            company: profileInput.company,
+            website: profileInput.website ?? null,
+            githubUrl: profileInput.githubUrl ?? null,
+            linkedinUrl: profileInput.linkedinUrl ?? null,
+            city: profileInput.city ?? 'San Francisco',
+            isPublic: true,
+          },
+        });
+    }
+
+    if (sampleSkills.length > 0) {
+      for (const sk of sampleSkills.slice(0, 3)) {
+        await db
+          .insert(userSkills)
+          .values({
+            userId,
+            skillId: sk.skillId,
+            proficiencyLevel: 'advanced',
+            yearsExperience: '2.5',
+            isVerified: true,
+          })
+          .onDuplicateKeyUpdate({ set: { proficiencyLevel: 'advanced', isVerified: true } });
+      }
+    }
+
+    return userId;
+  }
+
+  // 2. Org Admin
+  await upsertTestUser(
+    'orgadmin@acme.local',
+    'acme_admin',
+    'Acme Org Administrator',
+    orgAdminRole.roleId,
+    orgId,
+    {
+      occupation: 'Head of Infrastructure Academics',
+      company: 'Acme Engineering Academy',
+      website: 'https://acme.local',
+      githubUrl: 'https://github.com/acme-admin',
+    },
+  );
+
+  // Also support legacy acme.edu org admin if present
+  const legacyOrgAdmin = await db.query.users.findFirst({ where: eq(users.email, 'orgadmin@acme.edu') });
+  if (legacyOrgAdmin) {
+    await upsertTestUser(
+      'orgadmin@acme.edu',
+      legacyOrgAdmin.username,
+      legacyOrgAdmin.fullName ?? 'Acme Admin',
+      orgAdminRole.roleId,
+      1,
+      {
+        occupation: 'Acme University Admin',
+        company: 'Acme University',
+      },
+    );
+  }
+
+  // 3. Professor
+  const profId = await upsertTestUser(
+    'professor@acme.local',
+    'prof_chen',
+    'Prof. Sarah Chen',
+    professorRole.roleId,
+    orgId,
+    {
+      occupation: 'Associate Professor of Cloud Systems',
+      company: 'Acme Engineering Academy',
+      website: 'https://acme.local/faculty/chen',
+      githubUrl: 'https://github.com/prof-chen',
+    },
+  );
+
+  // 4. Individual Learner
+  await upsertTestUser(
+    'learner@devopsmentor.local',
+    'solo_learner',
+    'Jordan Blake',
+    learnerRole.roleId,
+    undefined,
+    {
+      occupation: 'Site Reliability Engineering Learner',
+      company: 'Independent SRE',
+      githubUrl: 'https://github.com/jordan-blake-ops',
+    },
+  );
+
+  // 5. Seed Class / Cohort
+  const classRow = await db.query.teams.findFirst({ where: eq(teams.slug, 'cs401-fall2026') });
+  let classId: number;
+  if (!classRow) {
+    const inserted = await db.insert(teams).values({
+      organizationId: orgId,
+      teamName: 'CS 401: Cloud & DevOps Fall 2026',
+      slug: 'cs401-fall2026',
+      description: 'Distributed Systems, Linux Containers and Kubernetes Networking',
+      teamOwnerId: profId,
+      maxMembers: 50,
+      isPublic: false,
+    });
+    const id = inserted[0]?.insertId;
+    if (!id) throw new Error('Failed to create test class');
+    classId = id;
+  } else {
+    classId = classRow.teamId;
+  }
+
+  // 6. Enrolled Students
+  const student1Id = await upsertTestUser(
+    'student1@acme.local',
+    'alex_rivera',
+    'Alex Rivera',
+    studentRole.roleId,
+    orgId,
+    {
+      occupation: 'Graduate Cloud Engineering Student',
+      company: 'Acme Engineering Academy',
+      githubUrl: 'https://github.com/arivera-ops',
+    },
+  );
+  const student2Id = await upsertTestUser(
+    'student2@acme.local',
+    'marcus_vance',
+    'Marcus Vance',
+    studentRole.roleId,
+    orgId,
+    {
+      occupation: 'Undergraduate Systems Engineering Student',
+      company: 'Acme Engineering Academy',
+      githubUrl: 'https://github.com/mvance-sys',
+    },
+  );
+
+  // Also support legacy student if present
+  const legacyStudent = await db.query.users.findFirst({ where: eq(users.email, 'student1@acme.edu') });
+  if (legacyStudent) {
+    await upsertTestUser(
+      'student1@acme.edu',
+      legacyStudent.username,
+      legacyStudent.fullName ?? 'Student One',
+      studentRole.roleId,
+      1,
+      {
+        occupation: 'Acme University DevOps Student',
+        company: 'Acme University',
+      },
+    );
+  }
+
+  // Also support personal local testing account if present
+  const localDevUser = await db.query.users.findFirst({ where: eq(users.email, 'abdullahniazi078@gmail.com') });
+  if (localDevUser) {
+    await upsertTestUser(
+      'abdullahniazi078@gmail.com',
+      localDevUser.username,
+      localDevUser.fullName ?? 'Abdullah Niazi',
+      orgAdminRole.roleId,
+      orgId,
+      {
+        occupation: 'Lead Cloud Infrastructure Architect',
+        company: 'DevOps Mentor Academy',
+      },
+    );
+  }
+
+  for (const sId of [student1Id, student2Id]) {
+    await db
+      .insert(teamMembers)
+      .values({
+        teamId: classId,
+        userId: sId,
+        role: 'member',
+        isActive: true,
+      })
+      .onDuplicateKeyUpdate({ set: { isActive: true, role: 'member' } });
+  }
+
+  await db
+    .insert(teamMembers)
+    .values({
+      teamId: classId,
+      userId: profId,
+      role: 'captain',
+      isActive: true,
+    })
+    .onDuplicateKeyUpdate({ set: { isActive: true, role: 'captain' } });
+
+  // 7. Seed sample pending invitation for testing
+  const testInviteToken = 'test-invite-token-cs401';
+  const expiresAt = new Date(Date.now() + ORG_CONSTANTS.INVITE_TTL_SECONDS * 1000);
+  await db
+    .insert(teamInvitations)
+    .values({
+      teamId: classId,
+      inviterId: profId,
+      inviteeEmail: 'pending.student@acme.local',
+      token: testInviteToken,
+      status: 'pending',
+      expiresAt,
+    })
+    .onDuplicateKeyUpdate({ set: { status: 'pending', expiresAt } });
+
   // eslint-disable-next-line no-console
-  console.log(`Admin login: ${adminEmail}`);
+  console.log('Seeded test organizations, cohorts, and 5 role test accounts:');
+  // eslint-disable-next-line no-console
+  console.log('  - Platform Admin: admin@devopsmentor.local / Admin@12345');
+  // eslint-disable-next-line no-console
+  console.log('  - Org Admin:      orgadmin@acme.local / Admin@12345 (and orgadmin@acme.edu)');
+  // eslint-disable-next-line no-console
+  console.log('  - Professor:      professor@acme.local / Admin@12345');
+  // eslint-disable-next-line no-console
+  console.log('  - Org Student 1:  student1@acme.local / Admin@12345 (and student1@acme.edu)');
+  // eslint-disable-next-line no-console
+  console.log('  - Org Student 2:  student2@acme.local / Admin@12345');
+  // eslint-disable-next-line no-console
+  console.log('  - Learner:        learner@devopsmentor.local / Admin@12345');
+  // eslint-disable-next-line no-console
+  console.log(
+    `  - Test Invitation: Token "${testInviteToken}" (Expires in ${ORG_CONSTANTS.INVITE_TTL_HOURS}h)`,
+  );
 }
 
 main()

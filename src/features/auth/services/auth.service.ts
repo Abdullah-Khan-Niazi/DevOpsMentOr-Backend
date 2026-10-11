@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { randomBytes, randomInt } from 'crypto';
 import {
   BadRequestError,
@@ -17,6 +17,7 @@ import {
 import { ROLES, UserStatus, getUserStatus } from '../../../shared/constants';
 import { env } from '../../../app/config/env';
 import { db, users } from '../../../app/database';
+import { countries, userProfiles } from '../../../app/database/schema';
 import { logger } from '../../../shared/logger';
 
 import type {
@@ -38,6 +39,7 @@ import type {
   RegisterDto,
   ResetPasswordDto,
   ResendVerificationDto,
+  SetPasswordDto,
   TwoFactorSetupDto,
   Verify2faDto,
   VerifyEmailDto,
@@ -86,6 +88,28 @@ export class AuthService {
   ): Promise<MessageResponseDto> {
     const existingEmail = await this.usersRepo.findByEmail(input.email);
     if (existingEmail) {
+      if (!existingEmail.isVerified) {
+        // Edge case: unverified user abandoned OTP verification screen and came back to sign up again.
+        // Update password hash, record origin country, and re-send fresh OTP without 409 conflict error.
+        const passwordHash = await passwordService.hash(input.password);
+        const salt = randomBytes(16).toString('hex');
+        await db
+          .update(users)
+          .set({ passwordHash, salt, fullName: input.fullName, updatedAt: new Date() })
+          .where(eq(users.userId, existingEmail.userId));
+
+        await this.recordCountryOrigin(existingEmail.userId, input.countryCode);
+        await this.issueAndSendVerification(existingEmail.userId, existingEmail.email);
+
+        logger.info(
+          { userId: existingEmail.userId },
+          'Unverified user re-submitted registration; fresh verification OTP issued',
+        );
+        return {
+          message:
+            'An unverified account with this email was found. A fresh verification code has been sent to your email.',
+        };
+      }
       throw new ConflictError('A user with this email already exists.');
     }
 
@@ -127,6 +151,7 @@ export class AuthService {
       roleIds: [defaultRole.id],
     });
 
+    await this.recordCountryOrigin(user.userId, input.countryCode);
     await this.issueAndSendVerification(user.userId, input.email);
 
     logger.info({ userId: user.userId }, 'Individual user registered; verification OTP issued');
@@ -147,6 +172,8 @@ export class AuthService {
       fullName: input.fullName,
       roleIds: [],
     });
+
+    await this.recordCountryOrigin(user.userId, input.countryCode);
 
     const actor: OrgActor = {
       userId: user.userId,
@@ -204,16 +231,65 @@ export class AuthService {
       roleIds: [],
     });
 
+    await db.update(users).set({ isVerified: true, updatedAt: new Date() }).where(eq(users.userId, user.userId));
+    await this.recordCountryOrigin(user.userId, input.countryCode);
     const accepted = await classService.acceptInvitation(user.userId, input.invitationCode);
-    await this.issueAndSendVerification(user.userId, input.email);
 
     logger.info(
       { userId: user.userId, kind: accepted.kind, organization: accepted.organizationName },
-      'Member registered via invitation; verification OTP issued',
+      'Member registered via invitation; email auto-verified via secure invitation token',
     );
     return {
-      message: 'Registration successful. You have been enrolled in the organization. Please verify your email.',
+      message: 'Registration successful! You have been enrolled in the organization. You can now sign in.',
     };
+  }
+
+  private async recordCountryOrigin(userId: number, countryCode?: string | null): Promise<void> {
+    if (!countryCode) return;
+    try {
+      const codeUpper = countryCode.toUpperCase().trim();
+      const [matched] = await db
+        .select({ countryId: countries.countryId })
+        .from(countries)
+        .where(eq(sql`LOWER(${countries.countryCode})`, codeUpper.toLowerCase()))
+        .limit(1);
+
+      let countryIdToUse = matched?.countryId;
+      if (!countryIdToUse) {
+        let countryName = codeUpper;
+        try {
+          const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+          countryName = regionNames.of(codeUpper) || codeUpper;
+        } catch {
+          countryName = codeUpper;
+        }
+        const [inserted] = await db.insert(countries).values({
+          countryCode: codeUpper,
+          countryName,
+          iso3Code: codeUpper.length === 2 ? codeUpper : undefined,
+        });
+        countryIdToUse = inserted.insertId;
+      }
+
+      if (countryIdToUse) {
+        const existing = await db.query.userProfiles.findFirst({
+          where: eq(userProfiles.userId, userId),
+        });
+        if (existing) {
+          await db
+            .update(userProfiles)
+            .set({ countryId: countryIdToUse })
+            .where(eq(userProfiles.userId, userId));
+        } else {
+          await db.insert(userProfiles).values({
+            userId,
+            countryId: countryIdToUse,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, userId, countryCode }, 'Could not record country of origin during signup');
+    }
   }
 
   private async issueAndSendVerification(userId: number, email: string): Promise<void> {
@@ -398,9 +474,41 @@ export class AuthService {
       status: accountStatus,
       isVerified: user.isVerified,
       twoFactorEnabled: user.twoFactorEnabled,
+      hasPassword: Boolean(user.passwordHash && user.passwordHash.length > 0),
       roles: user.roles.map((r) => r.role.roleName),
       permissions: this.extractPermissions(user.roles),
     };
+  }
+
+  async setPassword(userId: number, input: SetPasswordDto): Promise<MessageResponseDto> {
+    const user = await this.usersRepo.findById(userId);
+
+    if (!user) {
+      throw new NotFoundError('User not found.');
+    }
+
+    // If user already has a password, verify their current password first
+    if (user.passwordHash && user.passwordHash.length > 0) {
+      if (!input.currentPassword) {
+        throw new BadRequestError('Current password is required to update password.');
+      }
+      const isPasswordValid = await passwordService.compare(input.currentPassword, user.passwordHash);
+      if (!isPasswordValid) {
+        throw new UnauthorizedError('Current password is incorrect.');
+      }
+    }
+
+    const passwordHash = await passwordService.hash(input.newPassword);
+    const salt = randomBytes(16).toString('hex');
+
+    await db
+      .update(users)
+      .set({ passwordHash, salt, updatedAt: new Date() })
+      .where(eq(users.userId, userId));
+
+    logger.info({ userId }, 'Password set/updated successfully from security settings');
+
+    return { message: 'Password set successfully.' };
   }
 
   async forgotPassword(input: ForgotPasswordDto): Promise<MessageResponseDto> {

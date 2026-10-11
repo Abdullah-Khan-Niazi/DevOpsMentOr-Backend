@@ -72,8 +72,12 @@ async function isClassMember(req: Request, userId: number, classId: number): Pro
     throw new NotFoundError('Class not found.');
   }
   const orgId = await orgScopeRepository.getOrgId(userId);
-  if (orgId !== null && orgId === cls.organizationId) {
+  if (orgId !== null && cls.organizationId !== null && orgId === cls.organizationId) {
     return true;
   }
-  return teamMemberRepository.isProfessorOf(classId, userId);
+  const isProf = await teamMemberRepository.isProfessorOf(classId, userId);
+  if (isProf) {
+    return true;
+  }
+  return typeof cls.teamOwnerId === 'number' && cls.teamOwnerId === userId;
 }
