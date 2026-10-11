@@ -53,6 +53,8 @@ const envSchema = z.object({
 
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
+  GOOGLE_MAIL_REFRESH_TOKEN: z.string().default(''),
+  GMAIL_USER: z.string().default(''),
   GITHUB_CLIENT_ID: z.string().default(''),
   GITHUB_CLIENT_SECRET: z.string().default(''),
 

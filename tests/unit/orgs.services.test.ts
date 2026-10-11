@@ -70,9 +70,11 @@ function makeOrgDeps(): Mocked<OrgServiceDeps> {
     },
     invitations: {
       ensureSentinelTeam: vi.fn(async () => 99),
+      findById: vi.fn(async () => null),
       findByToken: vi.fn(async () => null),
       findPendingByClassAndEmail: vi.fn(async () => null),
       insertMany: vi.fn(async () => undefined),
+      updateInvitation: vi.fn(async () => undefined),
       markAccepted: vi.fn(async () => undefined),
       listByClass: vi.fn(async () => ({ data: [], total: 0, page: 1, pageSize: 25, totalPages: 0 })),
     },
@@ -113,9 +115,11 @@ function makeClassDeps() {
   };
   const invitations = {
     ensureSentinelTeam: vi.fn(async () => 99),
+    findById: vi.fn(async () => null),
     findByToken: vi.fn(async () => null),
     findPendingByClassAndEmail: vi.fn(async () => null),
     insertMany: vi.fn(async () => undefined),
+    updateInvitation: vi.fn(async () => undefined),
     markAccepted: vi.fn(async () => undefined),
     listByClass: vi.fn(async () => ({ data: [], total: 0, page: 1, pageSize: 25, totalPages: 0 })),
   };
@@ -225,10 +229,12 @@ describe('OrgService (F3)', () => {
       );
     });
 
-    it('requires an existing user account', async () => {
-      await expect(service.inviteProfessor(actor, 1, 'nobody@acme.edu')).rejects.toBeInstanceOf(
-        NotFoundError,
-      );
+    it('allows inviting an email that does not have a user account yet', async () => {
+      deps.orgs.findUserByEmail.mockResolvedValueOnce(null);
+      const res = await service.inviteProfessor(actor, 1, 'nobody@acme.edu');
+      expect(res.inviteeEmail).toBe('nobody@acme.edu');
+      expect(res.status).toBe('pending');
+      expect(deps.email.sendInvitationEmail).toHaveBeenCalled();
     });
   });
 
@@ -325,6 +331,33 @@ describe('ClassService (F3)', () => {
         { email: 'two@acme.edu', reason: 'invite_pending' },
       ]);
       expect(deps.invitations.insertMany).toHaveBeenCalledWith([]);
+    });
+
+    it('resends a pending invitation with refreshed token and email dispatch', async () => {
+      deps.invitations.findById.mockResolvedValueOnce({
+        invitationId: 42,
+        teamId: 10,
+        inviterId: 9,
+        inviteeEmail: 'student@acme.edu',
+        inviteeUserId: null,
+        token: 'old-token',
+        status: 'pending',
+        expiresAt: new Date(),
+        createdAt: new Date(),
+        acceptedAt: null,
+      });
+
+      const res = await service.resendInvitation(actor, 10, 42);
+      expect(res).toEqual({ success: true, email: 'student@acme.edu' });
+      expect(deps.invitations.updateInvitation).toHaveBeenCalledWith(42, expect.objectContaining({
+        token: expect.any(String),
+        expiresAt: expect.any(Date),
+      }));
+      expect(deps.email.sendInvitationEmail).toHaveBeenCalledWith(
+        'student@acme.edu',
+        expect.stringContaining('/enroll/accept?token='),
+        expect.any(String),
+      );
     });
   });
 

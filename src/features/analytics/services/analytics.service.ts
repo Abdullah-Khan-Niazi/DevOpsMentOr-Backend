@@ -1,6 +1,7 @@
-import type { AnalyticsOverviewDto, ActivityTrendDto } from '../dto/analytics.dto';
+import type { AnalyticsOverviewDto, ActivityTrendDto, DetailedAnalyticsDto } from '../dto/analytics.dto';
 import type { IAnalyticsRepository } from '../repositories/analytics.repository';
 import { analyticsRepository } from '../repositories/analytics.repository';
+import { systemTelemetryService } from '../../../shared/services/system-telemetry.service';
 
 /**
  * F8 §07 analytics service (OPS-41/42). All queries are anonymized
@@ -64,6 +65,31 @@ export class AnalyticsService {
         courseCompletions: row.courseCompletions,
         pointsAwarded: row.pointsAwarded,
       })),
+    };
+  }
+
+  /** Granular platform analytics for admin deep-dive (funnel, heatmaps, pwnbox telemetry). */
+  async getDetailedAnalytics(): Promise<DetailedAnalyticsDto> {
+    const [overview, funnel, countries, subscriptionBreakdown, heatmap, heatmaps, pwnbox, sessionStats] = await Promise.all([
+      this.getOverview(),
+      this.deps.repo.getUserFunnel(),
+      this.deps.repo.getCountryDistribution(),
+      this.deps.repo.getSubscriptionBreakdown(),
+      this.deps.repo.getActivityHeatmap(84),
+      this.deps.repo.getMultiMetricHeatmaps(84),
+      this.deps.repo.getPwnboxStats(),
+      systemTelemetryService.getUserSessionTelemetry(),
+    ]);
+
+    return {
+      overview,
+      funnel,
+      countries,
+      subscriptionBreakdown,
+      heatmap,
+      heatmaps,
+      pwnbox,
+      sessionStats,
     };
   }
 }

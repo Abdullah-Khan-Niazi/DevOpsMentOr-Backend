@@ -21,6 +21,7 @@ import {
   registerSchema,
   resendVerificationSchema,
   resetPasswordSchema,
+  setPasswordSchema,
   verify2faSchema,
   verifyEmailSchema,
 } from '../validators/auth.validator';
@@ -80,6 +81,14 @@ authRoutes.post(
   authLimiter,
   validateRequest(resetPasswordSchema, 'body'),
   asyncHandler((req, res) => authController.resetPassword(req, res)),
+);
+
+authRoutes.post(
+  '/set-password',
+  authenticate,
+  authLimiter,
+  validateRequest(setPasswordSchema, 'body'),
+  asyncHandler((req, res) => authController.setPassword(req, res)),
 );
 
 // ─── Session lifecycle ─────────────────────────────────────────────────────

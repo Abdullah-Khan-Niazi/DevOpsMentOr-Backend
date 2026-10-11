@@ -39,6 +39,7 @@ const baseSignupSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
   fullName: z.string().trim().min(2, 'Full name must be at least 2 characters.').max(100),
+  countryCode: z.string().trim().min(2).max(2).optional().nullable(),
 });
 
 export const registerSchema = z
@@ -82,6 +83,13 @@ export const resetPasswordSchema = z
   .object({
     email: emailSchema,
     code: otpSchema,
+    newPassword: passwordSchema,
+  })
+  .strip();
+
+export const setPasswordSchema = z
+  .object({
+    currentPassword: z.string().optional().nullable(),
     newPassword: passwordSchema,
   })
   .strip();

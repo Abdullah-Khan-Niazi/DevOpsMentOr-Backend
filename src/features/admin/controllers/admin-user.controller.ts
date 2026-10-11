@@ -30,6 +30,9 @@ export class AdminUserController {
       role?: string;
       isBanned?: string;
       isActive?: string;
+      isDeleted?: string;
+      organizationId?: number;
+      country?: string;
     };
     const result = await adminUserService.listUsers({
       page: query.page,
@@ -38,8 +41,16 @@ export class AdminUserController {
       role: query.role,
       isBanned: toOptionalBoolean(query.isBanned),
       isActive: toOptionalBoolean(query.isActive),
+      isDeleted: toOptionalBoolean(query.isDeleted),
+      organizationId: query.organizationId ? Number(query.organizationId) : undefined,
+      country: query.country,
     });
     return sendSuccess(res, result, 'Users retrieved successfully.');
+  }
+
+  async invite(req: Request, res: Response): Promise<Response> {
+    const result = await adminUserService.inviteUsers(actorFrom(req), req.body);
+    return sendSuccess(res, result, 'Invitations dispatched successfully.');
   }
 
   async detail(req: Request, res: Response): Promise<Response> {
@@ -64,6 +75,11 @@ export class AdminUserController {
   async delete(req: Request, res: Response): Promise<Response> {
     const result = await adminUserService.deleteUser(actorFrom(req), Number(req.params.userId));
     return sendSuccess(res, result, 'User deleted successfully.');
+  }
+
+  async restore(req: Request, res: Response): Promise<Response> {
+    const result = await adminUserService.restoreUser(actorFrom(req), Number(req.params.userId));
+    return sendSuccess(res, result, 'User restored successfully.');
   }
 
   async listPlatformAdmins(_req: Request, res: Response): Promise<Response> {

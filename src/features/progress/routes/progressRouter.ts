@@ -96,7 +96,11 @@ progressRouter.use(selfRoutes);
 /** F5-API-09: professor class analytics. */
 progressRouter.get(
   '/class/:classId/students',
-  authorizePermissions(PERMISSIONS.PROGRESS_CLASS_READ),
+  authorizeAnyPermissions(
+    PERMISSIONS.PROGRESS_CLASS_READ,
+    PERMISSIONS.PROGRESS_ORG_READ,
+    PERMISSIONS.PLATFORM_PROGRESS_READ,
+  ),
   validateRequest(classIdParamSchema, 'params'),
   validateRequest(classStudentsQuerySchema, 'query'),
   asyncHandler((req, res) => progressController.getClassStudents(req, res)),

@@ -13,11 +13,11 @@ export const createOrgSchema = z
       .min(2, 'Slug must be at least 2 characters.')
       .max(255)
       .regex(slugPattern, 'Slug may only contain lowercase letters, digits and hyphens.'),
-    description: z.string().max(2000).optional(),
-    logoUrl: z.string().url('Logo URL must be a valid URL.').optional(),
-    website: z.string().url('Website must be a valid URL.').max(255).optional(),
-    industry: z.string().max(100).optional(),
-    billingEmail: z.string().email('Billing email must be a valid email.').max(255).optional(),
+    description: z.string().max(2000).optional().nullable(),
+    logoUrl: z.string().url('Logo URL must be a valid URL.').optional().nullable(),
+    website: z.string().url('Website must be a valid URL.').max(255).optional().nullable(),
+    industry: z.string().max(100).optional().nullable(),
+    billingEmail: z.string().email('Billing email must be a valid email.').max(255).optional().nullable(),
   })
   .strip();
 
@@ -65,7 +65,7 @@ export const inviteProfessorSchema = z
 export const createClassSchema = z
   .object({
     className: z.string().min(2, 'Class name must be at least 2 characters.').max(100),
-    description: z.string().max(2000).optional(),
+    description: z.string().max(2000).optional().nullable(),
     maxStudents: z.coerce.number().int().min(1, 'Capacity must be at least 1.').max(1000).optional(),
   })
   .strip();
@@ -109,7 +109,7 @@ export const inviteTokenSchema = z
 export const adminOrgListQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    pageSize: z.coerce.number().int().min(1).max(100).default(25),
     search: z.string().max(100).optional(),
   })
   .strip();
@@ -118,7 +118,7 @@ export const adminOrgListQuerySchema = z
 export const orgListQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    pageSize: z.coerce.number().int().min(1).max(100).default(25),
   })
   .strip();
 
@@ -126,7 +126,7 @@ export const orgListQuerySchema = z
 export const rosterQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    pageSize: z.coerce.number().int().min(1).max(100).default(25),
     includeInactive: z
       .enum(['true', 'false'])
       .transform((value) => value === 'true')
@@ -147,9 +147,23 @@ export const classIdParamSchema = z
   })
   .strip();
 
+export const orgAndClassParamSchema = z
+  .object({
+    orgId: z.coerce.number().int().positive(),
+    classId: z.coerce.number().int().positive(),
+  })
+  .strip();
+
 export const classAndStudentParamSchema = z
   .object({
     classId: z.coerce.number().int().positive(),
     userId: z.coerce.number().int().positive(),
+  })
+  .strip();
+
+export const classAndInvitationParamSchema = z
+  .object({
+    classId: z.coerce.number().int().positive(),
+    invitationId: z.coerce.number().int().positive(),
   })
   .strip();

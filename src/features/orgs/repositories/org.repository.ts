@@ -279,7 +279,10 @@ export class OrgRepository implements IOrgRepository {
   }
 
   async assignRole(userId: number, roleId: number): Promise<void> {
-    await db.insert(userRoles).values({ userId, roleId });
+    await db
+      .insert(userRoles)
+      .values({ userId, roleId })
+      .onDuplicateKeyUpdate({ set: { userId } });
   }
 }
 

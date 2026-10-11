@@ -693,9 +693,9 @@ export class ProgressRepository {
     return rows.length > 0;
   }
 
-  async findClass(classId: number): Promise<{ organizationId: number | null; className: string } | null> {
+  async findClass(classId: number): Promise<{ organizationId: number | null; className: string; teamOwnerId: number } | null> {
     const rows = await db
-      .select({ organizationId: teams.organizationId, className: teams.teamName })
+      .select({ organizationId: teams.organizationId, className: teams.teamName, teamOwnerId: teams.teamOwnerId })
       .from(teams)
       .where(eq(teams.teamId, classId))
       .limit(1);

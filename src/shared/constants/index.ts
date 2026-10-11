@@ -91,9 +91,12 @@ export const PERMISSIONS = {
 
 /** Audit log action strings (F2 §07 contract values). */
 export const AUDIT_ACTIONS = {
+  CREATE_USER: 'create_user',
+  INVITE_USER: 'invite_user',
   BAN_USER: 'ban_user',
   UNBAN_USER: 'unban_user',
   DELETE_USER: 'delete_user',
+  RESTORE_USER: 'restore_user',
   UPDATE_SETTING: 'update_setting',
   // ─── F3 org / class admin mutations ─────────────────────────────────────
   CREATE_ORG: 'create_org',

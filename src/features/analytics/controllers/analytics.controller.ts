@@ -18,6 +18,12 @@ export class AnalyticsController {
     const trend = await this.service.getActivityTrend(Number(req.query.days));
     return sendSuccess(res, trend, 'Activity trend retrieved successfully.');
   }
+
+  /** Granular analytics for deep-dive inspection. */
+  async getDetailedAnalytics(_req: Request, res: Response): Promise<Response> {
+    const detailed = await this.service.getDetailedAnalytics();
+    return sendSuccess(res, detailed, 'Detailed analytics retrieved successfully.');
+  }
 }
 
 export const analyticsController = new AnalyticsController();

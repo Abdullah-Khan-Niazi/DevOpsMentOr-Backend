@@ -1,3 +1,4 @@
+import https from 'https';
 import { env } from '../../../app/config/env';
 import { BadRequestError } from '../../../shared/errors';
 import type { OAuthProvider, OAuthUserInfo } from '../dto/auth.dto';
@@ -12,8 +13,8 @@ interface GoogleUser {
   id: string;
   email: string;
   verified_email: boolean;
-  name: string;
-  picture: string;
+  name?: string;
+  picture?: string;
 }
 
 interface GitHubUser {
@@ -28,6 +29,69 @@ interface GitHubEmail {
   email: string;
   primary: boolean;
   verified: boolean;
+}
+
+interface HttpResponse {
+  status: number;
+  data: any;
+}
+
+/**
+ * HTTPS helper that enforces IPv4 family to prevent undici/Node 24 connect
+ * timeouts on environments where DNS advertises unreachable IPv6 routes.
+ */
+function requestJson(
+  url: string,
+  options: { method: 'GET' | 'POST'; body?: string; headers?: Record<string, string> },
+): Promise<HttpResponse> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const headers = { ...options.headers };
+    if (options.body) {
+      headers['Content-Length'] = String(Buffer.byteLength(options.body));
+    }
+
+    const req = https.request(
+      {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || 443,
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: options.method,
+        family: 4,
+        headers,
+        timeout: 15_000,
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (chunk) => {
+          raw += chunk;
+        });
+        res.on('end', () => {
+          let data: any = raw;
+          try {
+            data = JSON.parse(raw);
+          } catch {
+            // Keep raw text if not valid JSON
+          }
+          resolve({ status: res.statusCode || 200, data });
+        });
+      },
+    );
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new BadRequestError(`Request to ${parsedUrl.hostname} timed out.`));
+    });
+
+    req.on('error', (err) => {
+      reject(new BadRequestError(`Network error connecting to ${parsedUrl.hostname}: ${err.message}`));
+    });
+
+    if (options.body) {
+      req.write(options.body);
+    }
+    req.end();
+  });
 }
 
 export class OAuthService {
@@ -65,7 +129,7 @@ export class OAuthService {
       grant_type: 'authorization_code',
     });
 
-    const response = await fetch(config.tokenUrl, {
+    const response = await requestJson(config.tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -74,12 +138,16 @@ export class OAuthService {
       body: params.toString(),
     });
 
-    if (!response.ok) {
-      throw new BadRequestError(`Failed to exchange code with ${provider}.`);
+    if (response.status < 200 || response.status >= 300) {
+      const errorMsg =
+        response.data?.error_description ||
+        response.data?.error ||
+        response.data?.message ||
+        `Failed to exchange code with ${provider}.`;
+      throw new BadRequestError(`OAuth error from ${provider}: ${errorMsg}`);
     }
 
-    const data = (await response.json()) as TokenResponse & { error?: string };
-
+    const data = response.data as TokenResponse & { error?: string };
     if (data.error) {
       throw new BadRequestError(`OAuth error from ${provider}: ${data.error}`);
     }
@@ -88,49 +156,64 @@ export class OAuthService {
   }
 
   private async getGoogleUser(accessToken: string): Promise<OAuthUserInfo> {
-    const response = await fetch(
-      'https://www.googleapis.com/oauth2/v2/userinfo',
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
+    const response = await requestJson('https://www.googleapis.com/oauth2/v2/userinfo', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    });
 
-    if (!response.ok) {
-      throw new BadRequestError('Failed to fetch Google user info.');
+    if (response.status !== 200) {
+      const errorMsg =
+        response.data?.error?.message ||
+        response.data?.message ||
+        'Failed to fetch Google user info.';
+      throw new BadRequestError(errorMsg);
     }
 
-    const user = (await response.json()) as GoogleUser;
+    const user = response.data as GoogleUser;
 
     return {
       provider: 'google',
       providerId: user.id,
       email: user.email,
-      name: user.name,
+      name: user.name || user.email.split('@')[0],
       avatarUrl: user.picture,
     };
   }
 
   private async getGitHubUser(accessToken: string): Promise<OAuthUserInfo> {
-    const headers = {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'DevOps-Mentor-App',
-    };
+    const response = await requestJson('https://api.github.com/user', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/vnd.github.v3+json',
+        'User-Agent': 'DevOps-Mentor-App',
+      },
+    });
 
-    const response = await fetch('https://api.github.com/user', { headers });
-
-    if (!response.ok) {
+    if (response.status !== 200) {
       throw new BadRequestError('Failed to fetch GitHub user info.');
     }
 
-    const user = (await response.json()) as GitHubUser;
+    const user = response.data as GitHubUser;
     let primaryEmail = user.email;
 
     if (!primaryEmail) {
-      const emailResponse = await fetch('https://api.github.com/user/emails', { headers });
+      const emailResponse = await requestJson('https://api.github.com/user/emails', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'DevOps-Mentor-App',
+        },
+      });
 
-      if (emailResponse.ok) {
-        const emails = (await emailResponse.json()) as GitHubEmail[];
-        const primary = emails.find((e) => e.primary && e.verified)
-          ?? emails.find((e) => e.verified);
+      if (emailResponse.status === 200 && Array.isArray(emailResponse.data)) {
+        const emails = emailResponse.data as GitHubEmail[];
+        const primary =
+          emails.find((e) => e.primary && e.verified) ?? emails.find((e) => e.verified);
         if (primary) {
           primaryEmail = primary.email;
         }
@@ -138,7 +221,9 @@ export class OAuthService {
     }
 
     if (!primaryEmail) {
-      throw new BadRequestError('Unable to retrieve a verified email from your GitHub account. Please ensure your email is public or verified.');
+      throw new BadRequestError(
+        'Unable to retrieve a verified email from your GitHub account. Please ensure your email is public or verified.',
+      );
     }
 
     return {

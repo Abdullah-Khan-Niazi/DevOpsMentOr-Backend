@@ -4,11 +4,23 @@ import { z } from 'zod';
 export const adminUserListQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().min(10).max(100).default(25),
+    pageSize: z.coerce.number().int().min(1).max(100).default(25),
     search: z.string().max(100).optional(),
     role: z.string().max(50).optional(),
     isBanned: z.enum(['true', 'false']).optional(),
     isActive: z.enum(['true', 'false']).optional(),
+    isDeleted: z.enum(['true', 'false']).optional(),
+    organizationId: z.coerce.number().int().positive().optional(),
+    country: z.string().max(100).optional(),
+  })
+  .strip();
+
+export const inviteUserSchema = z
+  .object({
+    emails: z.array(z.string().email()).min(1).max(100),
+    type: z.enum(['individual_learner', 'organization']),
+    organizationId: z.number().int().positive().optional(),
+    role: z.enum(['individual_learner', 'org_admin', 'professor', 'org_student', 'platform_admin']).optional(),
   })
   .strip();
 

@@ -21,6 +21,7 @@ interface BaseRegister {
   email: string;
   password: string;
   fullName: string;
+  countryCode?: string | null;
 }
 
 export interface LoginDto {
@@ -127,6 +128,11 @@ export interface OAuthUserInfo {
   avatarUrl?: string;
 }
 
+export interface SetPasswordDto {
+  currentPassword?: string | null;
+  newPassword: string;
+}
+
 export interface MeResponseDto {
   userId: number;
   username: string;
@@ -135,6 +141,7 @@ export interface MeResponseDto {
   status: string;
   isVerified: boolean;
   twoFactorEnabled: boolean;
+  hasPassword?: boolean;
   roles: string[];
   permissions: string[];
 }

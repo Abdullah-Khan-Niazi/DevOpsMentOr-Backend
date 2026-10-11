@@ -40,6 +40,7 @@ describe('AdminUserService (F2)', () => {
     findDetail: ReturnType<typeof vi.fn>;
     setBan: ReturnType<typeof vi.fn>;
     softDelete: ReturnType<typeof vi.fn>;
+    restore: ReturnType<typeof vi.fn>;
     listPlatformAdmins: ReturnType<typeof vi.fn>;
   };
   let audit: { record: ReturnType<typeof vi.fn> };
@@ -51,6 +52,7 @@ describe('AdminUserService (F2)', () => {
       findDetail: vi.fn(async () => detail()),
       setBan: vi.fn(async () => undefined),
       softDelete: vi.fn(async () => undefined),
+      restore: vi.fn(async () => undefined),
       listPlatformAdmins: vi.fn(async () => []),
     };
     audit = { record: vi.fn(async () => undefined) };
@@ -155,6 +157,21 @@ describe('AdminUserService (F2)', () => {
       expect(adminsRepo.softDelete).toHaveBeenCalledWith(2);
       expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: AUDIT_ACTIONS.DELETE_USER }));
       expect(result.message).toBe('User deleted successfully.');
+    });
+  });
+
+  describe('restoreUser', () => {
+    it('rejects restoring a user who is not deleted', async () => {
+      adminsRepo.findDetail.mockResolvedValueOnce(detail({ deletedAt: null }));
+      await expect(service.restoreUser(actor, 2)).rejects.toBeInstanceOf(BadRequestError);
+    });
+
+    it('restores a deleted user and records an audit entry', async () => {
+      adminsRepo.findDetail.mockResolvedValueOnce(detail({ deletedAt: '2026-01-05T00:00:00.000Z' }));
+      const result = await service.restoreUser(actor, 2);
+      expect(adminsRepo.restore).toHaveBeenCalledWith(2);
+      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: AUDIT_ACTIONS.RESTORE_USER }));
+      expect(result.message).toBe('User restored successfully.');
     });
   });
 });

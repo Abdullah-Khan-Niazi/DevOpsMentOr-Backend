@@ -14,6 +14,7 @@ import type {
   RegisterDto,
   ResetPasswordDto,
   ResendVerificationDto,
+  SetPasswordDto,
   Verify2faDto,
   VerifyEmailDto,
 } from '../dto/auth.dto';
@@ -109,6 +110,12 @@ export class AuthController {
   async resetPassword(req: Request, res: Response): Promise<Response> {
     const result = await authService.resetPassword(req.body as ResetPasswordDto);
     return sendSuccess(res, result, 'Password reset.', HTTP_STATUS.OK);
+  }
+
+  async setPassword(req: Request, res: Response): Promise<Response> {
+    const userId = Number(req.user?.sub);
+    const result = await authService.setPassword(userId, req.body as SetPasswordDto);
+    return sendSuccess(res, result, 'Password updated.', HTTP_STATUS.OK);
   }
 
   async enable2fa(req: Request, res: Response): Promise<Response> {

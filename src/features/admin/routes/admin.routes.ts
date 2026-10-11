@@ -15,6 +15,7 @@ import {
   adminUserListQuerySchema,
   auditLogQuerySchema,
   banUserSchema,
+  inviteUserSchema,
   updateSettingSchema,
 } from '../validators/admin.validator';
 
@@ -34,6 +35,20 @@ adminRoutes.get(
   authorizePermissions(PERMISSIONS.PLATFORM_USERS_READ),
   validateRequest(adminUserListQuerySchema, 'query'),
   asyncHandler((req, res) => adminUserController.list(req, res)),
+);
+
+/**
+ * @openapi
+ * /admin/users/invite:
+ *   post:
+ *     tags: [Admin]
+ *     summary: Invite users (individual learner or organization member)
+ */
+adminRoutes.post(
+  '/users/invite',
+  authorizePermissions(PERMISSIONS.PLATFORM_USERS_MANAGE),
+  validateRequest(inviteUserSchema, 'body'),
+  asyncHandler((req, res) => adminUserController.invite(req, res)),
 );
 
 /**
@@ -91,6 +106,20 @@ adminRoutes.delete(
   authorizePermissions(PERMISSIONS.PLATFORM_USERS_MANAGE),
   validateRequest(adminUserIdParamSchema, 'params'),
   asyncHandler((req, res) => adminUserController.delete(req, res)),
+);
+
+/**
+ * @openapi
+ * /admin/users/{userId}/restore:
+ *   post:
+ *     tags: [Admin]
+ *     summary: Restore a soft-deleted user
+ */
+adminRoutes.post(
+  '/users/:userId/restore',
+  authorizePermissions(PERMISSIONS.PLATFORM_USERS_MANAGE),
+  validateRequest(adminUserIdParamSchema, 'params'),
+  asyncHandler((req, res) => adminUserController.restore(req, res)),
 );
 
 /**
