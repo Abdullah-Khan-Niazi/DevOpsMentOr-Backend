@@ -13,6 +13,18 @@ function actorFrom(req: Request): AdminActor {
 
 /** F6 §08 admin surface (LAB-16..LAB-22), gated at the router layer. */
 export class AdminLabController {
+  /** List all labs for admin console */
+  async listLabs(_req: Request, res: Response): Promise<Response> {
+    const labs = await adminLabService.listLabsAdmin();
+    return sendSuccess(res, { labs }, 'Labs retrieved successfully.');
+  }
+
+  /** List all tracks for admin console */
+  async listTracks(_req: Request, res: Response): Promise<Response> {
+    const tracks = await adminLabService.listTracksAdmin();
+    return sendSuccess(res, { tracks }, 'Tracks retrieved successfully.');
+  }
+
   /** LAB-16 */
   async createLab(req: Request, res: Response): Promise<Response> {
     const lab = await adminLabService.createLab(actorFrom(req), req.body);

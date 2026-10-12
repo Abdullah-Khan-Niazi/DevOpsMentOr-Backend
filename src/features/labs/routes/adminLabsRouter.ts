@@ -24,6 +24,12 @@ const adminLabsRouter = Router();
 
 adminLabsRouter.use(authenticate);
 
+adminLabsRouter.get(
+  '/labs',
+  authorizePermissions(PERMISSIONS.PLATFORM_LABS_MANAGE),
+  asyncHandler((req, res) => adminLabController.listLabs(req, res)),
+);
+
 adminLabsRouter.post(
   '/labs',
   authorizePermissions(PERMISSIONS.PLATFORM_LABS_MANAGE),
@@ -45,6 +51,12 @@ adminLabsRouter.patch(
   validateRequest(labIdParamSchema, 'params'),
   validateRequest(publishLabSchema, 'body'),
   asyncHandler((req, res) => adminLabController.publishLab(req, res)),
+);
+
+adminLabsRouter.get(
+  '/tracks',
+  authorizePermissions(PERMISSIONS.PLATFORM_LABS_MANAGE),
+  asyncHandler((req, res) => adminLabController.listTracks(req, res)),
 );
 
 adminLabsRouter.post(

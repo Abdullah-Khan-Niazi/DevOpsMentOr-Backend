@@ -416,7 +416,7 @@ export class OrgService {
       const rosterRows = await db
         .select({ userId: teamMembers.userId })
         .from(teamMembers)
-        .where(inArray(teamMembers.teamId, teamIds));
+        .where(and(inArray(teamMembers.teamId, teamIds), eq(teamMembers.isActive, true)));
       for (const m of rosterRows) {
         memberIdSet.add(m.userId);
       }
@@ -639,17 +639,20 @@ export class OrgService {
           userId: teamMembers.userId,
           teamId: teamMembers.teamId,
           teamName: teams.teamName,
+          isActive: teamMembers.isActive,
         })
         .from(teamMembers)
         .innerJoin(teams, eq(teams.teamId, teamMembers.teamId))
         .where(inArray(teamMembers.teamId, teamIds));
       for (const m of rosterRows) {
         memberIdSet.add(m.userId);
-        const existing = userClassMap.get(m.userId) || [];
-        if (!existing.some((c) => c.classId === m.teamId)) {
-          existing.push({ classId: m.teamId, className: m.teamName });
+        if (m.isActive) {
+          const existing = userClassMap.get(m.userId) || [];
+          if (!existing.some((c) => c.classId === m.teamId)) {
+            existing.push({ classId: m.teamId, className: m.teamName });
+          }
+          userClassMap.set(m.userId, existing);
         }
-        userClassMap.set(m.userId, existing);
       }
     }
 

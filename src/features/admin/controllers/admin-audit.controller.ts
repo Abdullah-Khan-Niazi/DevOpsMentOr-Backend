@@ -9,6 +9,8 @@ export class AdminAuditController {
       page: number;
       pageSize: number;
       action?: string;
+      targetType?: string;
+      search?: string;
       from?: string;
       to?: string;
     };
@@ -17,12 +19,19 @@ export class AdminAuditController {
       page: query.page,
       pageSize: query.pageSize,
       action: query.action,
+      targetType: query.targetType,
+      search: query.search,
       from: query.from ? new Date(query.from) : undefined,
       to: query.to ? new Date(query.to) : undefined,
     };
 
     const result = await adminAuditService.list(filter);
     return sendSuccess(res, result, 'Audit logs retrieved successfully.');
+  }
+
+  async getMetadata(_req: Request, res: Response): Promise<Response> {
+    const result = await adminAuditService.getMetadata();
+    return sendSuccess(res, result, 'Audit metadata retrieved successfully.');
   }
 }
 

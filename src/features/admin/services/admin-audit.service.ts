@@ -18,6 +18,10 @@ export class AdminAuditService {
 
     return this.logs.list(filter);
   }
+
+  async getMetadata() {
+    return this.logs.getMetadata();
+  }
 }
 
 export const adminAuditService = new AdminAuditService();

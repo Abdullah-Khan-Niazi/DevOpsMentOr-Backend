@@ -48,7 +48,9 @@ export const auditLogQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(10).max(100).default(25),
-    action: z.string().max(50).optional(),
+    action: z.string().max(100).optional(),
+    targetType: z.string().max(100).optional(),
+    search: z.string().max(200).optional(),
     from: z.string().optional(),
     to: z.string().optional(),
   })
