@@ -148,6 +148,39 @@ export class ClassService {
     return this.getClassDetail(classId);
   }
 
+  async enrollStudent(actor: OrgActor, classId: number, studentUserId: number): Promise<void> {
+    const cls = await this.deps.classes.findById(classId);
+    if (!cls) {
+      throw new NotFoundError('Class not found.');
+    }
+    const student = await this.deps.orgs.findUserById(studentUserId);
+    if (!student) {
+      throw new NotFoundError('Student user not found.');
+    }
+
+    const studentOrgId = await this.deps.scopes.getOrgId(studentUserId);
+    if (studentOrgId !== cls.organizationId) {
+      throw new ForbiddenError('The student does not belong to this organization.');
+    }
+    if (await this.deps.orgs.hasRole(studentUserId, ROLES.ORG_ADMIN)) {
+      throw new ConflictError('An organization admin cannot be enrolled as a student.');
+    }
+    if (cls.maxMembers && cls.studentCount >= cls.maxMembers) {
+      throw new ConflictError(`Cohort has reached its maximum capacity of ${cls.maxMembers} students.`);
+    }
+    if (await this.deps.members.isActiveMember(classId, studentUserId)) {
+      throw new ConflictError('Student is already actively enrolled in this cohort.');
+    }
+
+    await this.deps.members.insertStudent(classId, studentUserId);
+
+    crashAudit(this.deps.audit, actor, AUDIT_ACTIONS.INVITE_STUDENTS, 'team', classId, {
+      studentUserId,
+      email: student.email,
+      directEnrollment: true,
+    });
+  }
+
   async getClassRoster(classId: number, page: number, pageSize: number, includeInactive: boolean): Promise<RosterDto> {
     if (!(await this.deps.classes.findById(classId))) {
       throw new NotFoundError('Class not found.');

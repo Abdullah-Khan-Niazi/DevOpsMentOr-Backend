@@ -131,6 +131,20 @@ export class TeamMemberRepository implements ITeamMemberRepository {
   }
 
   async insertStudent(classId: number, userId: number): Promise<void> {
+    const existing = await db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(and(eq(teamMembers.teamId, classId), eq(teamMembers.userId, userId)))
+      .limit(1);
+
+    if (existing[0]) {
+      await db
+        .update(teamMembers)
+        .set({ role: 'member', isActive: true, leftAt: null })
+        .where(and(eq(teamMembers.teamId, classId), eq(teamMembers.userId, userId)));
+      return;
+    }
+
     await db.insert(teamMembers).values({ teamId: classId, userId, role: 'member' });
   }
 

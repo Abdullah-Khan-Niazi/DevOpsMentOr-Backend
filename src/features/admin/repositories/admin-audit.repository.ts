@@ -1,11 +1,17 @@
-import { and, count, desc, eq, gte, lte } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNotNull, like, lte, or } from 'drizzle-orm';
 import { db } from '../../../app/database';
 import { auditLogs, users } from '../../../app/database/schema';
 import { getSkipTake } from '../../../shared/utils';
 import type { AuditLogFilter, AuditLogListItem, PaginatedAdminData } from '../dto/admin.dto';
 
+export interface AuditMetadataDto {
+  actions: string[];
+  targetTypes: string[];
+}
+
 export interface IAdminAuditRepository {
   list(filter: AuditLogFilter): Promise<PaginatedAdminData<AuditLogListItem>>;
+  getMetadata(): Promise<AuditMetadataDto>;
 }
 
 export class AdminAuditRepository implements IAdminAuditRepository {
@@ -14,6 +20,21 @@ export class AdminAuditRepository implements IAdminAuditRepository {
 
     if (filter.action) {
       conditions.push(eq(auditLogs.action, filter.action));
+    }
+    if (filter.targetType) {
+      conditions.push(eq(auditLogs.targetType, filter.targetType));
+    }
+    if (filter.search) {
+      const term = `%${filter.search}%`;
+      conditions.push(
+        or(
+          like(auditLogs.action, term),
+          like(auditLogs.targetType, term),
+          like(users.fullName, term),
+          like(users.email, term),
+          like(auditLogs.ipAddress, term),
+        ),
+      );
     }
     if (filter.from) {
       conditions.push(gte(auditLogs.createdAt, filter.from));
@@ -25,7 +46,7 @@ export class AdminAuditRepository implements IAdminAuditRepository {
     const totalRow = await db
       .select({ value: count(auditLogs.logId) })
       .from(auditLogs)
-      .innerJoin(users, eq(users.userId, auditLogs.adminUserId))
+      .leftJoin(users, eq(users.userId, auditLogs.adminUserId))
       .where(and(...conditions));
 
     const { skip, take } = getSkipTake(filter.page, filter.pageSize);
@@ -43,7 +64,7 @@ export class AdminAuditRepository implements IAdminAuditRepository {
         createdAt: auditLogs.createdAt,
       })
       .from(auditLogs)
-      .innerJoin(users, eq(users.userId, auditLogs.adminUserId))
+      .leftJoin(users, eq(users.userId, auditLogs.adminUserId))
       .where(and(...conditions))
       .orderBy(desc(auditLogs.createdAt))
       .limit(take)
@@ -53,7 +74,7 @@ export class AdminAuditRepository implements IAdminAuditRepository {
       logId: row.logId,
       adminUserId: row.adminUserId,
       adminFullName: row.adminFullName,
-      adminEmail: row.adminEmail,
+      adminEmail: row.adminEmail ?? 'System',
       action: row.action,
       targetType: row.targetType,
       targetId: row.targetId,
@@ -69,6 +90,24 @@ export class AdminAuditRepository implements IAdminAuditRepository {
       page: filter.page,
       pageSize: filter.pageSize,
       totalPages: total === 0 ? 0 : Math.ceil(total / filter.pageSize),
+    };
+  }
+
+  async getMetadata(): Promise<AuditMetadataDto> {
+    const actionRows = await db
+      .selectDistinct({ action: auditLogs.action })
+      .from(auditLogs)
+      .orderBy(auditLogs.action);
+
+    const targetTypeRows = await db
+      .selectDistinct({ targetType: auditLogs.targetType })
+      .from(auditLogs)
+      .where(isNotNull(auditLogs.targetType))
+      .orderBy(auditLogs.targetType);
+
+    return {
+      actions: actionRows.map((r) => r.action).filter(Boolean),
+      targetTypes: targetTypeRows.map((r) => r.targetType!).filter(Boolean),
     };
   }
 }

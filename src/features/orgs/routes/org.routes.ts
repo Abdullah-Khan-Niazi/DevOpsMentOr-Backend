@@ -21,6 +21,7 @@ import {
   createClassSchema,
   createOrgSchema,
   emailDomainSchema,
+  enrollStudentSchema,
   inviteProfessorSchema,
   inviteStudentsSchema,
   inviteTokenSchema,
@@ -249,6 +250,16 @@ orgRoutes.patch(
   validateRequest(classAndStudentParamSchema, 'params'),
   requireClassMembershipFromParams(),
   asyncHandler((req, res) => classController.withdrawStudent(req, res)),
+);
+
+orgRoutes.post(
+  '/org/classes/:classId/students/enroll',
+  authenticate,
+  authorizeAnyPermissions(PERMISSIONS.CLASS_STUDENTS_INVITE, PERMISSIONS.ORG_STUDENTS_INVITE),
+  validateRequest(classIdParamSchema, 'params'),
+  requireClassMembershipFromParams(),
+  validateRequest(enrollStudentSchema, 'body'),
+  asyncHandler((req, res) => classController.enrollStudent(req, res)),
 );
 
 orgRoutes.post(

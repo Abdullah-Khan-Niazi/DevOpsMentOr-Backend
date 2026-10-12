@@ -173,6 +173,15 @@ export class ClassController {
     return sendSuccess(res, cls, 'Professor assigned successfully.');
   }
 
+  async enrollStudent(req: Request, res: Response): Promise<Response> {
+    await classService.enrollStudent(
+      actorFrom(req),
+      Number(req.params.classId),
+      Number(req.body.studentUserId),
+    );
+    return sendSuccess(res, null, 'Student enrolled in cohort successfully.');
+  }
+
   async getRoster(req: Request, res: Response): Promise<Response> {
     const query = req.query as unknown as { page: number; pageSize: number; includeInactive?: string };
     const roster = await classService.getClassRoster(

@@ -88,6 +88,13 @@ export const assignProfessorSchema = z
   })
   .strip();
 
+/** Direct student enrollment payload */
+export const enrollStudentSchema = z
+  .object({
+    studentUserId: z.coerce.number().int().positive(),
+  })
+  .strip();
+
 /** CLS-07 payload */
 export const inviteStudentsSchema = z
   .object({

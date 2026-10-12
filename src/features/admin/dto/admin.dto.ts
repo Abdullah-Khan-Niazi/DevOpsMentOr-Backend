@@ -339,6 +339,8 @@ export interface AuditLogFilter {
   page: number;
   pageSize: number;
   action?: string;
+  targetType?: string;
+  search?: string;
   from?: Date;
   to?: Date;
 }

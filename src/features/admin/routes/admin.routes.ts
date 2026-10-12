@@ -143,6 +143,12 @@ adminRoutes.get(
  *     summary: List audit logs (ADM-07)
  */
 adminRoutes.get(
+  '/audit-logs/metadata',
+  authorizePermissions(PERMISSIONS.PLATFORM_ADMIN_ACCESS),
+  asyncHandler((req, res) => adminAuditController.getMetadata(req, res)),
+);
+
+adminRoutes.get(
   '/audit-logs',
   authorizePermissions(PERMISSIONS.PLATFORM_ADMIN_ACCESS),
   validateRequest(auditLogQuerySchema, 'query'),
