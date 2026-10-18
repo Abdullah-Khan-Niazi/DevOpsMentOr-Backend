@@ -1,10 +1,12 @@
-import { and, asc, countDistinct, desc, eq, inArray, isNotNull, isNull, like, or } from 'drizzle-orm';
+import { and, asc, countDistinct, desc, eq, inArray, isNotNull, isNull, like, or, sql } from 'drizzle-orm';
 import { db } from '../../../app/database';
 import {
   countries,
   loginHistory,
   organizations,
   roles,
+  teamMembers,
+  teams,
   userFollows,
   userProfiles,
   userRoles,
@@ -60,18 +62,41 @@ export class AdminUserRepository implements IAdminUserRepository {
       conditions.push(filter.isDeleted ? isNotNull(users.deletedAt) : isNull(users.deletedAt));
     }
     if (filter.organizationId !== undefined) {
+      const orgIdStr = String(filter.organizationId);
       conditions.push(
-        inArray(
-          users.userId,
-          db
-            .select({ userId: userSettings.userId })
-            .from(userSettings)
-            .where(
-              and(
-                eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
-                eq(userSettings.settingValue, String(filter.organizationId)),
+        or(
+          inArray(
+            users.userId,
+            db
+              .select({ userId: userSettings.userId })
+              .from(userSettings)
+              .where(
+                and(
+                  eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+                  sql`JSON_UNQUOTE(${userSettings.settingValue}) = ${orgIdStr}`,
+                ),
               ),
-            ),
+          ),
+          inArray(
+            users.userId,
+            db
+              .select({ userId: teams.teamOwnerId })
+              .from(teams)
+              .where(eq(teams.organizationId, filter.organizationId)),
+          ),
+          inArray(
+            users.userId,
+            db
+              .select({ userId: teamMembers.userId })
+              .from(teamMembers)
+              .innerJoin(teams, eq(teams.teamId, teamMembers.teamId))
+              .where(
+                and(
+                  eq(teams.organizationId, filter.organizationId),
+                  eq(teamMembers.isActive, true),
+                ),
+              ),
+          ),
         ),
       );
     }
@@ -142,7 +167,7 @@ export class AdminUserRepository implements IAdminUserRepository {
         db
           .select({
             userId: userSettings.userId,
-            orgId: userSettings.settingValue,
+            orgId: sql<string>`JSON_UNQUOTE(${userSettings.settingValue})`,
           })
           .from(userSettings)
           .where(
@@ -188,6 +213,48 @@ export class AdminUserRepository implements IAdminUserRepository {
           const orgId = Number(s.orgId);
           if (orgMap.has(orgId)) {
             orgByUser.set(s.userId, { id: orgId, name: orgMap.get(orgId)! });
+          }
+        }
+      }
+
+      // Also enrich any users with teams/classes linked to organizations
+      const missingOrgUserIds = userIds.filter((id) => !orgByUser.has(id));
+      if (missingOrgUserIds.length > 0) {
+        const [orgTeamsList, orgMemberList] = await Promise.all([
+          db
+            .select({
+              userId: teams.teamOwnerId,
+              orgId: teams.organizationId,
+              orgName: organizations.name,
+            })
+            .from(teams)
+            .innerJoin(organizations, eq(organizations.organizationId, teams.organizationId))
+            .where(and(inArray(teams.teamOwnerId, missingOrgUserIds), isNotNull(teams.organizationId))),
+          db
+            .select({
+              userId: teamMembers.userId,
+              orgId: teams.organizationId,
+              orgName: organizations.name,
+            })
+            .from(teamMembers)
+            .innerJoin(teams, eq(teams.teamId, teamMembers.teamId))
+            .innerJoin(organizations, eq(organizations.organizationId, teams.organizationId))
+            .where(
+              and(
+                inArray(teamMembers.userId, missingOrgUserIds),
+                isNotNull(teams.organizationId),
+                eq(teamMembers.isActive, true),
+              ),
+            ),
+        ]);
+        for (const t of orgTeamsList) {
+          if (t.userId && t.orgId && !orgByUser.has(t.userId)) {
+            orgByUser.set(t.userId, { id: t.orgId, name: t.orgName });
+          }
+        }
+        for (const m of orgMemberList) {
+          if (m.userId && m.orgId && !orgByUser.has(m.userId)) {
+            orgByUser.set(m.userId, { id: m.orgId, name: m.orgName });
           }
         }
       }

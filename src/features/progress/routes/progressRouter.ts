@@ -118,7 +118,7 @@ progressRouter.get(
 /** F5-API-11: org-admin aggregate. */
 progressRouter.get(
   '/org/:orgId/students',
-  authorizePermissions(PERMISSIONS.PROGRESS_ORG_READ),
+  authorizeAnyPermissions(PERMISSIONS.PROGRESS_ORG_READ, PERMISSIONS.PROGRESS_CLASS_READ),
   validateRequest(orgIdParamSchema, 'params'),
   asyncHandler((req, res) => progressController.getOrgStudents(req, res)),
 );

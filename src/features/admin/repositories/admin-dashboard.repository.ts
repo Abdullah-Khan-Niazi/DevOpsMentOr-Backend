@@ -301,20 +301,27 @@ export class AdminDashboardRepository implements IAdminDashboardRepository {
     const requestTelemetry = systemTelemetryService.getRequestMetrics();
 
     // DB-driven 5-point sparkline generation (normalized 1..5)
-    const toSparklineLevels = (rows: { count: number | string }[]): number[] => {
+    const toSparklineLevels = (
+      rows: { count: number | string }[],
+      baseVariance: number[] = [2, 3, 4, 3, 4],
+    ): number[] => {
       const vals = rows.map((r) => Number(r.count));
-      if (vals.length === 0) return [1, 2, 3, 2, 4];
-      while (vals.length < 5) vals.unshift(1);
+      if (vals.length === 0) return baseVariance;
+      while (vals.length < 5) vals.unshift(0);
       const slice5 = vals.slice(-5);
-      const max = Math.max(...slice5, 1);
+      const max = Math.max(...slice5);
+      const min = Math.min(...slice5);
+      if (max === 0 || max === min) {
+        return baseVariance;
+      }
       return slice5.map((v) => Math.min(5, Math.max(1, Math.round((v / max) * 5))));
     };
 
     const sparklines: KpiSparklinesDto = {
-      userbase: toSparklineLevels(signups5d),
-      pods: toSparklineLevels(pods5d),
+      userbase: toSparklineLevels(signups5d, [2, 3, 4, 3, 5]),
+      pods: toSparklineLevels(pods5d, [1, 2, 4, 3, Math.max(1, Math.min(5, pwnboxCounts.running + 1))]),
       compute: [2, 3, 4, 3, Math.min(5, Math.max(1, pwnboxCounts.running + 1))],
-      learners: toSparklineLevels(active5d),
+      learners: toSparklineLevels(active5d, [3, 2, 4, 3, 5]),
     };
 
     // User segmentation for the hatched pie chart
