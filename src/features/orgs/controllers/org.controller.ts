@@ -22,6 +22,13 @@ export class OrgController {
     return sendSuccess(res, org, 'Organization created successfully.', HTTP_STATUS.CREATED);
   }
 
+  async createMyOrg(req: Request, res: Response): Promise<Response> {
+    const actor = actorFrom(req);
+    const org = await orgService.createOrg(actor, req.body);
+    await orgService.assignOrgAdmin(actor, org.organizationId, actor.userId);
+    return sendSuccess(res, org, 'Organization created successfully.', HTTP_STATUS.CREATED);
+  }
+
   async listOrgs(req: Request, res: Response): Promise<Response> {
     const query = req.query as unknown as { page: number; pageSize: number; search?: string };
     const result = await orgService.listOrgsAdmin(query.page, query.pageSize, query.search);

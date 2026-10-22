@@ -122,6 +122,13 @@ orgRoutes.post(
 );
 
 /** ── Org-scoped dashboard & administration (ORG-06..ORG-10) ──────────── */
+orgRoutes.post(
+  '/org',
+  authenticate,
+  validateRequest(createOrgSchema, 'body'),
+  asyncHandler((req, res) => orgController.createMyOrg(req, res)),
+);
+
 orgRoutes.get(
   '/org/me',
   authenticate,

@@ -81,6 +81,41 @@ export const ASSERTION_GROUPS: Record<string, AssertionDefinition[]> = {
       stdoutContains: '',
     },
   ],
+  'linux-process-audit': [
+    {
+      hint: 'Process table could not be read or PID 1 is not healthy.',
+      check: 'shell',
+      command: 'ps aux | head -n 10',
+      expectExitCode: 0,
+      stdoutContains: 'USER',
+    },
+  ],
+  'linux-memory-report': [
+    {
+      hint: 'Memory report /workspace/system_audit/memory_report.txt missing or empty. Run "free -m > /workspace/system_audit/memory_report.txt".',
+      check: 'shell',
+      command: 'grep -i "mem" /workspace/system_audit/memory_report.txt 2>/dev/null',
+      expectExitCode: 0,
+      stdoutContains: 'Mem:',
+    },
+  ],
+  'linux-kill-rogue': [
+    {
+      hint: 'Rogue worker process is still alive. Terminate it with: kill -9 $(pgrep -f rogue-worker.sh)',
+      check: 'shell',
+      command: 'ps -eo stat,args | grep -v "defunct" | grep "[r]ogue-worker.sh" || echo "CLEAN"',
+      expectExitCode: 0,
+      stdoutContains: 'CLEAN',
+    },
+  ],
+  'linux-break-fix-service': [
+    {
+      hint: 'Metrics collector is not active, not configured, or missing heartbeats. Fix config.env (STATUS=active), chmod +x, and launch in background.',
+      check: 'shell',
+      command: 'grep "STATUS=active" /opt/services/config.env 2>/dev/null && ps -eo stat,args | grep -v "defunct" | grep "[m]etrics-collector.sh" && grep -i "HEARTBEAT" /var/log/metrics-collector.log 2>/dev/null',
+      expectExitCode: 0,
+    },
+  ],
 };
 
 /** Unknown group ids produce an honest FAIL (misconfiguration signal). */
