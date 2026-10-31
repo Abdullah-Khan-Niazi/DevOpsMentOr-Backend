@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../../../app/database';
 import { teamMembers, teams, users } from '../../../app/database/schema';
 import { getSkipTake } from '../../../shared/utils';
@@ -42,11 +42,20 @@ export interface IClassRepository {
   findBySlug(slug: string): Promise<ClassRow | null>;
   findById(classId: number): Promise<ClassWithCounts | null>;
   findOwnerOrg(classId: number): Promise<{ organizationId: number | null } | null>;
-  listByOrg(orgId: number, page: number, pageSize: number): Promise<ClassPage>;
+  listByOrg(
+    orgId: number,
+    page: number,
+    pageSize: number,
+    filter?: { userId: number; scope: 'professor' | 'student' },
+  ): Promise<ClassPage>;
   update(
     classId: number,
     fields: { className?: string; description?: string | null; maxMembers?: number },
   ): Promise<void>;
+  deleteById(classId: number): Promise<void>;
+  listAllByOrg(orgId: number): Promise<ClassRow[]>;
+  deleteByOrg(orgId: number): Promise<void>;
+  countOwnedByUser(userId: number): Promise<number>;
   setOwner(classId: number, ownerUserId: number): Promise<void>;
   countByOrg(orgId: number): Promise<number>;
   findProfessorCount(orgId: number): Promise<number>;
@@ -128,8 +137,47 @@ export class ClassRepository implements IClassRepository {
     return rows[0]?.value ?? 0;
   }
 
-  async listByOrg(orgId: number, page: number, pageSize: number): Promise<ClassPage> {
+  async listByOrg(
+    orgId: number,
+    page: number,
+    pageSize: number,
+    filter?: { userId: number; scope: 'professor' | 'student' },
+  ): Promise<ClassPage> {
     const filters = [eq(teams.organizationId, orgId)];
+
+    if (filter?.scope === 'professor') {
+      const assignedRows = await db
+        .select({ teamId: teamMembers.teamId })
+        .from(teamMembers)
+        .innerJoin(teams, eq(teams.teamId, teamMembers.teamId))
+        .where(and(
+          eq(teams.organizationId, orgId),
+          eq(teamMembers.userId, filter.userId),
+          inArray(teamMembers.role, [...PROFESSOR_ROLES]),
+          eq(teamMembers.isActive, true),
+        ));
+      const assignedIds = assignedRows.map((row) => row.teamId);
+      filters.push(
+        assignedIds.length > 0
+          ? or(eq(teams.teamOwnerId, filter.userId), inArray(teams.teamId, assignedIds))!
+          : eq(teams.teamOwnerId, filter.userId),
+      );
+    } else if (filter?.scope === 'student') {
+      const memberRows = await db
+        .select({ teamId: teamMembers.teamId })
+        .from(teamMembers)
+        .innerJoin(teams, eq(teams.teamId, teamMembers.teamId))
+        .where(and(
+          eq(teams.organizationId, orgId),
+          eq(teamMembers.userId, filter.userId),
+          eq(teamMembers.role, 'member'),
+          eq(teamMembers.isActive, true),
+        ));
+      const memberIds = memberRows.map((row) => row.teamId);
+      filters.push(
+        memberIds.length > 0 ? inArray(teams.teamId, memberIds) : eq(teams.teamId, -1),
+      );
+    }
 
     const totalRows = await db.select({ value: count() }).from(teams).where(and(...filters));
     const total = totalRows[0]?.value ?? 0;
@@ -161,6 +209,26 @@ export class ClassRepository implements IClassRepository {
     if ('description' in fields) patch.description = fields.description;
     if (fields.maxMembers !== undefined) patch.maxMembers = fields.maxMembers;
     await db.update(teams).set(patch).where(eq(teams.teamId, classId));
+  }
+
+  async deleteById(classId: number): Promise<void> {
+    await db.delete(teams).where(eq(teams.teamId, classId));
+  }
+
+  async listAllByOrg(orgId: number): Promise<ClassRow[]> {
+    return db.select().from(teams).where(eq(teams.organizationId, orgId));
+  }
+
+  async deleteByOrg(orgId: number): Promise<void> {
+    await db.delete(teams).where(eq(teams.organizationId, orgId));
+  }
+
+  async countOwnedByUser(userId: number): Promise<number> {
+    const rows = await db
+      .select({ value: count() })
+      .from(teams)
+      .where(eq(teams.teamOwnerId, userId));
+    return rows[0]?.value ?? 0;
   }
 
   async setOwner(classId: number, ownerUserId: number): Promise<void> {

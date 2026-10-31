@@ -300,8 +300,8 @@ export class ProgressService {
       throw new ForbiddenError('You do not have access to this class.');
     }
     const student = await this.deps.repo.findUser(studentUserId);
-    if (!student) {
-      throw new NotFoundError('Student not found.');
+    if (!student || !(await this.deps.repo.isClassMember(classId, studentUserId))) {
+      throw new NotFoundError('Student not found in this class.');
     }
     const snapshot = await curriculumService.getCourseSnapshot();
     const [course, modules, activity] = await Promise.all([
@@ -319,6 +319,9 @@ export class ProgressService {
 
   /** F5-API-11: org-admin aggregate over all org students. */
   async getOrgStudentsProgress(orgId: number, actor: ProgressActor): Promise<OrgStudentProgressDto[]> {
+    if (!this.isOrgAdmin(actor) && !this.isPlatformAdmin(actor)) {
+      throw new ForbiddenError('Organization-wide progress requires organization admin access.');
+    }
     const callerOrgId = await this.deps.repo.getOrgId(actor.userId);
     if (callerOrgId !== orgId && !this.isPlatformAdmin(actor)) {
       throw new ForbiddenError('You do not have access to this organization.');
