@@ -16,10 +16,11 @@ class ClassRow {
   studentCount = 0;
 }
 
-const { classRepositoryMock, orgScopeRepositoryMock, teamMemberRepositoryMock } = vi.hoisted(() => ({
+const { classRepositoryMock, orgRepositoryMock, orgScopeRepositoryMock, teamMemberRepositoryMock } = vi.hoisted(() => ({
   classRepositoryMock: { findById: vi.fn() },
+  orgRepositoryMock: { findById: vi.fn() },
   orgScopeRepositoryMock: { getOrgId: vi.fn() },
-  teamMemberRepositoryMock: { isProfessorOf: vi.fn() },
+  teamMemberRepositoryMock: { isActiveMember: vi.fn(), isProfessorOf: vi.fn() },
 }));
 
 vi.mock('../../src/features/orgs/repositories/class.repository', () => ({
@@ -27,6 +28,7 @@ vi.mock('../../src/features/orgs/repositories/class.repository', () => ({
   PROFESSOR_ROLES: ['captain', 'co_captain'],
 }));
 vi.mock('../../src/features/orgs/repositories/org.repository', () => ({
+  orgRepository: orgRepositoryMock,
   orgScopeRepository: orgScopeRepositoryMock,
 }));
 vi.mock('../../src/features/orgs/repositories/team-member.repository', () => ({
@@ -66,14 +68,18 @@ describe('OrgMembershipGuard (F3 security/RBAC)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     classRepositoryMock.findById.mockReset();
+    orgRepositoryMock.findById.mockReset();
+    orgRepositoryMock.findById.mockResolvedValue({ organizationId: 5 });
     orgScopeRepositoryMock.getOrgId.mockReset();
+    teamMemberRepositoryMock.isActiveMember.mockReset();
+    teamMemberRepositoryMock.isActiveMember.mockResolvedValue(false);
     teamMemberRepositoryMock.isProfessorOf.mockReset();
   });
 
   describe('requireOrgMembership (AC-08)', () => {
     it('resolves the caller org from scope and attaches req.orgId', async () => {
       orgScopeRepositoryMock.getOrgId.mockResolvedValue(5);
-      const req = makeReq({ sub: 9 });
+      const req = makeReq({ sub: 9, roles: [ROLES.ORG_ADMIN] });
       const { error } = await run(requireOrgMembership(), req);
       expect(error).toBeUndefined();
       expect((req as Request & { orgId?: number }).orgId).toBe(5);
@@ -111,7 +117,10 @@ describe('OrgMembershipGuard (F3 security/RBAC)', () => {
     it('allows a member of the class organization', async () => {
       classRepositoryMock.findById.mockResolvedValue(clsWith(1));
       orgScopeRepositoryMock.getOrgId.mockResolvedValue(1);
-      const { error } = await run(requireClassMembership(10), makeReq({ sub: 3 }));
+      const { error } = await run(
+        requireClassMembership(10),
+        makeReq({ sub: 3, roles: [ROLES.ORG_ADMIN] }),
+      );
       expect(error).toBeUndefined();
       expect(teamMemberRepositoryMock.isProfessorOf).not.toHaveBeenCalled();
     });
@@ -120,7 +129,10 @@ describe('OrgMembershipGuard (F3 security/RBAC)', () => {
       classRepositoryMock.findById.mockResolvedValue(clsWith(1));
       orgScopeRepositoryMock.getOrgId.mockResolvedValue(2);
       teamMemberRepositoryMock.isProfessorOf.mockResolvedValue(false);
-      const { error } = await run(requireClassMembership(10), makeReq({ sub: 50 }));
+      const { error } = await run(
+        requireClassMembership(10),
+        makeReq({ sub: 50, roles: [ROLES.ORG_ADMIN] }),
+      );
       expect(error).toBeInstanceOf(ForbiddenError);
       expect((error as ForbiddenError).statusCode).toBe(403);
     });
@@ -155,6 +167,7 @@ describe('OrgMembershipGuard (F3 security/RBAC)', () => {
     it('derives classId from validated route params', async () => {
       classRepositoryMock.findById.mockResolvedValue(new ClassRow());
       orgScopeRepositoryMock.getOrgId.mockResolvedValue(1);
+      teamMemberRepositoryMock.isActiveMember.mockResolvedValue(true);
       const req = makeReq({ sub: 3, params: { classId: '10' } });
       const { error } = await run(requireClassMembershipFromParams(), req);
       expect(error).toBeUndefined();

@@ -115,10 +115,10 @@ progressRouter.get(
   asyncHandler((req, res) => progressController.getStudentDetail(req, res)),
 );
 
-/** F5-API-11: org-admin aggregate. */
+/** F5-API-11: org-admin aggregate. Professors must never read org-wide. */
 progressRouter.get(
   '/org/:orgId/students',
-  authorizeAnyPermissions(PERMISSIONS.PROGRESS_ORG_READ, PERMISSIONS.PROGRESS_CLASS_READ),
+  authorizePermissions(PERMISSIONS.PROGRESS_ORG_READ),
   validateRequest(orgIdParamSchema, 'params'),
   asyncHandler((req, res) => progressController.getOrgStudents(req, res)),
 );

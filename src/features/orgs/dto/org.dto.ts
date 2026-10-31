@@ -75,6 +75,26 @@ export interface ClassDto {
 /** CLS-03 class detail */
 export interface ClassDetailDto extends ClassDto {}
 
+/** Reusable, expiring class join code (Redis-backed, no schema change). */
+export interface ClassJoinCodeDto {
+  code: string;
+  expiresAt: string;
+}
+
+/** Listed join code with provenance (raw code is never written to audit logs). */
+export interface ClassJoinCodeRecordDto extends ClassJoinCodeDto {
+  createdBy: number | null;
+  createdAt: string | null;
+}
+
+/** Result of redeeming a class join code. */
+export interface ClassJoinResultDto {
+  classId: number;
+  className: string;
+  organizationName: string;
+  alreadyEnrolled: boolean;
+}
+
 /** CLS-06 roster row */
 export interface RosterStudentDto {
   userId: number;
@@ -148,6 +168,9 @@ export interface OrgActor {
   userId: number;
   ipAddress: string | null;
   userAgent: string | null;
+  /** JWT roles are used only to shape the response surface; authorization
+   * remains permission- and database-membership-based at the route/service. */
+  roles?: string[];
 }
 
 /** Org members/users view */

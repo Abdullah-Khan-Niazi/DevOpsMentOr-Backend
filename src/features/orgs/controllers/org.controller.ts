@@ -10,6 +10,7 @@ function actorFrom(req: Request): OrgActor {
     userId: Number(req.user?.sub),
     ipAddress: req.ip ?? null,
     userAgent: req.get('user-agent') ?? null,
+    roles: req.user?.roles ?? [],
   };
 }
 
@@ -23,9 +24,7 @@ export class OrgController {
   }
 
   async createMyOrg(req: Request, res: Response): Promise<Response> {
-    const actor = actorFrom(req);
-    const org = await orgService.createOrg(actor, req.body);
-    await orgService.assignOrgAdmin(actor, org.organizationId, actor.userId);
+    const org = await orgService.createMyOrg(actorFrom(req), req.body);
     return sendSuccess(res, org, 'Organization created successfully.', HTTP_STATUS.CREATED);
   }
 
@@ -43,6 +42,11 @@ export class OrgController {
   async updateOrg(req: Request, res: Response): Promise<Response> {
     const org = await orgService.updateOrg(actorFrom(req), Number(req.params.orgId), req.body);
     return sendSuccess(res, org, 'Organization updated successfully.');
+  }
+
+  async deleteOrg(req: Request, res: Response): Promise<Response> {
+    const result = await orgService.deleteOrg(actorFrom(req), Number(req.params.orgId));
+    return sendSuccess(res, result, 'Organization deleted successfully.');
   }
 
   async assignOrgAdmin(req: Request, res: Response): Promise<Response> {
@@ -96,6 +100,7 @@ export class OrgController {
     const orgId = Number(req.params.orgId);
     const query = req.query as unknown as { page?: number; pageSize?: number };
     const result = await classService.listClasses(
+      actorFrom(req),
       orgId,
       query.page ? Number(query.page) : 1,
       query.pageSize ? Number(query.pageSize) : 50,
@@ -157,7 +162,12 @@ export class ClassController {
   async listClasses(req: Request, res: Response): Promise<Response> {
     const orgId = await orgService.resolveScopedOrg(userIdFrom(req));
     const query = req.query as unknown as { page: number; pageSize: number };
-    const result = await classService.listClasses(orgId, query.page, query.pageSize);
+    const result = await classService.listClasses(
+      actorFrom(req),
+      orgId,
+      query.page,
+      query.pageSize,
+    );
     return sendSuccess(res, result, 'Classes retrieved successfully.');
   }
 
@@ -235,6 +245,35 @@ export class ClassController {
     );
     return sendSuccess(res, result, 'Student import completed.');
   }
+
+  async generateJoinCode(req: Request, res: Response): Promise<Response> {
+    const result = await classService.generateJoinCode(actorFrom(req), Number(req.params.classId));
+    return sendSuccess(res, result, 'Class join code generated successfully.', HTTP_STATUS.CREATED);
+  }
+
+  async listJoinCodes(req: Request, res: Response): Promise<Response> {
+    const result = await classService.listJoinCodes(actorFrom(req), Number(req.params.classId));
+    return sendSuccess(res, result, 'Class join codes retrieved successfully.');
+  }
+
+  async revokeJoinCode(req: Request, res: Response): Promise<Response> {
+    const result = await classService.revokeJoinCode(
+      actorFrom(req),
+      Number(req.params.classId),
+      String(req.params.code),
+    );
+    return sendSuccess(res, result, 'Class join code revoked successfully.');
+  }
+
+  async deleteClass(req: Request, res: Response): Promise<Response> {
+    const result = await classService.deleteClass(actorFrom(req), Number(req.params.classId));
+    return sendSuccess(res, result, 'Class deleted successfully.');
+  }
+
+  async joinClass(req: Request, res: Response): Promise<Response> {
+    const result = await classService.joinClassWithCode(actorFrom(req), req.body.code);
+    return sendSuccess(res, result, 'Class joined successfully.');
+  }
 }
 
 export class EnrollmentController {
@@ -250,8 +289,14 @@ export class EnrollmentController {
   }
 
   async myClass(req: Request, res: Response): Promise<Response> {
-    const cls = await orgService.getMyClass(userIdFrom(req));
+    const query = req.query as unknown as { classId?: number };
+    const cls = await orgService.getMyClass(userIdFrom(req), query.classId);
     return sendSuccess(res, cls, 'Enrollment retrieved successfully.');
+  }
+
+  async myClasses(req: Request, res: Response): Promise<Response> {
+    const classes = await orgService.listMyClasses(userIdFrom(req));
+    return sendSuccess(res, classes, 'Enrollments retrieved successfully.');
   }
 }
 
