@@ -216,6 +216,17 @@ export class LabService {
       return null;
     }
     const lab = await this.deps.repo.findLabById(row.labId);
+
+    let terminalWsUrl = 'http://localhost:7701';
+    try {
+      const endpoint = await this.deps.orchestration.getInstance(row.instanceId);
+      if (endpoint?.terminalWsUrl) {
+        terminalWsUrl = endpoint.terminalWsUrl;
+      }
+    } catch (err) {
+      logger.warn({ err, instanceId: row.instanceId }, 'Could not resolve terminal endpoint from orchestrator');
+    }
+
     return {
       instanceId: row.instanceId,
       labId: row.labId,
@@ -230,7 +241,7 @@ export class LabService {
       diskGb: row.diskGb,
       startedAt: row.startedAt.toISOString(),
       expiresAt: row.expiresAt?.toISOString() ?? null,
-      terminalWsUrl: `${env.PUBLIC_API_URL}/terminal/ws/${row.instanceId}`,
+      terminalWsUrl,
     };
   }
 
