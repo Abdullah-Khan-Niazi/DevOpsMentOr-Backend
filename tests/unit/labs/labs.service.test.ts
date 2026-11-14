@@ -104,6 +104,7 @@ function makeVpn(): Mocked<VpnServiceDeps['repo']> {
 function makeService(overrides: Partial<Record<keyof LabServiceDeps, unknown>> = {}) {
   const repo = (overrides.repo ?? makeRepo()) as Mocked<LabServiceDeps['repo']>;
   const orchestration = (overrides.orchestration ?? {
+    getInstance: vi.fn(async () => null),
     createInstance: vi.fn(async () => ({
       hostname: 'box-42.example.com',
       assignedIp: '10.0.0.42',
@@ -205,6 +206,7 @@ describe('LabService', () => {
 
     it('marks the instance errored and releases the VPN when provisioning fails', async () => {
       const orchestration = {
+        getInstance: vi.fn(async () => null),
         createInstance: vi.fn(async () => {
           throw new Error('orchestration down');
         }),

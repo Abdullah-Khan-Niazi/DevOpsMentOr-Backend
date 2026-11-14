@@ -49,6 +49,21 @@ export class ContainerOrchestrationAdapter {
       : {};
   }
 
+  async getInstance(instanceId: number): Promise<{ terminalWsUrl: string; hostPort: number } | null> {
+    try {
+      const endpoint = this.endpointOrThrow();
+      const response = await fetch(`${endpoint}/instances/${instanceId}`, {
+        method: 'GET',
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as { terminalWsUrl: string; hostPort: number };
+    } catch {
+      return null;
+    }
+  }
+
   async createInstance(input: ContainerInstanceInput): Promise<ContainerInstanceEndpoint> {
     const endpoint = this.endpointOrThrow();
     const response = await fetch(`${endpoint}/instances`, {
