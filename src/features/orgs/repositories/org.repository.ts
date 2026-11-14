@@ -50,16 +50,21 @@ export interface IOrgRepository {
       Pick<OrganizationDto, 'name' | 'description' | 'logoUrl' | 'website' | 'industry' | 'billingEmail'>
     >,
   ): Promise<void>;
+  deleteById(orgId: number): Promise<void>;
   findUserById(userId: number): Promise<{ userId: number; email: string; fullName: string | null } | null>;
   findUserByEmail(email: string): Promise<{ userId: number; email: string; fullName: string | null } | null>;
   findUsersByIds(
     userIds: number[],
   ): Promise<Array<{ userId: number; email: string; fullName: string | null }>>;
   hasRole(userId: number, roleName: string): Promise<boolean>;
+  listRoleNames(userId: number): Promise<string[]>;
   findRoleId(roleName: string): Promise<number>;
   assignRole(userId: number, roleId: number): Promise<void>;
+  removeRole(userId: number, roleName: string): Promise<void>;
+  removeRoles(userId: number, roleNames: string[]): Promise<void>;
   getEmailDomain(orgId: number): Promise<string | null>;
   setEmailDomain(orgId: number, domain: string, updatedBy: number): Promise<void>;
+  clearEmailDomain(orgId: number): Promise<void>;
 }
 
 function toDto(row: OrgRow): OrganizationDto {
@@ -152,40 +157,32 @@ export class OrgRepository implements IOrgRepository {
       return null;
     }
 
+    // Scope the lookup in SQL. Filtering the first 10 global org admins in
+    // memory both hid valid admins and could surface an admin from another org.
     const adminRows = await db
       .select({ userId: users.userId, email: users.email, fullName: users.fullName })
       .from(userRoles)
       .innerJoin(roles, eq(roles.roleId, userRoles.roleId))
       .innerJoin(users, eq(users.userId, userRoles.userId))
-      .where(eq(roles.roleName, ROLES.ORG_ADMIN))
-      .limit(10);
-
-    for (const candidate of adminRows) {
-      const scope = await this.getScope(candidate.userId);
-      if (scope === orgId) {
-        return {
-          ...toDto(org),
-          adminUserId: candidate.userId,
-          adminEmail: candidate.email,
-        };
-      }
-    }
-
-    return { ...toDto(org), adminUserId: null, adminEmail: null };
-  }
-
-  private async getScope(userId: number): Promise<number | null> {
-    const rows = await db
-      .select({ settingValue: userSettings.settingValue })
-      .from(userSettings)
-      .where(and(
-        eq(userSettings.userId, userId),
-        eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
-      ))
+      .innerJoin(
+        userSettings,
+        and(
+          eq(userSettings.userId, userRoles.userId),
+          eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+        ),
+      )
+      .where(
+        and(
+          eq(roles.roleName, ROLES.ORG_ADMIN),
+          eq(userSettings.settingValue, String(orgId)),
+        ),
+      )
       .limit(1);
-    const raw = rows[0]?.settingValue;
-    const parsed = raw == null ? NaN : Number(raw);
-    return Number.isNaN(parsed) ? null : parsed;
+
+    const admin = adminRows[0];
+    return admin
+      ? { ...toDto(org), adminUserId: admin.userId, adminEmail: admin.email }
+      : { ...toDto(org), adminUserId: null, adminEmail: null };
   }
 
   async update(
@@ -202,6 +199,10 @@ export class OrgRepository implements IOrgRepository {
     if ('industry' in fields) patch.industry = fields.industry;
     if ('billingEmail' in fields) patch.billingEmail = fields.billingEmail;
     await db.update(organizations).set(patch).where(eq(organizations.organizationId, orgId));
+  }
+
+  async deleteById(orgId: number): Promise<void> {
+    await db.delete(organizations).where(eq(organizations.organizationId, orgId));
   }
 
   async findUserById(userId: number): Promise<{ userId: number; email: string; fullName: string | null } | null> {
@@ -265,6 +266,15 @@ export class OrgRepository implements IOrgRepository {
     return rows.length > 0;
   }
 
+  async listRoleNames(userId: number): Promise<string[]> {
+    const rows = await db
+      .select({ roleName: roles.roleName })
+      .from(userRoles)
+      .innerJoin(roles, eq(roles.roleId, userRoles.roleId))
+      .where(eq(userRoles.userId, userId));
+    return rows.map((row) => row.roleName);
+  }
+
   async findRoleId(roleName: string): Promise<number> {
     const rows = await db
       .select({ roleId: roles.roleId })
@@ -284,6 +294,44 @@ export class OrgRepository implements IOrgRepository {
       .values({ userId, roleId })
       .onDuplicateKeyUpdate({ set: { userId } });
   }
+
+  async removeRole(userId: number, roleName: string): Promise<void> {
+    const rows = await db
+      .select({ roleId: roles.roleId })
+      .from(roles)
+      .where(eq(roles.roleName, roleName))
+      .limit(1);
+    const roleId = rows[0]?.roleId;
+    if (!roleId) {
+      return;
+    }
+    await db
+      .delete(userRoles)
+      .where(and(eq(userRoles.userId, userId), eq(userRoles.roleId, roleId)));
+  }
+
+  async removeRoles(userId: number, roleNames: string[]): Promise<void> {
+    if (roleNames.length === 0) {
+      return;
+    }
+    const rows = await db
+      .select({ roleId: roles.roleId })
+      .from(roles)
+      .where(inArray(roles.roleName, roleNames));
+    const roleIds = rows.map((row) => row.roleId);
+    if (roleIds.length === 0) {
+      return;
+    }
+    await db
+      .delete(userRoles)
+      .where(and(eq(userRoles.userId, userId), inArray(userRoles.roleId, roleIds)));
+  }
+
+  async clearEmailDomain(orgId: number): Promise<void> {
+    await db
+      .delete(systemSettings)
+      .where(eq(systemSettings.settingKey, ORG_CONSTANTS.ORG_EMAIL_DOMAIN_KEY(orgId)));
+  }
 }
 
 export const orgRepository = new OrgRepository();
@@ -297,6 +345,8 @@ export const orgRepository = new OrgRepository();
 export interface IOrgScopeRepository {
   getOrgId(userId: number): Promise<number | null>;
   setOrgId(userId: number, orgId: number): Promise<void>;
+  clearOrgId(userId: number): Promise<void>;
+  listUserIdsByOrgId(orgId: number): Promise<number[]>;
 }
 
 export class OrgScopeRepository implements IOrgScopeRepository {
@@ -319,6 +369,26 @@ export class OrgScopeRepository implements IOrgScopeRepository {
       .insert(userSettings)
       .values({ userId, settingKey: ORG_CONSTANTS.ORG_ID_SETTING_KEY, settingValue: orgId })
       .onDuplicateKeyUpdate({ set: { settingValue: orgId } });
+  }
+
+  async clearOrgId(userId: number): Promise<void> {
+    await db
+      .delete(userSettings)
+      .where(and(
+        eq(userSettings.userId, userId),
+        eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+      ));
+  }
+
+  async listUserIdsByOrgId(orgId: number): Promise<number[]> {
+    const rows = await db
+      .select({ userId: userSettings.userId })
+      .from(userSettings)
+      .where(and(
+        eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+        eq(userSettings.settingValue, String(orgId)),
+      ));
+    return [...new Set(rows.map((row) => row.userId))];
   }
 }
 

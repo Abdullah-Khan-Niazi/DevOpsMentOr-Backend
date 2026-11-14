@@ -109,6 +109,38 @@ export class OrgService {
     };
   }
 
+  /** Self-service organization creation. An account that already belongs to
+   * (or holds a role in) an organization cannot create a second one, because
+   * roles are global and the scope pointer is single-valued. */
+  async createMyOrg(actor: OrgActor, input: CreateOrgInput): Promise<OrgCreatedDto> {
+    const [scope, isAdmin, isProfessor, isStudent] = await Promise.all([
+      this.deps.scopes.getOrgId(actor.userId),
+      this.deps.orgs.hasRole(actor.userId, ROLES.ORG_ADMIN),
+      this.deps.orgs.hasRole(actor.userId, ROLES.PROFESSOR),
+      this.deps.orgs.hasRole(actor.userId, ROLES.ORG_STUDENT),
+    ]);
+    if (scope !== null) {
+      throw new ConflictError(
+        'ORG_SCOPE_CONFLICT: your account is already linked to an organization.',
+      );
+    }
+    if (isAdmin || isProfessor || isStudent) {
+      throw new ConflictError(
+        'ORG_SCOPE_CONFLICT: an organization-scoped role cannot create another organization.',
+      );
+    }
+
+    const org = await this.createOrg(actor, input);
+    try {
+      await this.assignOrgAdmin(actor, org.organizationId, actor.userId);
+    } catch (err) {
+      // Never leave an organization with no administrator.
+      await this.deps.orgs.deleteById(org.organizationId);
+      throw err;
+    }
+    return org;
+  }
+
   async listOrgsAdmin(page: number, pageSize: number, search: string | undefined): Promise<AdminOrgListDto> {
     return this.deps.orgs.listAdmin(page, pageSize, search);
   }
@@ -119,6 +151,112 @@ export class OrgService {
       throw new NotFoundError('Organization not found.');
     }
     return detail;
+  }
+
+  /**
+   * Platform-admin destructive deletion. Classes are deleted before the org
+   * (teams.organization_id is ON DELETE SET NULL, so leaving them behind would
+   * create orphaned tenants), then org scopes, org-scoped roles and Redis
+   * state are cleaned. Students who lose their last class fall back to the
+   * individual-learner role; platform admins are never demoted.
+   */
+  async deleteOrg(
+    actor: OrgActor,
+    orgId: number,
+  ): Promise<{
+    organizationId: number;
+    name: string;
+    slug: string;
+    classCount: number;
+    affectedUserCount: number;
+    clearedScopes: number;
+    cleanedRoles: number;
+  }> {
+    if (!(await this.deps.orgs.hasRole(actor.userId, ROLES.PLATFORM_ADMIN))) {
+      throw new ForbiddenError('Only platform administrators can delete an organization.');
+    }
+
+    const org = await this.deps.orgs.findById(orgId);
+    if (!org) {
+      throw new NotFoundError('Organization not found.');
+    }
+
+    const orgClasses = await this.deps.classes.listAllByOrg(orgId);
+    const classIds = new Set(orgClasses.map((cls) => cls.teamId));
+
+    const [scopedUserIds, memberUserIds] = await Promise.all([
+      this.deps.scopes.listUserIdsByOrgId(orgId),
+      this.deps.members.listActiveUserIdsByOrg(orgId),
+    ]);
+    const affectedUserIds = new Set<number>([
+      ...scopedUserIds,
+      ...memberUserIds,
+      ...orgClasses.map((cls) => cls.teamOwnerId),
+    ]);
+
+    await this.revokeOrgRedisState(orgId, classIds);
+
+    // Explicit class deletion also cascades team_members/team_invitations.
+    await this.deps.classes.deleteByOrg(orgId);
+    await db.delete(subscriptions).where(eq(subscriptions.organizationId, orgId));
+    await this.deps.orgs.clearEmailDomain(orgId);
+    await this.deps.orgs.deleteById(orgId);
+
+    let clearedScopes = 0;
+    let cleanedRoles = 0;
+    for (const userId of affectedUserIds) {
+      const currentScope = await this.deps.scopes.getOrgId(userId);
+      if (currentScope === orgId) {
+        await this.deps.scopes.clearOrgId(userId);
+        clearedScopes += 1;
+      }
+
+      const roleNames = await this.deps.orgs.listRoleNames(userId);
+      if (roleNames.includes(ROLES.PLATFORM_ADMIN)) {
+        continue;
+      }
+
+      const stillScoped = currentScope !== null && currentScope !== orgId;
+      const [hasMembership, ownedClassCount] = await Promise.all([
+        this.deps.members.hasAnyActiveMembership(userId),
+        this.deps.classes.countOwnedByUser(userId),
+      ]);
+      if (stillScoped || hasMembership || ownedClassCount > 0) {
+        continue;
+      }
+
+      await this.deps.orgs.removeRoles(userId, [
+        ROLES.ORG_ADMIN,
+        ROLES.PROFESSOR,
+        ROLES.ORG_STUDENT,
+      ]);
+      cleanedRoles += 1;
+
+      const remainingRoles = await this.deps.orgs.listRoleNames(userId);
+      if (remainingRoles.length === 0) {
+        const individualRoleId = await this.deps.orgs.findRoleId(ROLES.INDIVIDUAL_LEARNER);
+        await this.deps.orgs.assignRole(userId, individualRoleId);
+      }
+    }
+
+    crashAudit(this.deps.audit, actor, AUDIT_ACTIONS.DELETE_ORG, 'organization', orgId, {
+      name: org.name,
+      slug: org.slug,
+      classes: orgClasses.map((cls) => ({ classId: cls.teamId, className: cls.teamName })),
+      affectedUserCount: affectedUserIds.size,
+      clearedScopes,
+      cleanedRoles,
+    });
+
+    return {
+      organizationId: orgId,
+      name: org.name,
+      slug: org.slug,
+      classCount: orgClasses.length,
+      affectedUserCount: affectedUserIds.size,
+      clearedScopes,
+      cleanedRoles,
+    };
   }
 
   async updateOrg(
@@ -164,6 +302,12 @@ export class OrgService {
     }
     if (await this.deps.orgs.hasRole(userId, ROLES.ORG_ADMIN)) {
       throw new ConflictError('User is already an organization admin.');
+    }
+    const currentScope = await this.deps.scopes.getOrgId(userId);
+    if (currentScope !== null && currentScope !== orgId) {
+      throw new ConflictError(
+        'ORG_SCOPE_CONFLICT: the user is already linked to another organization.',
+      );
     }
 
     const roleId = await this.deps.orgs.findRoleId(ROLES.ORG_ADMIN);
@@ -282,11 +426,15 @@ export class OrgService {
     return professors;
   }
 
-  /** ENR-03: the scoped student's single active class. */
-  async getMyClass(userId: number) {
-    const enrollment = await this.deps.members.findActiveStudentClass(userId);
+  /** ENR-03: the scoped student's active class, or a requested one. */
+  async getMyClass(userId: number, classId?: number) {
+    const enrollment = await this.deps.members.findActiveStudentClass(userId, classId);
     if (!enrollment) {
-      throw new NotFoundError('You are not enrolled in any class.');
+      throw new NotFoundError(
+        classId !== undefined
+          ? 'You are not enrolled in this class.'
+          : 'You are not enrolled in any class.',
+      );
     }
     return {
       classId: enrollment.teamId,
@@ -294,6 +442,86 @@ export class OrgService {
       organizationName: enrollment.organizationName,
       enrolledAt: enrollment.joinedAt.toISOString(),
     };
+  }
+
+  /** Multi-class context: every active enrollment for the learner. */
+  async listMyClasses(userId: number) {
+    const enrollments = await this.deps.members.listActiveStudentClasses(userId);
+    return enrollments.map((enrollment) => ({
+      classId: enrollment.teamId,
+      className: enrollment.teamName,
+      organizationName: enrollment.organizationName,
+      enrolledAt: enrollment.joinedAt.toISOString(),
+    }));
+  }
+
+  /**
+   * Redis is a cache, not a durable tenancy record. Remove class codes (plus
+   * their per-class index) and pending org-admin invites for a deleted org so
+   * a stale token cannot resolve a class/org that no longer exists.
+   */
+  private async revokeOrgRedisState(orgId: number, classIds: Set<number>): Promise<void> {
+    let cursor = '0';
+    do {
+      const [next, keys] = await redisClient.scan(
+        cursor,
+        'MATCH',
+        'org:class_join*',
+        'COUNT',
+        200,
+      );
+      cursor = next;
+      for (const key of keys) {
+        if (key.startsWith(ORG_CONSTANTS.CLASS_CODE_INDEX_PREFIX)) {
+          const classId = Number(key.slice(ORG_CONSTANTS.CLASS_CODE_INDEX_PREFIX.length));
+          if (classIds.has(classId)) {
+            await redisClient.del(key);
+          }
+          continue;
+        }
+        if (!key.startsWith(ORG_CONSTANTS.CLASS_CODE_PREFIX)) {
+          continue;
+        }
+        const raw = await redisClient.get(key);
+        if (!raw) {
+          continue;
+        }
+        try {
+          const payload = JSON.parse(raw) as { classId?: number };
+          if (typeof payload.classId === 'number' && classIds.has(payload.classId)) {
+            await redisClient.del(key);
+          }
+        } catch {
+          // Malformed code payloads cannot grant scope; leave them for TTL.
+        }
+      }
+    } while (cursor !== '0');
+
+    cursor = '0';
+    do {
+      const [next, keys] = await redisClient.scan(
+        cursor,
+        'MATCH',
+        'org_admin_invite:*',
+        'COUNT',
+        200,
+      );
+      cursor = next;
+      for (const key of keys) {
+        const raw = await redisClient.get(key);
+        if (!raw) {
+          continue;
+        }
+        try {
+          const invite = JSON.parse(raw) as { orgId?: number };
+          if (invite.orgId === orgId) {
+            await redisClient.del(key);
+          }
+        } catch {
+          // Ignore malformed invite payloads; acceptance re-validates shape.
+        }
+      }
+    } while (cursor !== '0');
   }
 
   /** Resolves the caller's org from their `org_id` scope setting. */
@@ -327,6 +555,18 @@ export class OrgService {
       targetEmail = String(emailOrUserId).trim().toLowerCase();
       const user = await this.deps.orgs.findUserByEmail(targetEmail);
       if (user) targetUserId = user.userId;
+    }
+
+    if (targetUserId !== null) {
+      if (await this.deps.orgs.hasRole(targetUserId, ROLES.ORG_ADMIN)) {
+        throw new ConflictError('User is already an organization admin.');
+      }
+      const existingScope = await this.deps.scopes.getOrgId(targetUserId);
+      if (existingScope !== null && existingScope !== orgId) {
+        throw new ConflictError(
+          'ORG_SCOPE_CONFLICT: the user is already linked to another organization.',
+        );
+      }
     }
 
     const token = randomUUID();
@@ -363,8 +603,20 @@ export class OrgService {
     if (!user) {
       throw new NotFoundError('User not found.');
     }
-    if (user.email.toLowerCase() !== invite.email.toLowerCase() && invite.userId && invite.userId !== userId) {
+    if (user.email.toLowerCase() !== invite.email.toLowerCase()) {
       throw new ForbiddenError('This invitation belongs to a different email address.');
+    }
+    if (!(await this.deps.orgs.findById(invite.orgId))) {
+      throw new NotFoundError('The inviting organization no longer exists.');
+    }
+
+    // Never move an existing org scope; roles are global and a scope move
+    // would grant this invitation's admin role against another tenant.
+    const currentScope = await this.deps.scopes.getOrgId(userId);
+    if (currentScope !== null && currentScope !== invite.orgId) {
+      throw new ConflictError(
+        'ORG_SCOPE_CONFLICT: your account is already linked to another organization.',
+      );
     }
 
     const roleId = await this.deps.orgs.findRoleId(ROLES.ORG_ADMIN);

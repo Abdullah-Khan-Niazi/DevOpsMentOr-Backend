@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, ne } from 'drizzle-orm';
 import { db } from '../../../app/database';
 import { organizations, teamMembers, teams, users } from '../../../app/database/schema';
 import { getSkipTake } from '../../../shared/utils';
@@ -20,6 +20,14 @@ export interface RosterPage {
   totalPages: number;
 }
 
+export interface ActiveStudentClassRow {
+  teamId: number;
+  teamName: string;
+  organizationId: number | null;
+  organizationName: string;
+  joinedAt: Date;
+}
+
 export interface ITeamMemberRepository {
   isActiveMember(classId: number, userId: number): Promise<boolean>;
   isProfessorOf(classId: number, userId: number): Promise<boolean>;
@@ -27,17 +35,15 @@ export interface ITeamMemberRepository {
   professorUserIds(orgId: number): Promise<number[]>;
   countStudentsByOrg(orgId: number): Promise<number>;
   upsertProfessor(classId: number, userId: number, role: ProfessorRole): Promise<void>;
+  deactivateOtherProfessors(classId: number, exceptUserId: number): Promise<void>;
   insertStudent(classId: number, userId: number): Promise<void>;
   withdraw(classId: number, userId: number): Promise<void>;
   roster(classId: number, page: number, pageSize: number, showAll: boolean): Promise<RosterPage>;
-  findActiveStudentClass(
-    userId: number,
-  ): Promise<{
-    teamId: number;
-    teamName: string;
-    organizationName: string;
-    joinedAt: Date;
-  } | null>;
+  findActiveStudentClass(userId: number, classId?: number): Promise<ActiveStudentClassRow | null>;
+  listActiveStudentClasses(userId: number): Promise<ActiveStudentClassRow[]>;
+  listActiveStudentIds(classId: number): Promise<number[]>;
+  listActiveUserIdsByOrg(orgId: number): Promise<number[]>;
+  hasAnyActiveMembership(userId: number): Promise<boolean>;
 }
 
 /** Member/enrollment repository: roster, professor checks, withdrawal. */
@@ -130,6 +136,18 @@ export class TeamMemberRepository implements ITeamMemberRepository {
     await db.insert(teamMembers).values({ teamId: classId, userId, role });
   }
 
+  async deactivateOtherProfessors(classId: number, exceptUserId: number): Promise<void> {
+    await db
+      .update(teamMembers)
+      .set({ isActive: false, leftAt: new Date() })
+      .where(and(
+        eq(teamMembers.teamId, classId),
+        eq(teamMembers.isActive, true),
+        inArray(teamMembers.role, [...PROFESSOR_ROLES]),
+        ne(teamMembers.userId, exceptUserId),
+      ));
+  }
+
   async insertStudent(classId: number, userId: number): Promise<void> {
     const existing = await db
       .select({ userId: teamMembers.userId })
@@ -183,19 +201,44 @@ export class TeamMemberRepository implements ITeamMemberRepository {
     return { data: rows, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
 
-  /** ENR-03: the user's single active class enrollment. */
+  /** ENR-03: one active class enrollment, optionally narrowed to a class. */
   async findActiveStudentClass(
     userId: number,
-  ): Promise<{
-    teamId: number;
-    teamName: string;
-    organizationName: string;
-    joinedAt: Date;
-  } | null> {
+    classId?: number,
+  ): Promise<ActiveStudentClassRow | null> {
+    const filters = [
+      eq(teamMembers.userId, userId),
+      eq(teamMembers.role, 'member'),
+      eq(teamMembers.isActive, true),
+    ];
+    if (classId !== undefined) {
+      filters.push(eq(teamMembers.teamId, classId));
+    }
+
     const rows = await db
       .select({
         teamId: teamMembers.teamId,
         teamName: teams.teamName,
+        organizationId: teams.organizationId,
+        organizationName: organizations.name,
+        joinedAt: teamMembers.joinedAt,
+      })
+      .from(teamMembers)
+      .innerJoin(teams, eq(teams.teamId, teamMembers.teamId))
+      .innerJoin(organizations, eq(organizations.organizationId, teams.organizationId))
+      .where(and(...filters))
+      .orderBy(desc(teamMembers.joinedAt))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /** Every active class a learner belongs to (multi-class context). */
+  async listActiveStudentClasses(userId: number): Promise<ActiveStudentClassRow[]> {
+    return db
+      .select({
+        teamId: teamMembers.teamId,
+        teamName: teams.teamName,
+        organizationId: teams.organizationId,
         organizationName: organizations.name,
         joinedAt: teamMembers.joinedAt,
       })
@@ -207,9 +250,43 @@ export class TeamMemberRepository implements ITeamMemberRepository {
         eq(teamMembers.role, 'member'),
         eq(teamMembers.isActive, true),
       ))
-      .orderBy(desc(teamMembers.joinedAt))
+      .orderBy(desc(teamMembers.joinedAt));
+  }
+
+  /** Snapshot before deleting a class: who may lose their last enrollment. */
+  async listActiveStudentIds(classId: number): Promise<number[]> {
+    const rows = await db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(and(
+        eq(teamMembers.teamId, classId),
+        eq(teamMembers.role, 'member'),
+        eq(teamMembers.isActive, true),
+      ));
+    return rows.map((row) => row.userId);
+  }
+
+  /** Users with any active membership in the organization's classes. */
+  async listActiveUserIdsByOrg(orgId: number): Promise<number[]> {
+    const rows = await db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .innerJoin(teams, eq(teams.teamId, teamMembers.teamId))
+      .where(and(
+        eq(teams.organizationId, orgId),
+        eq(teamMembers.isActive, true),
+      ));
+    return [...new Set(rows.map((row) => row.userId))];
+  }
+
+  /** Used after org deletion to decide whether org roles are still meaningful. */
+  async hasAnyActiveMembership(userId: number): Promise<boolean> {
+    const rows = await db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(and(eq(teamMembers.userId, userId), eq(teamMembers.isActive, true)))
       .limit(1);
-    return rows[0] ?? null;
+    return rows.length > 0;
   }
 }
 

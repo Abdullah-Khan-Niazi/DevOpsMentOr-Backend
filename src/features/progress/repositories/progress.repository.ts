@@ -702,6 +702,19 @@ export class ProgressRepository {
     return rows[0] ?? null;
   }
 
+  async isClassMember(classId: number, userId: number): Promise<boolean> {
+    const rows = await db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(and(
+        eq(teamMembers.teamId, classId),
+        eq(teamMembers.userId, userId),
+        eq(teamMembers.isActive, true),
+      ))
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async listClassStudents(classId: number): Promise<ClassStudentRow[]> {
     return db
       .select({

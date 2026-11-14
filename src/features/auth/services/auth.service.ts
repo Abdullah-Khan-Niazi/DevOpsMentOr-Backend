@@ -355,6 +355,12 @@ export class AuthService {
       throw new UnauthorizedError('Invalid email or password.');
     }
 
+    if (!user.passwordHash || user.passwordHash.length === 0) {
+      throw new BadRequestError(
+        'This account was created with Google/GitHub. Please sign in using your OAuth provider above, or click "Forgot Password" to set a password.',
+      );
+    }
+
     const isPasswordValid = await passwordService.compare(input.password, user.passwordHash);
     if (!isPasswordValid) {
       await this.recordLoginFailure(user.userId, 'Invalid password', 'email', meta);
@@ -632,6 +638,12 @@ export class AuthService {
 
     if (!user) {
       throw new UnauthorizedError('Invalid email or password.');
+    }
+
+    if (!user.passwordHash || user.passwordHash.length === 0) {
+      throw new BadRequestError(
+        'This account was created with Google/GitHub. Please sign in using your OAuth provider above, or click "Forgot Password" to set a password.',
+      );
     }
 
     const isPasswordValid = await passwordService.compare(input.password, user.passwordHash);

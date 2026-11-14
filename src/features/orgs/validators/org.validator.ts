@@ -105,10 +105,40 @@ export const inviteStudentsSchema = z
   })
   .strip();
 
+/** Task 3: reusable class join code. */
+export const joinClassCodeSchema = z
+  .object({
+    code: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .regex(/^[A-Z0-9]{6,12}$/, 'Class codes contain 6–12 letters and digits.'),
+  })
+  .strip();
+
 /** ENR-01 query / ENR-02 payload */
 export const inviteTokenSchema = z
   .object({
     token: z.string().min(1).max(255),
+  })
+  .strip();
+
+/** ENR-03 optional class selection for multi-class learners. */
+export const myClassQuerySchema = z
+  .object({
+    classId: z.coerce.number().int().positive().optional(),
+  })
+  .strip();
+
+/** Class code revocation route params. */
+export const classJoinCodeParamSchema = z
+  .object({
+    classId: z.coerce.number().int().positive(),
+    code: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .regex(/^[A-Z0-9]{6,12}$/, 'Class codes contain 6–12 letters and digits.'),
   })
   .strip();
 

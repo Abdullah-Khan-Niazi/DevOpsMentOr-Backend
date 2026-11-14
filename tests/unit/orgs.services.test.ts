@@ -6,6 +6,23 @@ import { ClassService } from '../../src/features/orgs/services/class.service';
 import type { OrgServiceDeps } from '../../src/features/orgs/services/org.service';
 import type { ClassServiceDeps } from '../../src/features/orgs/services/class.service';
 
+const { redisClientMock } = vi.hoisted(() => ({
+  redisClientMock: {
+    get: vi.fn(),
+    set: vi.fn(),
+    incr: vi.fn(),
+    expire: vi.fn(),
+    del: vi.fn(),
+    sadd: vi.fn(),
+    smembers: vi.fn(),
+    srem: vi.fn(),
+    ttl: vi.fn(),
+    scan: vi.fn(),
+  },
+}));
+
+vi.mock('../../src/app/cache/redis', () => ({ redisClient: redisClientMock }));
+
 const actor = { userId: 9, ipAddress: '127.0.0.1', userAgent: 'vitest' };
 
 function orgRow(overrides: Record<string, unknown> = {}) {
@@ -51,22 +68,42 @@ function makeOrgDeps(): Mocked<OrgServiceDeps> {
       listAdmin: vi.fn(async () => ({ data: [], total: 0, page: 1, pageSize: 25, totalPages: 0 })),
       getAdminDetail: vi.fn(async () => null),
       update: vi.fn(async () => undefined),
+      deleteById: vi.fn(async () => undefined),
       findUserById: vi.fn(async () => ({ userId: 2, email: 'bob@example.com', fullName: 'Bob' })),
       findUserByEmail: vi.fn(async () => null),
       findUsersByIds: vi.fn(async () => []),
       hasRole: vi.fn(async () => false),
       findRoleId: vi.fn(async () => 7),
       assignRole: vi.fn(async () => undefined),
+      removeRole: vi.fn(async () => undefined),
+      removeRoles: vi.fn(async () => undefined),
+      listRoleNames: vi.fn(async () => []),
       getEmailDomain: vi.fn(async () => null),
       setEmailDomain: vi.fn(async () => undefined),
+      clearEmailDomain: vi.fn(async () => undefined),
     },
-    scopes: { getOrgId: vi.fn(async () => 1), setOrgId: vi.fn(async () => undefined) },
-    classes: { countByOrg: vi.fn(async () => 2), findProfessorCount: vi.fn(async () => 1) },
+    scopes: {
+      getOrgId: vi.fn(async () => 1),
+      setOrgId: vi.fn(async () => undefined),
+      clearOrgId: vi.fn(async () => undefined),
+      listUserIdsByOrgId: vi.fn(async () => [9]),
+    },
+    classes: {
+      countByOrg: vi.fn(async () => 2),
+      findProfessorCount: vi.fn(async () => 1),
+      listAllByOrg: vi.fn(async () => [classRow()]),
+      deleteByOrg: vi.fn(async () => undefined),
+      countOwnedByUser: vi.fn(async () => 0),
+    },
     members: {
       countStudentsByOrg: vi.fn(async () => 4),
       professorUserIds: vi.fn(async () => []),
       assignedClassIds: vi.fn(async () => []),
       findActiveStudentClass: vi.fn(async () => null),
+      listActiveStudentClasses: vi.fn(async () => []),
+      listActiveStudentIds: vi.fn(async () => []),
+      listActiveUserIdsByOrg: vi.fn(async () => []),
+      hasAnyActiveMembership: vi.fn(async () => false),
     },
     invitations: {
       ensureSentinelTeam: vi.fn(async () => 99),
@@ -90,6 +127,7 @@ function makeClassDeps() {
     findById: vi.fn(async () => orgRow()),
     findRoleId: vi.fn(async () => 8),
     assignRole: vi.fn(async () => undefined),
+    removeRole: vi.fn(async () => undefined),
     hasRole: vi.fn(async () => false),
     getEmailDomain: vi.fn(async () => null),
     setEmailDomain: vi.fn(async () => undefined),
@@ -100,7 +138,12 @@ function makeClassDeps() {
     listAdmin: vi.fn(async () => ({ data: [], total: 0, page: 1, pageSize: 25, totalPages: 0 })),
     update: vi.fn(async () => undefined),
   };
-  const scopes = { getOrgId: vi.fn(async (userId: number) => (userId === 9 ? 1 : null)), setOrgId: vi.fn(async () => undefined) };
+  const scopes = {
+    getOrgId: vi.fn(async (userId: number) => (userId === 9 ? 1 : null)),
+    setOrgId: vi.fn(async () => undefined),
+    clearOrgId: vi.fn(async () => undefined),
+    listUserIdsByOrgId: vi.fn(async () => []),
+  };
   const members = {
     isActiveMember: vi.fn(async () => false),
     isProfessorOf: vi.fn(async () => false),
@@ -108,10 +151,15 @@ function makeClassDeps() {
     professorUserIds: vi.fn(async () => []),
     countStudentsByOrg: vi.fn(async () => 0),
     upsertProfessor: vi.fn(async () => undefined),
+    deactivateOtherProfessors: vi.fn(async () => undefined),
     insertStudent: vi.fn(async () => undefined),
     withdraw: vi.fn(async () => undefined),
     roster: vi.fn(async () => ({ data: [], total: 0, page: 1, pageSize: 25, totalPages: 0 })),
     findActiveStudentClass: vi.fn(async () => null),
+    listActiveStudentClasses: vi.fn(async () => []),
+    listActiveStudentIds: vi.fn(async () => []),
+    listActiveUserIdsByOrg: vi.fn(async () => []),
+    hasAnyActiveMembership: vi.fn(async () => false),
   };
   const invitations = {
     ensureSentinelTeam: vi.fn(async () => 99),
@@ -132,6 +180,10 @@ function makeClassDeps() {
     findOwnerOrg: vi.fn(async () => ({ organizationId: 1 })),
     listByOrg: vi.fn(async () => ({ data: [], total: 0, page: 1, pageSize: 25, totalPages: 0 })),
     update: vi.fn(async () => undefined),
+    deleteById: vi.fn(async () => undefined),
+    listAllByOrg: vi.fn(async () => []),
+    deleteByOrg: vi.fn(async () => undefined),
+    countOwnedByUser: vi.fn(async () => 0),
     setOwner: vi.fn(async () => undefined),
     countByOrg: vi.fn(async () => 0),
     findProfessorCount: vi.fn(async () => 0),
@@ -169,6 +221,41 @@ describe('OrgService (F3)', () => {
       deps.orgs.findBySlug.mockResolvedValueOnce(orgRow());
       await expect(
         service.createOrg(actor, { name: 'Acme', slug: 'acme' }),
+      ).rejects.toBeInstanceOf(ConflictError);
+    });
+  });
+
+  describe('createMyOrg (self-service)', () => {
+    it('creates the org and assigns the caller as its org admin', async () => {
+      deps.scopes.getOrgId.mockResolvedValueOnce(null);
+      deps.orgs.getAdminDetail.mockResolvedValueOnce({
+        ...orgRow(),
+        adminUserId: 9,
+        adminEmail: 'actor@example.com',
+      });
+
+      const result = await service.createMyOrg(actor, {
+        name: 'Acme University',
+        slug: 'acme',
+      });
+
+      expect(result.organizationId).toBe(1);
+      expect(deps.orgs.assignRole).toHaveBeenCalledWith(9, 7);
+      expect(deps.scopes.setOrgId).toHaveBeenCalledWith(9, 1);
+    });
+
+    it('rejects an account that already has an org scope', async () => {
+      deps.scopes.getOrgId.mockResolvedValueOnce(1);
+      await expect(
+        service.createMyOrg(actor, { name: 'Acme', slug: 'acme' }),
+      ).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    it('rejects an account holding a stale org role without a scope', async () => {
+      deps.scopes.getOrgId.mockResolvedValueOnce(null);
+      deps.orgs.hasRole.mockResolvedValueOnce(true);
+      await expect(
+        service.createMyOrg(actor, { name: 'Acme', slug: 'acme' }),
       ).rejects.toBeInstanceOf(ConflictError);
     });
   });
@@ -245,6 +332,87 @@ describe('OrgService (F3)', () => {
       expect(result.emailDomain).toBeNull();
     });
   });
+
+  describe('multi-class context (ENR-03)', () => {
+    it('returns every active class for the learner', async () => {
+      deps.members.listActiveStudentClasses.mockResolvedValueOnce([
+        {
+          teamId: 10,
+          teamName: 'DevOps 101',
+          organizationId: 1,
+          organizationName: 'Acme University',
+          joinedAt: new Date('2026-01-05T00:00:00.000Z'),
+        },
+        {
+          teamId: 11,
+          teamName: 'Cloud 201',
+          organizationId: 1,
+          organizationName: 'Acme University',
+          joinedAt: new Date('2026-02-05T00:00:00.000Z'),
+        },
+      ]);
+
+      const result = await service.listMyClasses(9);
+      expect(result.map((entry) => entry.classId)).toEqual([10, 11]);
+    });
+
+    it('narrows the selected class by id', async () => {
+      deps.members.findActiveStudentClass.mockResolvedValueOnce({
+        teamId: 11,
+        teamName: 'Cloud 201',
+        organizationId: 1,
+        organizationName: 'Acme University',
+        joinedAt: new Date('2026-02-05T00:00:00.000Z'),
+      });
+
+      const result = await service.getMyClass(9, 11);
+      expect(deps.members.findActiveStudentClass).toHaveBeenCalledWith(9, 11);
+      expect(result.className).toBe('Cloud 201');
+    });
+  });
+
+  describe('deleteOrg (ORG-01 destructive extension)', () => {
+    it('rejects non-platform admins', async () => {
+      deps.orgs.hasRole.mockResolvedValueOnce(false);
+      await expect(service.deleteOrg(actor, 1)).rejects.toBeInstanceOf(ForbiddenError);
+      expect(deps.classes.deleteByOrg).not.toHaveBeenCalled();
+    });
+
+    it('deletes classes before the org and cleans scoped roles/scopes', async () => {
+      deps.orgs.hasRole.mockResolvedValue(true);
+      deps.orgs.listRoleNames
+        .mockResolvedValueOnce(['org_student'])
+        .mockResolvedValueOnce([]);
+      deps.classes.listAllByOrg.mockResolvedValueOnce([classRow()]);
+      deps.scopes.listUserIdsByOrgId.mockResolvedValueOnce([2]);
+      deps.members.listActiveUserIdsByOrg.mockResolvedValueOnce([2]);
+      deps.members.hasAnyActiveMembership.mockResolvedValueOnce(false);
+      deps.classes.countOwnedByUser.mockResolvedValueOnce(0);
+      redisClientMock.scan
+        .mockResolvedValueOnce(['0', []])
+        .mockResolvedValueOnce(['0', []]);
+
+      const result = await service.deleteOrg(
+        { ...actor, roles: ['platform_admin'] },
+        1,
+      );
+
+      expect(deps.classes.deleteByOrg).toHaveBeenCalledWith(1);
+      expect(deps.orgs.deleteById).toHaveBeenCalledWith(1);
+      expect(deps.scopes.clearOrgId).toHaveBeenCalledWith(2);
+      expect(deps.orgs.removeRoles).toHaveBeenCalledWith(2, [
+        'org_admin',
+        'professor',
+        'org_student',
+      ]);
+      expect(deps.orgs.findRoleId).toHaveBeenCalledWith('individual_learner');
+      expect(deps.orgs.assignRole).toHaveBeenCalledWith(2, 7);
+      expect(result.classCount).toBe(1);
+      expect(deps.audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'delete_org', targetType: 'organization' }),
+      );
+    });
+  });
 });
 
 describe('ClassService (F3)', () => {
@@ -267,6 +435,242 @@ describe('ClassService (F3)', () => {
       expect(result.classId).toBe(10);
       expect(deps.audit.record).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'create_class' }),
+      );
+    });
+
+    it('auto-assigns a professor creator as the class captain', async () => {
+      await service.createClass({ ...actor, roles: ['professor'] }, 1, {
+        className: 'DevOps 101',
+      });
+
+      expect(deps.members.upsertProfessor).toHaveBeenCalledWith(10, 9, 'captain');
+    });
+
+    it('does not add an org admin creator to the class roster', async () => {
+      await service.createClass({ ...actor, roles: ['org_admin'] }, 1, {
+        className: 'DevOps 101',
+      });
+
+      expect(deps.members.upsertProfessor).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('class join codes (Task 3)', () => {
+    beforeEach(() => {
+      redisClientMock.get.mockReset();
+      redisClientMock.set.mockReset();
+      redisClientMock.incr.mockReset();
+      redisClientMock.expire.mockReset();
+    });
+
+    it('mints an eight-character code bound to the class and org', async () => {
+      redisClientMock.set.mockResolvedValueOnce('OK');
+      deps.scopes.getOrgId.mockResolvedValueOnce(1);
+
+      const result = await service.generateJoinCode(
+        { ...actor, roles: ['org_admin'] },
+        10,
+      );
+
+      expect(result.code).toMatch(/^[A-Z0-9]{8}$/);
+      expect(result.expiresAt).toBeTruthy();
+      expect(redisClientMock.set).toHaveBeenCalledWith(
+        expect.stringContaining(result.code),
+        expect.stringContaining('"classId":10'),
+        'EX',
+        ORG_CONSTANTS.CLASS_CODE_TTL_SECONDS,
+        'NX',
+      );
+    });
+
+    it('refuses to mint a code for staff outside the class org', async () => {
+      deps.scopes.getOrgId.mockResolvedValueOnce(2);
+
+      await expect(
+        service.generateJoinCode({ ...actor, roles: ['org_admin'] }, 10),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+    });
+
+    it('enrolls a learner, repairs the student role, and sets the org scope', async () => {
+      redisClientMock.incr.mockResolvedValueOnce(1);
+      redisClientMock.get.mockResolvedValueOnce(
+        JSON.stringify({ classId: 10, organizationId: 1 }),
+      );
+      deps.scopes.getOrgId.mockResolvedValueOnce(null);
+
+      const result = await service.joinClassWithCode({ ...actor, userId: 2 }, 'abcd2345');
+
+      expect(result.alreadyEnrolled).toBe(false);
+      expect(deps.members.insertStudent).toHaveBeenCalledWith(10, 2);
+      expect(deps.orgs.assignRole).toHaveBeenCalledWith(2, 8);
+      expect(deps.scopes.setOrgId).toHaveBeenCalledWith(2, 1);
+    });
+
+    it('repairs stale membership without inserting a duplicate roster row', async () => {
+      redisClientMock.incr.mockResolvedValueOnce(1);
+      redisClientMock.get.mockResolvedValueOnce(
+        JSON.stringify({ classId: 10, organizationId: 1 }),
+      );
+      deps.members.isActiveMember.mockResolvedValueOnce(true);
+      deps.orgs.hasRole.mockImplementation(async (_id: number, role: string) => role === 'org_student');
+      deps.scopes.getOrgId.mockResolvedValueOnce(null);
+
+      const result = await service.joinClassWithCode({ ...actor, userId: 2 }, 'abcd2345');
+
+      expect(result.alreadyEnrolled).toBe(true);
+      expect(deps.members.insertStudent).not.toHaveBeenCalled();
+      expect(deps.scopes.setOrgId).toHaveBeenCalledWith(2, 1);
+    });
+
+    it('blocks staff accounts from consuming a student join code', async () => {
+      redisClientMock.incr.mockResolvedValueOnce(1);
+      redisClientMock.get.mockResolvedValueOnce(
+        JSON.stringify({ classId: 10, organizationId: 1 }),
+      );
+      deps.orgs.hasRole.mockImplementation(async (_id: number, role: string) => role === 'professor');
+
+      await expect(
+        service.joinClassWithCode({ ...actor, userId: 2 }, 'abcd2345'),
+      ).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    it('rejects a code from a different organization than the caller scope', async () => {
+      redisClientMock.incr.mockResolvedValueOnce(1);
+      redisClientMock.get.mockResolvedValueOnce(
+        JSON.stringify({ classId: 10, organizationId: 1 }),
+      );
+      deps.scopes.getOrgId.mockResolvedValueOnce(2);
+
+      await expect(
+        service.joinClassWithCode({ ...actor, userId: 2 }, 'abcd2345'),
+      ).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    it('rejects an unknown or expired code', async () => {
+      redisClientMock.incr.mockResolvedValueOnce(1);
+      redisClientMock.get.mockResolvedValueOnce(null);
+
+      await expect(
+        service.joinClassWithCode({ ...actor, userId: 2 }, 'missing1'),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+  });
+
+  describe('class code management & deletion', () => {
+    beforeEach(() => {
+      redisClientMock.get.mockReset();
+      redisClientMock.set.mockReset();
+      redisClientMock.del.mockReset();
+      redisClientMock.sadd.mockReset();
+      redisClientMock.smembers.mockReset();
+      redisClientMock.srem.mockReset();
+      redisClientMock.ttl.mockReset();
+      deps.scopes.getOrgId.mockResolvedValue(1);
+    });
+
+    it('indexes a minted code and audits only its fingerprint', async () => {
+      redisClientMock.set.mockResolvedValueOnce('OK');
+      redisClientMock.sadd.mockResolvedValueOnce(1);
+      redisClientMock.expire.mockResolvedValueOnce(1);
+
+      const result = await service.generateJoinCode(
+        { ...actor, roles: ['org_admin'] },
+        10,
+      );
+
+      expect(redisClientMock.sadd).toHaveBeenCalledWith(
+        `${ORG_CONSTANTS.CLASS_CODE_INDEX_PREFIX}10`,
+        result.code,
+      );
+      const auditCall = deps.audit.record.mock.calls.at(-1)?.[0] as {
+        changes: Record<string, unknown>;
+      };
+      expect(auditCall.changes.codeFingerprint).toMatch(/^[a-f0-9]{12}$/);
+      expect(JSON.stringify(auditCall.changes)).not.toContain(result.code);
+    });
+
+    it('lists live codes and prunes expired entries', async () => {
+      redisClientMock.smembers.mockResolvedValueOnce(['CODE2345', 'STALE999']);
+      redisClientMock.get
+        .mockResolvedValueOnce(
+          JSON.stringify({
+            classId: 10,
+            organizationId: 1,
+            createdBy: 9,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          }),
+        )
+        .mockResolvedValueOnce(null);
+      redisClientMock.ttl.mockResolvedValueOnce(3600);
+
+      const result = await service.listJoinCodes(
+        { ...actor, roles: ['org_admin'] },
+        10,
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ code: 'CODE2345', createdBy: 9 });
+      expect(redisClientMock.srem).toHaveBeenCalledWith(
+        `${ORG_CONSTANTS.CLASS_CODE_INDEX_PREFIX}10`,
+        'STALE999',
+      );
+    });
+
+    it('revokes a code and audits the fingerprint', async () => {
+      redisClientMock.del.mockResolvedValueOnce(1);
+      redisClientMock.srem.mockResolvedValueOnce(1);
+
+      const result = await service.revokeJoinCode(
+        { ...actor, roles: ['org_admin'] },
+        10,
+        'code2345',
+      );
+
+      expect(result.revoked).toBe(true);
+      expect(redisClientMock.del).toHaveBeenCalledWith(
+        `${ORG_CONSTANTS.CLASS_CODE_PREFIX}CODE2345`,
+      );
+      expect(deps.audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'revoke_class_join_code',
+          changes: expect.objectContaining({ codeFingerprint: expect.any(String) }),
+        }),
+      );
+    });
+
+    it('deletes a class, revokes codes, and clears only orphaned student scope', async () => {
+      deps.members.listActiveStudentIds.mockResolvedValueOnce([2, 3]);
+      redisClientMock.smembers.mockResolvedValueOnce(['CODE2345']);
+      redisClientMock.get.mockResolvedValueOnce(
+        JSON.stringify({ classId: 10, organizationId: 1 }),
+      );
+      redisClientMock.ttl.mockResolvedValueOnce(3600);
+      deps.members.findActiveStudentClass
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          teamId: 11,
+          teamName: 'Cloud 201',
+          organizationId: 1,
+          organizationName: 'Acme University',
+          joinedAt: new Date(),
+        });
+
+      const result = await service.deleteClass(
+        { ...actor, roles: ['org_admin'] },
+        10,
+      );
+
+      expect(deps.classes.deleteById).toHaveBeenCalledWith(10);
+      expect(redisClientMock.del).toHaveBeenCalledWith(
+        `${ORG_CONSTANTS.CLASS_CODE_PREFIX}CODE2345`,
+      );
+      expect(deps.scopes.clearOrgId).toHaveBeenCalledWith(2);
+      expect(deps.scopes.setOrgId).toHaveBeenCalledWith(3, 1);
+      expect(deps.orgs.removeRole).toHaveBeenCalledWith(2, 'org_student');
+      expect(deps.orgs.removeRole).not.toHaveBeenCalledWith(3, 'org_student');
+      expect(result).toMatchObject({ classId: 10, studentCount: 2, revokedCodeCount: 1 });
+      expect(deps.audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'delete_class', targetType: 'team' }),
       );
     });
   });
@@ -472,6 +876,9 @@ describe('ClassService (F3)', () => {
       });
       deps.scopes.getOrgId.mockResolvedValueOnce(1);
       deps.orgs.findById.mockResolvedValueOnce(orgRow());
+      deps.orgs.hasRole.mockImplementation(
+        async (id: number, role: string) => id === 9 && role === 'org_admin',
+      );
 
       const result = await service.acceptInvitation(2, 'tok');
       expect(result.kind).toBe('professor');
