@@ -939,6 +939,7 @@ async function seedAllModulesAndLabs(): Promise<void> {
           .update(lessons)
           .set({
             title: `${item.labName} (${item.slug})`,
+            slug: item.slug,
             content: item.description,
             contentType: 'lab',
             isPublished: true,
@@ -948,6 +949,7 @@ async function seedAllModulesAndLabs(): Promise<void> {
         await db.insert(lessons).values({
           moduleId,
           title: `${item.labName} (${item.slug})`,
+          slug: item.slug,
           content: item.description,
           contentType: 'lab',
           lessonOrder: item.lessonOrder,
