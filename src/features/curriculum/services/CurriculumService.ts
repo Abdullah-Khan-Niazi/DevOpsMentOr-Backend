@@ -47,6 +47,16 @@ export class CurriculumService {
     return { course: toCourseDto(course), modules };
   }
 
+  /**
+   * Published course catalog (chaos sprint): powers course pickers, the
+   * cohort assignment drawer and future multi-course navigation. Ordered by
+   * course id so the canonical course stays first for legacy callers.
+   */
+  async listPublishedCourses(): Promise<CourseDto[]> {
+    const rows = await this.deps.repo.listPublishedCourses();
+    return rows.map((row) => toCourseDto(row));
+  }
+
   /** F4-API-02: published modules with live published-lesson counts. */
   async getPublishedModules(): Promise<ModuleDto[]> {
     const rows = await this.deps.repo.listModulesPublished();
@@ -190,6 +200,7 @@ export class CurriculumService {
       lessonId: row.lessonId,
       moduleId: row.moduleId,
       title: row.title,
+      slug: row.slug,
       content: row.content,
       contentType: row.contentType,
       videoUrl: row.videoUrl,

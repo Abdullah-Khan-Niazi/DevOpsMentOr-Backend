@@ -76,9 +76,10 @@ export interface AdminUserDetailDto {
 
 export interface AuditLogListItem {
   logId: number;
-  adminUserId: number;
+  /** Null when the acting account was deleted after the action was recorded. */
+  adminUserId: number | null;
   adminFullName: string | null;
-  adminEmail: string;
+  adminEmail: string | null;
   action: string;
   targetType: string | null;
   targetId: number | null;
@@ -348,6 +349,8 @@ export interface AuditLogFilter {
 /** Identity of the platform admin performing a mutation (for audit rows). */
 export interface AdminActor {
   userId: number;
+  /** Email claim from the access token; optional so callers never query for it. */
+  email?: string | null;
   ipAddress: string | null;
   userAgent: string | null;
 }

@@ -320,6 +320,7 @@ export class UserRepository implements IUserRepository {
       language: user.language,
       twoFactorEnabled: user.twoFactorEnabled,
       twoFactorSecret: user.twoFactorSecret,
+      twoFactorPendingSecret: user.twoFactorPendingSecret,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
       deletedAt: user.deletedAt,

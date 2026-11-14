@@ -34,6 +34,7 @@ export class AdminSettingsService {
 
     await this.audit.record({
       adminUserId: actor.userId,
+      actorEmail: actor.email ?? null,
       action: AUDIT_ACTIONS.UPDATE_SETTING,
       targetType: 'system_setting',
       targetId: existing.settingId,

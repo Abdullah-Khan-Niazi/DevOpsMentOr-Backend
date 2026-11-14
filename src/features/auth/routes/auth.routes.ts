@@ -11,6 +11,7 @@ import {
   adminInviteSchema,
   adminLoginSchema,
   createApiTokenSchema,
+  disable2faSchema,
   forgotPasswordSchema,
   loginSchema,
   logoutSchema,
@@ -28,16 +29,27 @@ import {
 
 const authRoutes = Router();
 
+// Credential surfaces fail closed: if Redis is down, reject with 503 instead
+// of silently disabling brute-force protection.
 const authLimiter = rateLimit({
   scope: 'auth',
   windowSeconds: env.AUTH_RATE_LIMIT_WINDOW_SECONDS,
   max: env.AUTH_RATE_LIMIT_MAX,
+  failClosed: true,
 });
 
 const adminLimiter = rateLimit({
   scope: 'admin-login',
   windowSeconds: env.AUTH_RATE_LIMIT_WINDOW_SECONDS,
   max: env.AUTH_RATE_LIMIT_MAX,
+  failClosed: true,
+});
+
+const refreshLimiter = rateLimit({
+  scope: 'refresh',
+  windowSeconds: env.AUTH_RATE_LIMIT_WINDOW_SECONDS,
+  max: env.AUTH_RATE_LIMIT_MAX,
+  failClosed: true,
 });
 
 // ─── Public credential surface (all rate-limited) ──────────────────────────
@@ -94,6 +106,7 @@ authRoutes.post(
 // ─── Session lifecycle ─────────────────────────────────────────────────────
 authRoutes.post(
   '/refresh',
+  refreshLimiter,
   validateRequest(refreshTokenSchema, 'body'),
   asyncHandler((req, res) => authController.refreshToken(req, res)),
 );
@@ -132,14 +145,18 @@ authRoutes.post(
 );
 
 // ─── Two-factor authentication ─────────────────────────────────────────────
+// All three routes are rate-limited: unlimited TOTP guessing against
+// enable/verify/disable is an account-takeover path with a stolen token.
 authRoutes.post(
   '/2fa/enable',
+  authLimiter,
   authenticate,
   asyncHandler((req, res) => authController.enable2fa(req, res)),
 );
 
 authRoutes.post(
   '/2fa/verify',
+  authLimiter,
   authenticate,
   validateRequest(verify2faSchema, 'body'),
   asyncHandler((req, res) => authController.verify2fa(req, res)),
@@ -147,8 +164,9 @@ authRoutes.post(
 
 authRoutes.post(
   '/2fa/disable',
+  authLimiter,
   authenticate,
-  validateRequest(verify2faSchema, 'body'),
+  validateRequest(disable2faSchema, 'body'),
   asyncHandler((req, res) => authController.disable2fa(req, res)),
 );
 
@@ -162,6 +180,7 @@ authRoutes.post(
 
 authRoutes.post(
   '/admin/accept-invite',
+  authLimiter,
   validateRequest(acceptAdminInviteSchema, 'body'),
   asyncHandler((req, res) => adminInviteController.accept(req, res)),
 );

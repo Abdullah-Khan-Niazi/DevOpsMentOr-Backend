@@ -6,6 +6,7 @@ import {
   invoices,
   labs,
   orders,
+  organizationMemberships,
   organizations,
   paymentMethods,
   subscriptions,
@@ -903,17 +904,36 @@ export class BillingRepository {
   }
 
   /** Active org member count from the `org_id` affiliation store. */
+  /**
+   * Seat count for an organization. `organization_memberships` is the
+   * authority; the legacy pointer is unioned in for rows that predate the
+   * membership backfill, and the union is DISTINCT so nobody is double-counted.
+   */
   async countOrgMembers(orgId: number): Promise<number> {
-    const rows = await db
-      .select({ count: count() })
-      .from(userSettings)
-      .where(
-        and(
-          eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
-          sql`CAST(${userSettings.settingValue} AS SIGNED) = ${orgId}`,
+    const [membershipRows, legacyRows] = await Promise.all([
+      db
+        .select({ userId: organizationMemberships.userId })
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.organizationId, orgId),
+            eq(organizationMemberships.status, 'active'),
+          ),
         ),
-      );
-    return rows[0]?.count ?? 0;
+      db
+        .select({ userId: userSettings.userId })
+        .from(userSettings)
+        .where(
+          and(
+            eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+            sql`CAST(${userSettings.settingValue} AS SIGNED) = ${orgId}`,
+          ),
+        ),
+    ]);
+    return new Set([
+      ...membershipRows.map((row) => row.userId),
+      ...legacyRows.map((row) => row.userId),
+    ]).size;
   }
 
   /** Org seat allowance from `system_settings` (plan_seats_{plan_type}). */

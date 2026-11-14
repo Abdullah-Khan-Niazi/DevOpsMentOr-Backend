@@ -10,6 +10,12 @@ export class CurriculumController {
     return sendSuccess(res, overview, 'Course retrieved successfully.');
   }
 
+  /** Multi-course catalog (chaos sprint): every published course. */
+  async listCourses(_req: Request, res: Response): Promise<Response> {
+    const courses = await curriculumService.listPublishedCourses();
+    return sendSuccess(res, courses, 'Courses retrieved successfully.');
+  }
+
   /** F4-API-02 */
   async getModules(_req: Request, res: Response): Promise<Response> {
     const modules = await curriculumService.getPublishedModules();

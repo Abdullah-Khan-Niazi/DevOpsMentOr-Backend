@@ -15,9 +15,37 @@ import { fileService } from '../services/file.service';
 /** Max size for platform file uploads (25 MB). */
 export const MAX_PLATFORM_FILE_BYTES = 25 * 1024 * 1024;
 
+/**
+ * Platform-library MIME allowlist (SEC-12). Platform files are served from the
+ * API origin, so executables/markup (html, svg, js) are rejected outright
+ * instead of being stored and later served inline.
+ */
+const ALLOWED_PLATFORM_FILE_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/zip',
+  'application/json',
+]);
+
 const platformFileUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_PLATFORM_FILE_BYTES, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    if (!ALLOWED_PLATFORM_FILE_MIME_TYPES.has(file.mimetype)) {
+      callback(
+        new BadRequestError(
+          `Unsupported file type "${file.mimetype}". Allowed types: PDF, PNG, JPEG, WebP, plain text, Markdown, CSV, JSON and ZIP.`,
+        ),
+      );
+      return;
+    }
+    callback(null, true);
+  },
 });
 
 /** Multer wrapper: parses the multipart field `file` with size-limit mapping. */

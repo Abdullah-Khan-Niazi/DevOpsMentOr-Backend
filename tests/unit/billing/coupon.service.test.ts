@@ -34,7 +34,7 @@ function makeDeps(overrides: Partial<Mocked<CouponServiceDeps>> = {}): Mocked<Co
   };
 }
 
-describe('F9 CouponService (BIL-05, invariants 3-5)', () => {
+describe('CouponService (BIL-05, invariants 3-5)', () => {
   it('normalizes codes to uppercase for lookup', async () => {
     const deps = makeDeps();
     (deps.repo.findCouponByCode as ReturnType<typeof vi.fn>).mockResolvedValue(makeCoupon());

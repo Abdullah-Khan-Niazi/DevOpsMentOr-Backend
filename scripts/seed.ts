@@ -4,14 +4,21 @@ import dotenv from 'dotenv';
 import {
   academyCourses,
   categories,
+  classAssignments,
   countries,
   db,
   difficultyLevels,
   disconnectDatabase,
   emailTemplates,
+  lessons,
+  modules,
+  organizationMemberships,
   organizations,
   permissions,
   pool,
+  quizAnswers,
+  quizQuestions,
+  quizzes,
   rolePermissions,
   roles,
   skills,
@@ -20,6 +27,8 @@ import {
   teamInvitations,
   teamMembers,
   teams,
+  trackContent,
+  tracks,
   userProfiles,
   userRoles,
   userSettings,
@@ -137,8 +146,6 @@ const permissionDefinitions: PermissionDefinition[] = [
 const rolePermissionMatrix: Record<string, string[]> = {
   [ROLES.PLATFORM_ADMIN]: Object.values(PERMISSIONS),
   [ROLES.ORG_ADMIN]: [
-    PERMISSIONS.USERS_READ,
-    PERMISSIONS.REPORTS_READ,
     PERMISSIONS.DASHBOARD_READ,
     PERMISSIONS.AUTH_SESSION_READ,
     PERMISSIONS.AUTH_SESSION_DELETE,
@@ -188,8 +195,6 @@ const rolePermissionMatrix: Record<string, string[]> = {
     PERMISSIONS.BILLING_ORG_MANAGE,
   ],
   [ROLES.PROFESSOR]: [
-    PERMISSIONS.USERS_READ,
-    PERMISSIONS.REPORTS_READ,
     PERMISSIONS.DASHBOARD_READ,
     PERMISSIONS.AUTH_SESSION_READ,
     PERMISSIONS.AUTH_SESSION_DELETE,
@@ -352,22 +357,22 @@ async function seedAccessControl(): Promise<Map<string, number>> {
 }
 
 export const skillCatalogSeeds = [
-  // cloud — DevOps
-  { skillName: 'Docker', category: 'cloud' as const, description: 'Containerization and image lifecycle management.' },
-  { skillName: 'Kubernetes', category: 'cloud' as const, description: 'Container orchestration, clusters and workloads.' },
-  { skillName: 'Terraform', category: 'cloud' as const, description: 'Infrastructure as Code provisioning and state management.' },
-  { skillName: 'Ansible', category: 'cloud' as const, description: 'Configuration management and automation playbooks.' },
+  { skillName: 'Docker', category: 'containers' as const, description: 'Containerization and image lifecycle management.' },
+  { skillName: 'Kubernetes', category: 'containers' as const, description: 'Container orchestration, clusters and workloads.' },
+  { skillName: 'Terraform', category: 'automation' as const, description: 'Infrastructure as Code provisioning and state management.' },
+  { skillName: 'Ansible', category: 'automation' as const, description: 'Configuration management and automation playbooks.' },
   { skillName: 'AWS', category: 'cloud' as const, description: 'Amazon Web Services core services and architecture.' },
   { skillName: 'Microsoft Azure', category: 'cloud' as const, description: 'Azure core services and architecture.' },
   { skillName: 'Google Cloud Platform', category: 'cloud' as const, description: 'GCP core services and architecture.' },
-  { skillName: 'Linux Administration', category: 'cloud' as const, description: 'Linux system administration and troubleshooting.' },
-  { skillName: 'Shell Scripting', category: 'cloud' as const, description: 'Bash scripting for automation pipelines.' },
-  { skillName: 'Site Reliability Engineering', category: 'cloud' as const, description: 'SLIs, SLOs, error budgets and reliability practices.' },
-  // governance — DevOps
-  { skillName: 'CI/CD Pipelines', category: 'governance' as const, description: 'Continuous integration and delivery pipeline design.' },
-  { skillName: 'Jenkins', category: 'governance' as const, description: 'Jenkins pipeline automation and shared libraries.' },
-  { skillName: 'GitHub Actions', category: 'governance' as const, description: 'Workflow automation with GitHub Actions.' },
-  { skillName: 'GitOps', category: 'governance' as const, description: 'Declarative infrastructure delivery via Git.' },
+  { skillName: 'Linux Administration', category: 'platform' as const, description: 'Linux system administration and troubleshooting.' },
+  { skillName: 'Shell Scripting', category: 'scripting' as const, description: 'Bash scripting for automation pipelines.' },
+  { skillName: 'Python Automation', category: 'scripting' as const, description: 'Python tooling and Boto3 automation.' },
+  { skillName: 'Prometheus & Grafana', category: 'observability' as const, description: 'Metrics collection, dashboards and alerting.' },
+  { skillName: 'Site Reliability Engineering', category: 'observability' as const, description: 'SLIs, SLOs, error budgets and reliability practice.' },
+  { skillName: 'CI/CD Pipelines', category: 'automation' as const, description: 'Continuous integration and delivery pipeline design.' },
+  { skillName: 'Jenkins', category: 'automation' as const, description: 'Jenkins pipeline automation and shared libraries.' },
+  { skillName: 'GitHub Actions', category: 'automation' as const, description: 'Workflow automation with GitHub Actions.' },
+  { skillName: 'GitOps', category: 'automation' as const, description: 'Declarative infrastructure delivery via Git.' },
   { skillName: 'Policy as Code', category: 'governance' as const, description: 'Automated compliance and policy enforcement.' },
   { skillName: 'Compliance Auditing', category: 'governance' as const, description: 'Audit-ready infrastructure and release practices.' },
 ] as const;
@@ -558,21 +563,21 @@ async function seedCountriesIfMissing(): Promise<void> {
 }
 
 const difficultyLevelSeeds = [
-  { name: 'Very Easy', levelValue: 1, colorHex: '#00cc66', pointsMultiplier: '1.00' },
-  { name: 'Easy', levelValue: 2, colorHex: '#00b4d8', pointsMultiplier: '1.20' },
-  { name: 'Medium', levelValue: 3, colorHex: '#ffb703', pointsMultiplier: '1.50' },
-  { name: 'Hard', levelValue: 4, colorHex: '#f94144', pointsMultiplier: '2.00' },
-  { name: 'Insane', levelValue: 5, colorHex: '#7209b7', pointsMultiplier: '2.50' },
+  { name: 'Beginner', levelValue: 1, colorHex: '#00b4d8', pointsMultiplier: '1.00' },
+  { name: 'Intermediate', levelValue: 2, colorHex: '#ffb703', pointsMultiplier: '1.25' },
+  { name: 'Advanced', levelValue: 3, colorHex: '#f97316', pointsMultiplier: '1.50' },
+  { name: 'Expert', levelValue: 4, colorHex: '#e5484d', pointsMultiplier: '2.00' },
 ] as const;
 
 const categorySeeds = [
-  { name: 'Web', slug: 'web', description: 'Web application development and security' },
-  { name: 'Reverse Engineering', slug: 'reverse-engineering', description: 'Reverse engineering and binary analysis' },
-  { name: 'Forensics', slug: 'forensics', description: 'Digital forensics and analysis' },
-  { name: 'Cryptography', slug: 'cryptography', description: 'Cryptographic challenges' },
-  { name: 'Network', slug: 'network', description: 'Networking fundamentals and protocols' },
-  { name: 'Cloud', slug: 'cloud', description: 'Cloud computing and infrastructure' },
-  { name: 'AI/ML', slug: 'ai-ml', description: 'Artificial intelligence and machine learning security' },
+  { name: 'Linux & Systems', slug: 'linux-systems', description: 'Operating systems, shell and platform fundamentals' },
+  { name: 'Version Control', slug: 'version-control', description: 'Git workflows, branching and collaboration' },
+  { name: 'Build & Package Management', slug: 'build-tools', description: 'Build systems, artefact management and packaging' },
+  { name: 'Cloud Platforms', slug: 'cloud-platforms', description: 'Cloud compute, networking and managed services' },
+  { name: 'Containers & Orchestration', slug: 'containers-orchestration', description: 'Docker, Kubernetes and workload scheduling' },
+  { name: 'CI/CD & Automation', slug: 'cicd-automation', description: 'Pipelines, configuration management and GitOps' },
+  { name: 'Infrastructure as Code', slug: 'infrastructure-as-code', description: 'Terraform, declarative provisioning and state' },
+  { name: 'Observability', slug: 'observability', description: 'Metrics, monitoring, alerting and SRE practice' },
 ] as const;
 
 const tagSeeds = [
@@ -580,7 +585,12 @@ const tagSeeds = [
   { tagName: 'kubernetes', slug: 'kubernetes', colorHex: '#326ce5' },
   { tagName: 'aws', slug: 'aws', colorHex: '#ff9900' },
   { tagName: 'linux', slug: 'linux', colorHex: '#fcc624' },
+  { tagName: 'git', slug: 'git', colorHex: '#f05033' },
   { tagName: 'terraform', slug: 'terraform', colorHex: '#7b42bc' },
+  { tagName: 'ansible', slug: 'ansible', colorHex: '#ee0000' },
+  { tagName: 'jenkins', slug: 'jenkins', colorHex: '#d33833' },
+  { tagName: 'python', slug: 'python', colorHex: '#3776ab' },
+  { tagName: 'prometheus', slug: 'prometheus', colorHex: '#e6522c' },
   { tagName: 'ci-cd', slug: 'ci-cd', colorHex: '#e4482d' },
   { tagName: 'networking', slug: 'networking', colorHex: '#00b4d8' },
   { tagName: 'security', slug: 'security', colorHex: '#e5484d' },
@@ -615,33 +625,302 @@ async function seedCurriculumCatalog(adminUserId: number): Promise<void> {
     }
   }
 
-  // §05 invariant 1: exactly one canonical course per deployment.
-  const existingCourse = await db.query.academyCourses.findFirst({
-    orderBy: (row, { asc }) => [asc(row.courseId)],
+  await seedCoursesModulesLessonsQuizzes(adminUserId);
+  await seedClassAssignments();
+
+  // eslint-disable-next-line no-console
+  console.log('Curriculum catalog seeded (difficulties, categories, tags, 15 courses).');
+}
+
+/**
+ * 15 courses (one per curriculum module), each with one module, three lessons
+ * (slides / walkthrough / hands-on lab) and a two-question knowledge check.
+ *
+ * Lesson slugs are deliberately aligned with the Labs asset registry:
+ * - slide lesson  -> `d-module-<n>-a`           (Slides/D/Module-<n>/A.pdf)
+ * - walkthrough   -> the walkthrough PDF slug   (Walkthroughs/<file>.pdf)
+ * - lab lesson    -> `m<n>-lab`                 (no static asset; terminal)
+ */
+const courseSeeds: Array<{ title: string; slug: string; slide: string; walkthrough: string }> = [
+  { title: 'Operating Systems and Linux Fundamentals', slug: 'm01-os-linux-basics', slide: 'd-module-1-a', walkthrough: '01-os-linux-basics-walkthrough' },
+  { title: 'Version Control Systems and Git', slug: 'm02-git', slide: 'd-module-2-a', walkthrough: '02-git-walkthrough' },
+  { title: 'Build Tools and Package Managers', slug: 'm03-build-tools', slide: 'd-module-3-a', walkthrough: '03-build-tools-and-package-manager-walkthrough' },
+  { title: 'Cloud Computing and IaaS', slug: 'm04-cloud-iaas', slide: 'd-module-4-a', walkthrough: '04-cloud-iaas-walkthrough' },
+  { title: 'Artifact Repository Management', slug: 'm05-artifact-repository', slide: 'd-module-5-a', walkthrough: '05-artifact-repository-management-walkthrough' },
+  { title: 'Containers with Docker', slug: 'm06-docker', slide: 'd-module-6-a', walkthrough: '06-dockers-walkthrough' },
+  { title: 'Jenkins Pipelines and Build Automation', slug: 'm07-jenkins', slide: 'd-module-7-a', walkthrough: '07-build-automation-jenkins' },
+  { title: 'AWS Services', slug: 'm08-aws', slide: 'd-module-8-a', walkthrough: '08-aws' },
+  { title: 'Core Kubernetes Orchestration', slug: 'm09-kubernetes', slide: 'd-module-9-a', walkthrough: '09-kubernetes-walkthrough' },
+  { title: 'Kubernetes on AWS (EKS)', slug: 'm10-eks', slide: 'd-module-10-a', walkthrough: '10-kubernetes-on-aws-eks' },
+  // Module-11's first deck is published as A_(2).pdf on disk, which the asset
+  // registry slugifies to `d-module-11-a-2`.
+  { title: 'Terraform', slug: 'm11-terraform', slide: 'd-module-11-a-2', walkthrough: '11-terraform-walkthrough' },
+  { title: 'Programming with Python', slug: 'm12-python', slide: 'd-module-12-a', walkthrough: '12-programming-with-python-walkthrough' },
+  { title: 'Python Automation with Boto3', slug: 'm13-python-automation', slide: 'd-module-13-a', walkthrough: '13-automation-with-python-walkthrough' },
+  { title: 'Ansible Configuration Management', slug: 'm14-ansible', slide: 'd-module-14-a', walkthrough: '14-ansible-walkthrough' },
+  { title: 'Monitoring and Observability', slug: 'm15-monitoring', slide: 'd-module-15-a', walkthrough: '15-monitoring-walkthrough' },
+];
+
+async function seedCoursesModulesLessonsQuizzes(adminUserId: number): Promise<void> {
+  const intermediate = await db.query.difficultyLevels.findFirst({
+    where: eq(difficultyLevels.name, 'Intermediate'),
   });
-  if (!existingCourse) {
-    const medium = await db.query.difficultyLevels.findFirst({
-      where: eq(difficultyLevels.name, 'Medium'),
-    });
-    const cloud = await db.query.categories.findFirst({
-      where: eq(categories.slug, 'cloud'),
-    });
-    await db.insert(academyCourses).values({
-      title: 'DevOps Mentor',
-      slug: 'devops-mentor',
-      description: 'End-to-end DevOps engineering curriculum.',
-      difficultyId: medium?.difficultyId ?? 3,
-      categoryId: cloud?.categoryId ?? null,
+  const cloudPlatforms = await db.query.categories.findFirst({
+    where: eq(categories.slug, 'cloud-platforms'),
+  });
+
+  const moduleThemes = [
+    { title: 'Foundations', minutes: 180 },
+    { title: 'Hands-On Practice', minutes: 240 },
+    { title: 'Advanced Patterns', minutes: 300 },
+  ] as const;
+
+  let moduleTotal = 0;
+  let lessonTotal = 0;
+  let quizTotal = 0;
+
+  for (const [index, seed] of courseSeeds.entries()) {
+    const moduleNumber = index + 1;
+    const courseInsert = await db.insert(academyCourses).values({
+      title: seed.title,
+      slug: seed.slug,
+      description: `Module ${String(moduleNumber).padStart(2, '0')} of the DevOps curriculum: ${seed.title}.`,
+      difficultyId: intermediate?.difficultyId ?? 2,
+      categoryId: cloudPlatforms?.categoryId ?? null,
       instructorId: adminUserId,
-      estimatedHours: 40,
+      estimatedHours: 12,
+      totalLessons: moduleThemes.length * 4,
+      totalQuizzes: moduleThemes.length,
       isPublished: true,
+      isPremium: index !== 0,
       prerequisites: null,
       learningObjectives: null,
     });
+    const courseId = courseInsert[0]?.insertId;
+    if (!courseId) {
+      throw new Error(`Failed to seed course ${seed.slug}.`);
+    }
+
+    for (const [moduleIndex, theme] of moduleThemes.entries()) {
+      const moduleOrder = moduleIndex + 1;
+      const moduleInsert = await db.insert(modules).values({
+        courseId,
+        title: `${seed.title} — ${theme.title}`,
+        description: `Module ${moduleOrder} of ${seed.title}: ${theme.title}.`,
+        moduleOrder,
+        estimatedMinutes: theme.minutes,
+        isPublished: true,
+      });
+      const moduleId = moduleInsert[0]?.insertId;
+      if (!moduleId) {
+        throw new Error(`Failed to seed module ${moduleOrder} for ${seed.slug}.`);
+      }
+      moduleTotal += 1;
+
+      const isFirstModule = moduleOrder === 1;
+      const slideSlug = isFirstModule ? seed.slide : `${seed.slug}-mod${moduleOrder}-slides`;
+      const walkthroughSlug = isFirstModule
+        ? seed.walkthrough
+        : `${seed.slug}-mod${moduleOrder}-walkthrough`;
+
+      await db.insert(lessons).values([
+        {
+          moduleId,
+          title: `${theme.title} — Slides`,
+          slug: slideSlug,
+          content: [
+            `# ${seed.title}: ${theme.title}`,
+            '',
+            `Review the ${theme.title.toLowerCase()} deck for ${seed.title}, then move to the walkthrough.`,
+            '',
+            '<!-- slide -->',
+            '',
+            'Key ideas are summarised on each slide; the walkthrough turns them into terminal steps.',
+          ].join('\n'),
+          contentType: 'interactive',
+          lessonOrder: 1,
+          isPublished: true,
+        },
+        {
+          moduleId,
+          title: `${theme.title} — Walkthrough`,
+          slug: walkthroughSlug,
+          content: [
+            `Step-by-step guided walkthrough for ${seed.title} — ${theme.title}.`,
+            '',
+            '<!-- slide -->',
+            '',
+            'Work through each terminal step and compare it with your own output before moving on.',
+          ].join('\n'),
+          contentType: 'interactive',
+          lessonOrder: 2,
+          isPublished: true,
+        },
+        {
+          moduleId,
+          title: `${theme.title} — Reading`,
+          slug: `${seed.slug}-mod${moduleOrder}-reading`,
+          content: [
+            `# ${theme.title}`,
+            '',
+            `This reading covers the ${theme.title.toLowerCase()} concepts behind ${seed.title}.`,
+            '',
+            '1. Understand the core primitives.',
+            '2. Practise them in the sandbox.',
+            '3. Validate your work with the knowledge check.',
+          ].join('\n'),
+          contentType: 'text',
+          lessonOrder: 3,
+          isPublished: true,
+        },
+        {
+          moduleId,
+          title: `${theme.title} — Hands-On Lab`,
+          slug: `${seed.slug}-mod${moduleOrder}-lab`,
+          content: [
+            `# Hands-On Lab — ${seed.title} (${theme.title})`,
+            '',
+            'Launch the sandbox and complete the checkpoint tasks for this module.',
+          ].join('\n'),
+          contentType: 'lab',
+          lessonOrder: 4,
+          isPublished: true,
+        },
+      ]);
+      lessonTotal += 4;
+
+      const quizInsert = await db.insert(quizzes).values({
+        moduleId,
+        title: `${seed.title} — ${theme.title} Knowledge Check`,
+        description: 'Mixed-format assessment: multiple choice, true/false, fill blank and sequencing.',
+        passingScore: 70,
+        isRequired: true,
+        isPublished: true,
+      });
+      const quizId = quizInsert[0]?.insertId;
+      if (!quizId) {
+        throw new Error(`Failed to seed quiz for ${seed.slug} module ${moduleOrder}.`);
+      }
+      quizTotal += 1;
+
+      const mcqInsert = await db.insert(quizQuestions).values({
+        quizId,
+        questionText: `Which statement best describes the focus of the ${theme.title.toLowerCase()} module in "${seed.title}"?`,
+        questionType: 'multiple_choice',
+        points: 10,
+        explanation: `${seed.title} — ${theme.title} is covered by this module's slides, walkthrough and lab.`,
+        questionOrder: 1,
+      });
+      const trueFalseInsert = await db.insert(quizQuestions).values({
+        quizId,
+        questionText: 'The sandbox lab can be attempted before completing the walkthrough.',
+        questionType: 'true_false',
+        points: 10,
+        explanation: 'Labs build on the walkthrough; completing it first is recommended.',
+        questionOrder: 2,
+      });
+      const fillBlankInsert = await db.insert(quizQuestions).values({
+        quizId,
+        questionText: 'Which command shows the current Git working tree status?',
+        questionType: 'fill_blank',
+        points: 10,
+        explanation: '`git status` prints staged, unstaged and untracked changes.',
+        questionOrder: 3,
+      });
+      const richInsert =
+        moduleOrder === 1
+          ? await db.insert(quizQuestions).values({
+              quizId,
+              questionText: 'Put the learning flow in the expected order.',
+              questionType: 'ordering',
+              config: { instructions: 'Use the up/down controls to order the items.' },
+              points: 10,
+              explanation: 'Slides introduce the topic, the walkthrough practises it, the lab validates it.',
+              questionOrder: 4,
+            })
+          : await db.insert(quizQuestions).values({
+              quizId,
+              questionText: 'Classify each statement as True or False.',
+              questionType: 'bucket_sort',
+              config: { buckets: ['True', 'False'] },
+              points: 10,
+              explanation: 'Drag-free classification: assign every card to the correct bucket.',
+              questionOrder: 4,
+            });
+
+      const mcqId = mcqInsert[0]?.insertId;
+      const trueFalseId = trueFalseInsert[0]?.insertId;
+      const fillBlankId = fillBlankInsert[0]?.insertId;
+      const richId = richInsert[0]?.insertId;
+      if (!mcqId || !trueFalseId || !fillBlankId || !richId) {
+        throw new Error(`Failed to seed quiz questions for ${seed.slug} module ${moduleOrder}.`);
+      }
+
+      const richAnswers =
+        moduleOrder === 1
+          ? [
+              { questionId: richId, answerText: 'Review the slides', isCorrect: true, answerOrder: 1 },
+              { questionId: richId, answerText: 'Follow the walkthrough', isCorrect: true, answerOrder: 2 },
+              { questionId: richId, answerText: 'Complete the hands-on lab', isCorrect: true, answerOrder: 3 },
+            ]
+          : [
+              { questionId: richId, answerText: 'The lab runs in an isolated sandbox.', isCorrect: false, answerOrder: 1 },
+              { questionId: richId, answerText: 'The walkthrough replaces the need for reading.', isCorrect: false, answerOrder: 2 },
+            ];
+
+      await db.insert(quizAnswers).values([
+        { questionId: mcqId, answerText: `${theme.title} of ${seed.title}`, isCorrect: true, answerOrder: 1 },
+        { questionId: mcqId, answerText: 'An unrelated platform administration topic', isCorrect: false, answerOrder: 2 },
+        { questionId: trueFalseId, answerText: 'True', isCorrect: false, answerOrder: 1 },
+        { questionId: trueFalseId, answerText: 'False', isCorrect: true, answerOrder: 2 },
+        { questionId: fillBlankId, answerText: 'git status', isCorrect: true, answerOrder: 1 },
+        { questionId: fillBlankId, answerText: 'git status --short', isCorrect: true, answerOrder: 2 },
+        ...richAnswers,
+      ]);
+    }
   }
 
+  // One track: "End-to-End DevOps Engineering" whose contents are the 15 courses.
+  const trackInsert = await db.insert(tracks).values({
+    trackName: 'End-to-End DevOps Engineering',
+    slug: 'devops-engineering-track',
+    description: 'The complete 15-course DevOps path, from Linux fundamentals to observability.',
+    difficultyId: intermediate?.difficultyId ?? 2,
+    categoryId: cloudPlatforms?.categoryId ?? null,
+    totalLabs: moduleThemes.length * courseSeeds.length,
+    isPremium: false,
+    isActive: true,
+  });
+  const trackId = trackInsert[0]?.insertId;
+  if (!trackId) {
+    throw new Error('Failed to seed the DevOps engineering track.');
+  }
+  await db.insert(trackContent).values(
+    courseSeeds.map((_, index) => ({
+      trackId,
+      contentType: 'course' as const,
+      contentId: index + 1,
+      displayOrder: index + 1,
+      required: index < 8,
+    })),
+  );
+
   // eslint-disable-next-line no-console
-  console.log('Curriculum catalog seeded (difficulties, categories, tags, course).');
+  console.log(
+    `Seeded 1 track with ${courseSeeds.length} courses, ${moduleTotal} modules, ${lessonTotal} lessons, ${quizTotal} quizzes.`,
+  );
+}
+
+/** Demo assignments: course 1 + 3 to Acme class 1, course 2 to Acme class 2. */
+async function seedClassAssignments(): Promise<void> {
+  const inDays = (days: number): Date => new Date(Date.now() + days * 24 * 3600 * 1000);
+  await db.insert(classAssignments).values([
+    { teamId: 1, courseId: 1, assignedBy: 3, dueDate: inDays(21), isMandatory: true },
+    { teamId: 1, courseId: 3, assignedBy: 3, dueDate: null, isMandatory: false },
+    { teamId: 2, courseId: 2, assignedBy: 3, dueDate: inDays(14), isMandatory: true },
+  ]);
+  // eslint-disable-next-line no-console
+  console.log('Seeded cohort assignments (classes 1 and 2).');
 }
 
 /**
@@ -986,6 +1265,22 @@ async function seedOrganizationsClassesAndUsers(
       })),
     );
   }
+
+  // Authoritative tenancy rows: org-scoped roles live in
+  // organization_memberships; the legacy org_id pointer is kept in sync for
+  // compatibility with pre-membership read paths.
+  const membershipJoinedAt = new Date('2026-08-01T00:00:00.000Z');
+  await db.insert(organizationMemberships).values([
+    { organizationId: 1, userId: 2, role: 'org_admin', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+    { organizationId: 1, userId: 3, role: 'professor', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+    { organizationId: 1, userId: 4, role: 'professor', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+    { organizationId: 2, userId: 5, role: 'org_admin', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+    { organizationId: 2, userId: 6, role: 'professor', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+    { organizationId: 1, userId: 7, role: 'org_student', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+    { organizationId: 1, userId: 8, role: 'org_student', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+    { organizationId: 2, userId: 9, role: 'org_student', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+    { organizationId: 2, userId: 10, role: 'org_student', status: 'active', isPrimary: true, joinedAt: membershipJoinedAt },
+  ]);
 
   const sampleSkills = await db.select({ skillId: skills.skillId }).from(skills).limit(3);
   if (sampleSkills.length > 0) {

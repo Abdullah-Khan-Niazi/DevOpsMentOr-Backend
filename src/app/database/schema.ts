@@ -11,6 +11,7 @@ import {
   longtext,
   mysqlEnum,
   mysqlTable,
+  foreignKey,
   primaryKey,
   text,
   timestamp,
@@ -63,6 +64,12 @@ export const users = mysqlTable(
     language: varchar('language', { length: 10 }).notNull().default('en'),
     twoFactorEnabled: boolean('two_factor_enabled').notNull().default(false),
     twoFactorSecret: varchar('two_factor_secret', { length: 255 }),
+    /**
+     * Server-generated 2FA secret awaiting verification. The client never
+     * supplies the secret it will be enrolled with; `2fa/verify` matches
+     * against this value and only then promotes it to `two_factor_secret`.
+     */
+    twoFactorPendingSecret: varchar('two_factor_pending_secret', { length: 255 }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
     deletedAt: timestamp('deleted_at'),
@@ -191,7 +198,11 @@ export const otpCodes = mysqlTable(
     userId: int('user_id')
       .notNull()
       .references(() => users.userId, { onDelete: 'cascade' }),
-    code: varchar('code', { length: 10 }).notNull(),
+    /**
+     * HMAC-SHA256 hex digest of the OTP (64 chars), never the raw code. The
+     * raw value exists only in the outbound email/in-memory comparison.
+     */
+    code: varchar('code', { length: 64 }).notNull(),
     type: mysqlEnum('type', [
       'email_verification',
       'password_reset',
@@ -199,6 +210,8 @@ export const otpCodes = mysqlTable(
       'phone_verification',
     ]).notNull(),
     isUsed: boolean('is_used').notNull().default(false),
+    /** Failed verification attempts; the code is invalidated at the cap. */
+    attempts: int('attempts').notNull().default(0),
     expiresAt: timestamp('expires_at').notNull(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
@@ -376,14 +389,14 @@ export const skills = mysqlTable(
     skillId: int('skill_id').autoincrement().primaryKey(),
     skillName: varchar('skill_name', { length: 100 }).notNull(),
     category: mysqlEnum('category', [
-      'offensive',
-      'defensive',
-      'forensics',
-      'networking',
-      'web',
-      'mobile',
       'cloud',
-      'ai_ml',
+      'containers',
+      'automation',
+      'observability',
+      'scripting',
+      'networking',
+      'security',
+      'platform',
       'governance',
     ]).notNull(),
     description: text('description'),
@@ -488,9 +501,15 @@ export const auditLogs = mysqlTable(
   'audit_logs',
   {
     logId: int('log_id').autoincrement().primaryKey(),
-    adminUserId: int('admin_user_id')
-      .notNull()
-      .references(() => users.userId, { onDelete: 'cascade' }),
+    /**
+     * Nullable + ON DELETE SET NULL: deleting a user must never erase the
+     * actions they performed. `actorEmail` is the denormalized label that
+     * keeps the trail readable after the account is gone.
+     */
+    adminUserId: int('admin_user_id').references(() => users.userId, {
+      onDelete: 'set null',
+    }),
+    actorEmail: varchar('actor_email', { length: 255 }),
     action: varchar('action', { length: 50 }).notNull(),
     targetType: varchar('target_type', { length: 50 }),
     targetId: int('target_id'),
@@ -609,6 +628,60 @@ export const organizations = mysqlTable(
 );
 
 /**
+ * `organization_memberships` — the real tenancy model (chaos sprint).
+ *
+ * Replaces the single-valued `user_settings.org_id` EAV pointer as the
+ * authority for organisation membership: one row per (organization, user)
+ * with an org-scoped role and lifecycle status. `is_primary` is a UI hint for
+ * the workspace switcher only — authorization always checks `role`/`status`.
+ * Roles stay global in `user_roles` for permission gating; this table decides
+ * WHICH organisation a user may act inside and WITH WHICH org role.
+ */
+export const organizationMemberships = mysqlTable(
+  'organization_memberships',
+  {
+    membershipId: int('membership_id').autoincrement().primaryKey(),
+    organizationId: int('organization_id').notNull(),
+    userId: int('user_id').notNull(),
+    role: mysqlEnum('role', ['org_admin', 'professor', 'org_student']).notNull(),
+    status: mysqlEnum('status', ['active', 'invited', 'suspended', 'left'])
+      .notNull()
+      .default('active'),
+    isPrimary: boolean('is_primary').notNull().default(false),
+    joinedAt: timestamp('joined_at').notNull().defaultNow(),
+    invitedBy: int('invited_by'),
+    leftAt: timestamp('left_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => [
+    uniqueIndex('organization_memberships_org_user_key').on(
+      table.organizationId,
+      table.userId,
+    ),
+    index('idx_om_user_status').on(table.userId, table.status),
+    index('idx_om_org_role').on(table.organizationId, table.status, table.role),
+    // Explicit short names: drizzle's generated composite names exceed
+    // MySQL's 64-character identifier limit for this table.
+    foreignKey({
+      name: 'org_memberships_org_fk',
+      columns: [table.organizationId],
+      foreignColumns: [organizations.organizationId],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'org_memberships_user_fk',
+      columns: [table.userId],
+      foreignColumns: [users.userId],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'org_memberships_inviter_fk',
+      columns: [table.invitedBy],
+      foreignColumns: [users.userId],
+    }).onDelete('set null'),
+  ],
+);
+
+/**
  * `teams` — Adapted as Classes (F3 §06 mapping). A DevOps Mentor class is a
  * `teams` row with `is_public = false` and `organization_id` bound to its
  * organization. `team_owner_id` holds the primary professor's `user_id`
@@ -661,7 +734,7 @@ export const teamMembers = mysqlTable(
     userId: int('user_id')
       .notNull()
       .references(() => users.userId, { onDelete: 'cascade' }),
-    role: mysqlEnum('role', ['member', 'captain', 'co_captain', 'manager'])
+    role: mysqlEnum('role', ['member', 'captain', 'co_captain'])
       .notNull()
       .default('member'),
     joinedAt: timestamp('joined_at').notNull().defaultNow(),
@@ -832,6 +905,38 @@ export const academyCourses = mysqlTable(
 );
 
 /**
+ * `class_assignments` — DataCamp-style cohort course assignments (chaos sprint).
+ * A class (cohort) can have many course assignments; each carries an optional
+ * deadline and a mandatory flag. Course-level granularity is deliberate:
+ * assigning individual modules/labs is out of scope per the product decision.
+ * Unique (team_id, course_id) prevents duplicate assignments; progress is
+ * derived from `user_progress`, never stored here.
+ */
+export const classAssignments = mysqlTable(
+  'class_assignments',
+  {
+    assignmentId: int('assignment_id').autoincrement().primaryKey(),
+    teamId: int('team_id')
+      .notNull()
+      .references(() => teams.teamId, { onDelete: 'cascade' }),
+    courseId: int('course_id')
+      .notNull()
+      .references(() => academyCourses.courseId, { onDelete: 'cascade' }),
+    assignedBy: int('assigned_by')
+      .notNull()
+      .references(() => users.userId, { onDelete: 'cascade' }),
+    assignedAt: timestamp('assigned_at').notNull().defaultNow(),
+    dueDate: timestamp('due_date'),
+    isMandatory: boolean('is_mandatory').notNull().default(true),
+  },
+  (table) => [
+    uniqueIndex('class_assignments_team_course_key').on(table.teamId, table.courseId),
+    index('idx_assignment_course').on(table.courseId),
+    index('idx_assignment_due').on(table.dueDate),
+  ],
+);
+
+/**
  * `modules` — Course modules (F4 §05). `module_order` is unique within the
  * course (invariant 2). `is_published = FALSE` represents both DRAFT and
  * ARCHIVED states; archiving cascades to children (invariant 5).
@@ -870,6 +975,12 @@ export const lessons = mysqlTable(
       .notNull()
       .references(() => modules.moduleId, { onDelete: 'cascade' }),
     title: varchar('title', { length: 255 }).notNull(),
+    /**
+     * Stable machine slug used for deep links and for GitOps-managed slide /
+     * walkthrough asset matching on the Labs engine. Nullable for legacy rows;
+     * unique when present (MySQL allows multiple NULLs in a unique index).
+     */
+    slug: varchar('slug', { length: 160 }),
     content: longtext('content'),
     contentType: mysqlEnum('content_type', ['text', 'video', 'interactive', 'lab'])
       .notNull()
@@ -883,6 +994,7 @@ export const lessons = mysqlTable(
   },
   (table) => [
     index('idx_module_order').on(table.moduleId, table.lessonOrder),
+    uniqueIndex('lessons_slug_key').on(table.slug),
   ],
 );
 
@@ -953,9 +1065,17 @@ export const quizQuestions = mysqlTable(
       'true_false',
       'fill_blank',
       'multiple_select',
+      'bucket_sort',
+      'ordering',
     ])
       .notNull()
       .default('multiple_choice'),
+    /**
+     * Rich question payload for structured types (bucket_sort / ordering).
+     * Stored as JSON, validated server-side; correct-order data is derived
+     * from `quiz_answers` so the client payload never carries the solution.
+     */
+    config: json('config').$type<Record<string, unknown> | null>(),
     points: int('points').notNull().default(10),
     explanation: text('explanation'),
     questionOrder: int('question_order').notNull(),
@@ -1163,7 +1283,7 @@ export const labs = mysqlTable(
       .notNull()
       .references(() => difficultyLevels.difficultyId),
     categoryId: int('category_id').references(() => categories.categoryId),
-    labType: mysqlEnum('lab_type', ['pro_lab', 'fortress', 'sherlock', 'vip_lab']).notNull(),
+    labType: mysqlEnum('lab_type', ['pro_lab', 'sherlock', 'vip_lab']).notNull(),
     isActive: boolean('is_active').notNull().default(true),
     isPremium: boolean('is_premium').notNull().default(false),
     estimatedHours: int('estimated_hours').notNull().default(0),
@@ -1357,7 +1477,7 @@ export const trackContent = mysqlTable(
     trackId: int('track_id')
       .notNull()
       .references(() => tracks.trackId, { onDelete: 'cascade' }),
-    contentType: mysqlEnum('content_type', ['machine', 'challenge', 'lab', 'course']).notNull(),
+    contentType: mysqlEnum('content_type', ['lab', 'course']).notNull(),
     contentId: int('content_id').notNull(),
     displayOrder: int('display_order').notNull(),
     required: boolean('required').notNull().default(false),
@@ -1483,8 +1603,6 @@ export const paymentMethods = mysqlTable(
     methodType: mysqlEnum('method_type', [
       'credit_card',
       'paypal',
-      'crypto',
-      'bank_transfer',
       'enterprise_invoice',
     ]).notNull(),
     last4Digits: varchar('last4_digits', { length: 4 }),
@@ -1742,8 +1860,7 @@ export const pointsHistory = mysqlTable(
     pointsChange: int('points_change').notNull(),
     pointsBalanceAfter: int('points_balance_after').notNull(),
     sourceType: mysqlEnum('source_type', [
-      'machine_own',
-      'challenge_solve',
+      'lab_complete',
       'course_complete',
       'achievement',
       'daily_bonus',
@@ -1884,7 +2001,7 @@ export const seasonContent = mysqlTable(
     seasonId: int('season_id')
       .notNull()
       .references(() => seasons.seasonId, { onDelete: 'cascade' }),
-    contentType: mysqlEnum('content_type', ['machine', 'challenge', 'lab']).notNull(),
+    contentType: mysqlEnum('content_type', ['lab']).notNull(),
     contentId: int('content_id').notNull(),
     releaseOrder: int('release_order').notNull(),
     isReleased: boolean('is_released').notNull().default(false),
@@ -2085,15 +2202,23 @@ export const announcements = mysqlTable(
 export const announcementReads = mysqlTable(
   'announcement_reads',
   {
-    announcementId: int('announcement_id')
-      .notNull()
-      .references(() => announcements.announcementId, { onDelete: 'cascade' }),
+    announcementId: int('announcement_id').notNull(),
     userId: int('user_id')
       .notNull()
       .references(() => users.userId, { onDelete: 'cascade' }),
     readAt: timestamp('read_at').notNull().defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.announcementId, table.userId] })],
+  (table) => [
+    primaryKey({ columns: [table.announcementId, table.userId] }),
+    // Explicit short name: drizzle's generated composite name is 67 chars and
+    // exceeds MySQL's 64-char identifier limit, which caused an endless
+    // rename-drift in `drizzle-kit generate`.
+    foreignKey({
+      name: 'announcement_reads_announcement_id_fk',
+      columns: [table.announcementId],
+      foreignColumns: [announcements.announcementId],
+    }).onDelete('cascade'),
+  ],
 );
 
 /**

@@ -63,6 +63,7 @@ export interface QuestionWithAnswersRow {
   questionId: number;
   questionText: string;
   questionType: string;
+  config: Record<string, unknown> | null;
   points: number;
   explanation: string | null;
   questionOrder: number;
@@ -647,11 +648,13 @@ export class ProgressRepository {
   }
 
   /** Active quiz questions with their answer options (used for scoring). */
-  async listQuizQuestionsWithAnswers(quizId: number): Promise<QuestionWithAnswersRow[]> {    const questionRows = await db
+  async listQuizQuestionsWithAnswers(quizId: number): Promise<QuestionWithAnswersRow[]> {
+    const questionRows = await db
       .select({
         questionId: quizQuestions.questionId,
         questionText: quizQuestions.questionText,
         questionType: quizQuestions.questionType,
+        config: quizQuestions.config,
         points: quizQuestions.points,
         explanation: quizQuestions.explanation,
         questionOrder: quizQuestions.questionOrder,

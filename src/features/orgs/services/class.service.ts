@@ -21,6 +21,7 @@ import type {
 } from '../dto/org.dto';
 import { classRepository, type ClassWithCounts, type IClassRepository } from '../repositories/class.repository';
 import { invitationRepository, type IInvitationRepository } from '../repositories/invitation.repository';
+import { membershipRepository, type IMembershipRepository } from '../repositories/membership.repository';
 import { orgRepository, orgScopeRepository, type IOrgRepository, type IOrgScopeRepository } from '../repositories/org.repository';
 import { teamMemberRepository, type ITeamMemberRepository } from '../repositories/team-member.repository';
 
@@ -55,6 +56,7 @@ export interface ClassServiceDeps {
   classes: IClassRepository;
   orgs: IOrgRepository;
   scopes: IOrgScopeRepository;
+  memberships: IMembershipRepository;
   members: ITeamMemberRepository;
   invitations: IInvitationRepository;
   email: typeof emailService;
@@ -66,6 +68,7 @@ function defaultDeps(): ClassServiceDeps {
     classes: classRepository,
     orgs: orgRepository,
     scopes: orgScopeRepository,
+    memberships: membershipRepository,
     members: teamMemberRepository,
     invitations: invitationRepository,
     email: emailService,
@@ -253,13 +256,19 @@ export class ClassService {
     for (const userId of studentIds) {
       const remaining = await this.deps.members.findActiveStudentClass(userId);
       if (!remaining) {
-        await this.deps.scopes.clearOrgId(userId);
+        if (cls.organizationId !== null) {
+          await this.deps.scopes.leaveMembership(userId, cls.organizationId);
+        }
         await this.deps.orgs.removeRole(userId, ROLES.ORG_STUDENT);
         scopeClearedCount += 1;
       } else if (remaining.organizationId !== null) {
         // Repair the scope if the learner still has a class elsewhere. This
         // cannot grant a new tenant: the remaining row is server-side state.
-        await this.deps.scopes.setOrgId(userId, remaining.organizationId);
+        await this.deps.scopes.setOrgIdWithRole(
+          userId,
+          remaining.organizationId,
+          ROLES.ORG_STUDENT,
+        );
       }
     }
 
@@ -357,7 +366,7 @@ export class ClassService {
         await this.deps.orgs.assignRole(actor.userId, roleId);
       }
     }
-    await this.deps.scopes.setOrgId(actor.userId, classOrgId);
+    await this.deps.scopes.setOrgIdWithRole(actor.userId, classOrgId, ROLES.ORG_STUDENT);
 
     crashAudit(this.deps.audit, actor, AUDIT_ACTIONS.REDEEM_CLASS_JOIN_CODE, 'team', cls.teamId, {
       alreadyEnrolled,
@@ -526,10 +535,16 @@ export class ClassService {
     const remainingClasses = await this.deps.members.listActiveStudentClasses(userId);
     const scopeCleared = remainingClasses.length === 0;
     if (scopeCleared) {
-      await this.deps.scopes.clearOrgId(userId);
+      if (cls.organizationId !== null) {
+        await this.deps.scopes.leaveMembership(userId, cls.organizationId);
+      }
       await this.deps.orgs.removeRole(userId, ROLES.ORG_STUDENT);
     } else if (remainingClasses[0]?.organizationId != null) {
-      await this.deps.scopes.setOrgId(userId, remainingClasses[0].organizationId);
+      await this.deps.scopes.setOrgIdWithRole(
+        userId,
+        remainingClasses[0].organizationId,
+        ROLES.ORG_STUDENT,
+      );
     }
 
     crashAudit(this.deps.audit, actor, AUDIT_ACTIONS.WITHDRAW_STUDENT, 'team', classId, {
@@ -742,7 +757,7 @@ export class ClassService {
         await this.deps.orgs.assignRole(userId, roleId);
       }
     }
-    await this.deps.scopes.setOrgId(userId, classOrgId);
+    await this.deps.scopes.setOrgIdWithRole(userId, classOrgId, ROLES.ORG_STUDENT);
 
     return {
       kind: 'class',
@@ -767,17 +782,17 @@ export class ClassService {
       throw new ConflictError('The inviting administrator is no longer active.');
     }
 
-    const currentScope = await this.deps.scopes.getOrgId(userId);
-    if (currentScope !== null && currentScope !== orgId) {
+    // Multi-org aware: an admin of another org cannot also be a professor
+    // here; a student/professor elsewhere may accept.
+    const existingMembership = await this.deps.memberships.getActiveForUser(userId);
+    if (existingMembership?.role === ROLES.ORG_ADMIN) {
       throw new ConflictError(
-        'ORG_SCOPE_CONFLICT: your account is already linked to another organization.',
+        'Organization admins cannot accept a professor invitation.',
       );
     }
-    if (await this.deps.orgs.hasRole(userId, ROLES.ORG_ADMIN)) {
-      throw new ConflictError('STAFF_ROLE_CONFLICT: organization admins cannot accept a professor invitation.');
-    }
-    if (await this.deps.orgs.hasRole(userId, ROLES.ORG_STUDENT)) {
-      throw new ConflictError('STAFF_ROLE_CONFLICT: students cannot accept a professor invitation.');
+    const roleInOrg = await this.deps.memberships.getRoleInOrg(userId, orgId);
+    if (roleInOrg === ROLES.PROFESSOR) {
+      throw new ConflictError('You are already a professor of this organization.');
     }
 
     await this.deps.invitations.markAccepted(invitationId, userId);
@@ -786,7 +801,7 @@ export class ClassService {
       const roleId = await this.deps.orgs.findRoleId(ROLES.PROFESSOR);
       await this.deps.orgs.assignRole(userId, roleId);
     }
-    await this.deps.scopes.setOrgId(userId, orgId);
+    await this.deps.scopes.setOrgIdWithRole(userId, orgId, ROLES.PROFESSOR);
 
     return { kind: 'professor', className: null, organizationName: org.name };
   }
@@ -924,7 +939,12 @@ export class ClassService {
       throw new ForbiddenError('This class belongs to a different organization.');
     }
 
-    const isOrgAdmin = roles.has(ROLES.ORG_ADMIN);
+    // Per-org role is authoritative once a membership exists; global JWT role
+    // is the transitional fallback for un-backfilled accounts.
+    const membershipRole = await this.deps.memberships.getActiveRole(actor.userId);
+    const isOrgAdmin = membershipRole
+      ? membershipRole === ROLES.ORG_ADMIN
+      : roles.has(ROLES.ORG_ADMIN);
     const isOwner = cls.teamOwnerId === actor.userId;
     const isProfessor = await this.deps.members.isProfessorOf(cls.teamId, actor.userId);
     if (!isOrgAdmin && !isOwner && !isProfessor) {

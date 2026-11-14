@@ -16,6 +16,9 @@ curriculumRoutes.use(authenticate, authorizePermissions(PERMISSIONS.CURRICULUM_R
 /** F4-API-01 */
 curriculumRoutes.get('/course', asyncHandler((req, res) => curriculumController.getCourse(req, res)));
 
+/** Multi-course catalog (chaos sprint) — every published course. */
+curriculumRoutes.get('/courses', asyncHandler((req, res) => curriculumController.listCourses(req, res)));
+
 /** F4-API-02 */
 curriculumRoutes.get('/modules', asyncHandler((req, res) => curriculumController.getModules(req, res)));
 

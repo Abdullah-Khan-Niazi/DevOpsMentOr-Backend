@@ -8,6 +8,8 @@ import { BadRequestError, ForbiddenError, NotFoundError } from '../../../shared/
 import type { AdminActor, AdminListFilter, AdminUserDetailDto, AdminUserListItem, PaginatedAdminData, PlatformAdminDto } from '../dto/admin.dto';
 import type { IAdminUserRepository } from '../repositories/admin-user.repository';
 import { adminUserRepository } from '../repositories/admin-user.repository';
+import type { ISessionRepository } from '../../auth/repositories/session.repository';
+import { sessionRepository } from '../../auth/repositories/session.repository';
 import type { AuditLogService } from './audit-log.service';
 import { auditLogService } from './audit-log.service';
 
@@ -15,6 +17,7 @@ export class AdminUserService {
   constructor(
     private readonly admins: IAdminUserRepository = adminUserRepository,
     private readonly audit: AuditLogService = auditLogService,
+    private readonly sessionsRepo: ISessionRepository = sessionRepository,
   ) {}
 
   async listUsers(filter: AdminListFilter): Promise<PaginatedAdminData<AdminUserListItem>> {
@@ -54,6 +57,15 @@ export class AdminUserService {
       role?: 'individual_learner' | 'org_admin' | 'professor' | 'org_student' | 'platform_admin';
     },
   ): Promise<{ sent: number; failed: number }> {
+    if (payload.role === 'platform_admin') {
+      // Platform admins are invited through the dedicated admin-invite flow,
+      // which has its own namespace and confirmation semantics. Member invites
+      // must never mint platform administrators.
+      throw new ForbiddenError(
+        'Platform administrators cannot be invited through member invitations.',
+      );
+    }
+
     let sent = 0;
     let failed = 0;
     const roleToAssign = payload.role ?? (payload.type === 'organization' ? 'org_student' : 'individual_learner');
@@ -70,8 +82,12 @@ export class AdminUserService {
           role: roleToAssign,
           invitedBy: actor.userId,
           createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 72 * 3600 * 1000).toISOString(),
         });
-        await redisClient.set(cacheKeys.adminInvite(token), invitePayload, 'EX', 72 * 3600);
+        // Member invites live in their own namespace; the platform-admin
+        // accept endpoint only reads `admin_invite:*`, so a member token can
+        // never be redeemed for platform privileges.
+        await redisClient.set(cacheKeys.userInvite(token), invitePayload, 'EX', 72 * 3600);
 
         const inviteUrl = `${env.FRONTEND_URL}/register?token=${token}&email=${encodeURIComponent(normalized)}`;
         await emailService.sendInvitationEmail(normalized, inviteUrl, token);
@@ -84,6 +100,7 @@ export class AdminUserService {
 
     await this.audit.record({
       adminUserId: actor.userId,
+      actorEmail: actor.email ?? null,
       action: AUDIT_ACTIONS.CREATE_USER,
       targetType: 'user_invites',
       targetId: payload.organizationId ?? null,
@@ -119,9 +136,12 @@ export class AdminUserService {
 
     const before = { isBanned: target.isBanned, banReason: target.banReason };
     await this.admins.setBan(targetUserId, true, banReason);
+    // A ban must take effect immediately, including already-issued tokens.
+    await this.sessionsRepo.deactivateAllForUser(targetUserId);
 
     await this.audit.record({
       adminUserId: actor.userId,
+      actorEmail: actor.email ?? null,
       action: AUDIT_ACTIONS.BAN_USER,
       targetType: 'user',
       targetId: targetUserId,
@@ -145,9 +165,13 @@ export class AdminUserService {
 
     const before = { isBanned: true, banReason: target.banReason };
     await this.admins.setBan(targetUserId, false, null);
+    // Unban only clears pre-existing sessions (e.g. left over from data
+    // written before ban-time revocation); the user must sign in afresh.
+    await this.sessionsRepo.deactivateAllForUser(targetUserId);
 
     await this.audit.record({
       adminUserId: actor.userId,
+      actorEmail: actor.email ?? null,
       action: AUDIT_ACTIONS.UNBAN_USER,
       targetType: 'user',
       targetId: targetUserId,
@@ -171,9 +195,12 @@ export class AdminUserService {
 
     const before = { deletedAt: null };
     await this.admins.softDelete(targetUserId);
+    // Soft deletion is a revocation too: no session may outlive the account.
+    await this.sessionsRepo.deactivateAllForUser(targetUserId);
 
     await this.audit.record({
       adminUserId: actor.userId,
+      actorEmail: actor.email ?? null,
       action: AUDIT_ACTIONS.DELETE_USER,
       targetType: 'user',
       targetId: targetUserId,
@@ -200,6 +227,7 @@ export class AdminUserService {
 
     await this.audit.record({
       adminUserId: actor.userId,
+      actorEmail: actor.email ?? null,
       action: AUDIT_ACTIONS.RESTORE_USER,
       targetType: 'user',
       targetId: targetUserId,

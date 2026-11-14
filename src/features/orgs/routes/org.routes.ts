@@ -9,6 +9,7 @@ import {
   validateRequest,
 } from '../../../shared/middleware';
 import { asyncHandler } from '../../../shared/utils';
+import { assignmentController } from '../controllers/assignment.controller';
 import { classController, enrollmentController, orgController } from '../controllers/org.controller';
 import {
   requireClassMembershipFromParams,
@@ -20,10 +21,13 @@ import {
   adminOrgListQuerySchema,
   assignOrgAdminSchema,
   assignProfessorSchema,
+  classAndAssignmentParamSchema,
   classAndInvitationParamSchema,
   classAndStudentParamSchema,
   classIdParamSchema,
   classJoinCodeParamSchema,
+  courseIdParamSchema,
+  createAssignmentSchema,
   createClassSchema,
   createOrgSchema,
   emailDomainSchema,
@@ -37,6 +41,8 @@ import {
   orgIdParamSchema,
   orgListQuerySchema,
   rosterQuerySchema,
+  switchOrgSchema,
+  updateAssignmentSchema,
   updateClassSchema,
   updateOrgSchema,
 } from '../validators/org.validator';
@@ -151,6 +157,20 @@ orgRoutes.get(
   authorizePermissions(PERMISSIONS.ORG_READ),
   requireOrgMembership(),
   asyncHandler((req, res) => orgController.getMyOrg(req, res)),
+);
+
+/** Multi-org: list every active membership and switch the active organization. */
+orgRoutes.get(
+  '/org/my-memberships',
+  authenticate,
+  asyncHandler((req, res) => orgController.listMyMemberships(req, res)),
+);
+
+orgRoutes.post(
+  '/org/switch',
+  authenticate,
+  validateRequest(switchOrgSchema, 'body'),
+  asyncHandler((req, res) => orgController.switchOrg(req, res)),
 );
 
 orgRoutes.patch(
@@ -402,6 +422,61 @@ orgRoutes.post(
   authenticate,
   validateRequest(joinClassCodeSchema, 'body'),
   asyncHandler((req, res) => classController.joinClass(req, res)),
+);
+
+/** ── chaos sprint: cohort course assignments (course-level, DataCamp style) ── */
+orgRoutes.get(
+  '/org/classes/:classId/assignments',
+  authenticate,
+  authorizeAnyPermissions(PERMISSIONS.CLASS_STUDENTS_READ, PERMISSIONS.ORG_MANAGE),
+  validateRequest(classIdParamSchema, 'params'),
+  requireClassStaffFromParams(),
+  asyncHandler((req, res) => assignmentController.listForClass(req, res)),
+);
+
+orgRoutes.post(
+  '/org/classes/:classId/assignments',
+  authenticate,
+  authorizeAnyPermissions(PERMISSIONS.CLASS_MANAGE, PERMISSIONS.ORG_CLASSES_MANAGE),
+  validateRequest(classIdParamSchema, 'params'),
+  requireClassStaffFromParams(),
+  validateRequest(createAssignmentSchema, 'body'),
+  asyncHandler((req, res) => assignmentController.create(req, res)),
+);
+
+orgRoutes.patch(
+  '/org/classes/:classId/assignments/:assignmentId',
+  authenticate,
+  authorizeAnyPermissions(PERMISSIONS.CLASS_MANAGE, PERMISSIONS.ORG_CLASSES_MANAGE),
+  validateRequest(classAndAssignmentParamSchema, 'params'),
+  requireClassStaffFromParams(),
+  validateRequest(updateAssignmentSchema, 'body'),
+  asyncHandler((req, res) => assignmentController.update(req, res)),
+);
+
+orgRoutes.delete(
+  '/org/classes/:classId/assignments/:assignmentId',
+  authenticate,
+  authorizeAnyPermissions(PERMISSIONS.CLASS_MANAGE, PERMISSIONS.ORG_CLASSES_MANAGE),
+  validateRequest(classAndAssignmentParamSchema, 'params'),
+  requireClassStaffFromParams(),
+  asyncHandler((req, res) => assignmentController.remove(req, res)),
+);
+
+/** Student task board: every assignment across active class memberships. */
+orgRoutes.get(
+  '/student/assignments',
+  authenticate,
+  authorizePermissions(PERMISSIONS.ENROLLMENT_READ),
+  asyncHandler((req, res) => assignmentController.listMine(req, res)),
+);
+
+/** Student course-access evaluation (paywall/assignment/entitlement reasons). */
+orgRoutes.get(
+  '/student/courses/:courseId/access',
+  authenticate,
+  validateRequest(courseIdParamSchema, 'params'),
+  asyncHandler((req, res) => assignmentController.getCourseAccess(req, res)),
 );
 
 export { orgRoutes };

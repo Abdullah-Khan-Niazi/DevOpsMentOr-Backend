@@ -171,12 +171,21 @@ export interface QuizAttemptResultDto {
 export interface QuizQuestionDto {
   questionId: number;
   questionText: string;
-  questionType: 'multiple_choice' | 'true_false' | 'fill_blank' | 'multiple_select';
+  questionType:
+    | 'multiple_choice'
+    | 'true_false'
+    | 'fill_blank'
+    | 'multiple_select'
+    | 'bucket_sort'
+    | 'ordering';
+  /** Presentation metadata for rich types; never contains correctness. */
+  config: Record<string, unknown> | null;
   points: number;
   questionOrder: number;
   answers: Array<{
     answerId: number;
     answerText: string;
+    /** Shuffled placeholder order for rich types — never the solution order. */
     answerOrder: number;
   }>;
 }

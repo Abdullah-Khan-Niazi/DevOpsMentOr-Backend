@@ -61,6 +61,8 @@ export interface LessonDto {
   lessonId: number;
   moduleId: number;
   title: string;
+  /** Stable slug used for deep links and GitOps slide/walkthrough asset matching. */
+  slug: string | null;
   content: string | null;
   contentType: ContentType;
   videoUrl: string | null;
@@ -98,6 +100,8 @@ export interface QuestionDto {
   quizId: number;
   questionText: string;
   questionType: QuestionType;
+  /** Rich presentation payload for bucket_sort/ordering (never holds correctness). */
+  config: Record<string, unknown> | null;
   points: number;
   explanation: string | null;
   questionOrder: number;

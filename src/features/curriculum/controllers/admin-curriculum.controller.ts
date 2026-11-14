@@ -28,6 +28,21 @@ export class AdminCurriculumController {
   }
 
   /** F4-API-08 */
+  async createCourse(req: Request, res: Response): Promise<Response> {
+    const course = await adminCurriculumService.createCourse(actorFrom(req), req.body);
+    return sendSuccess(res, course, 'Course created successfully.', HTTP_STATUS.CREATED);
+  }
+
+  async listDifficulties(_req: Request, res: Response): Promise<Response> {
+    const difficulties = await adminCurriculumService.listDifficulties();
+    return sendSuccess(res, difficulties, 'Difficulties retrieved successfully.');
+  }
+
+  async listCategories(_req: Request, res: Response): Promise<Response> {
+    const categories = await adminCurriculumService.listCategories();
+    return sendSuccess(res, categories, 'Categories retrieved successfully.');
+  }
+
   async updateCourse(req: Request, res: Response): Promise<Response> {
     const course = await adminCurriculumService.updateCourse(actorFrom(req), req.body);
     return sendSuccess(res, course, 'Course updated successfully.');

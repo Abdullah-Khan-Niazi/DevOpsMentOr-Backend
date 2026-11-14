@@ -1,6 +1,7 @@
-import { and, count, desc, eq, inArray, like } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, like } from 'drizzle-orm';
 import { db } from '../../../app/database';
 import {
+  organizationMemberships,
   organizations,
   roles,
   systemSettings,
@@ -345,12 +346,48 @@ export const orgRepository = new OrgRepository();
 export interface IOrgScopeRepository {
   getOrgId(userId: number): Promise<number | null>;
   setOrgId(userId: number, orgId: number): Promise<void>;
+  /**
+   * Writes the legacy `user_settings.org_id` pointer AND the authoritative
+   * `organization_memberships` row in one transaction. All role-aware write
+   * paths use this so reads can switch to memberships without a flag day.
+   */
+  setOrgIdWithRole(
+    userId: number,
+    orgId: number,
+    role: 'org_admin' | 'professor' | 'org_student',
+  ): Promise<void>;
   clearOrgId(userId: number): Promise<void>;
+  /** Marks the membership `left` and clears the pointer when it targets `orgId`. */
+  leaveMembership(userId: number, orgId: number): Promise<void>;
   listUserIdsByOrgId(orgId: number): Promise<number[]>;
 }
 
 export class OrgScopeRepository implements IOrgScopeRepository {
+  /**
+   * Resolves the user's active organization. `organization_memberships` is the
+   * authority; the legacy `user_settings.org_id` pointer remains a fallback
+   * for rows that predate the membership backfill.
+   */
   async getOrgId(userId: number): Promise<number | null> {
+    const membership = await db
+      .select({ organizationId: organizationMemberships.organizationId })
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.status, 'active'),
+        ),
+      )
+      .orderBy(
+        desc(organizationMemberships.isPrimary),
+        asc(organizationMemberships.joinedAt),
+      )
+      .limit(1);
+
+    if (membership.length > 0) {
+      return membership[0].organizationId;
+    }
+
     const rows = await db
       .select({ settingValue: userSettings.settingValue })
       .from(userSettings)
@@ -371,6 +408,25 @@ export class OrgScopeRepository implements IOrgScopeRepository {
       .onDuplicateKeyUpdate({ set: { settingValue: orgId } });
   }
 
+  async setOrgIdWithRole(
+    userId: number,
+    orgId: number,
+    role: 'org_admin' | 'professor' | 'org_student',
+  ): Promise<void> {
+    await db.transaction(async (tx) => {
+      await tx
+        .insert(userSettings)
+        .values({ userId, settingKey: ORG_CONSTANTS.ORG_ID_SETTING_KEY, settingValue: orgId })
+        .onDuplicateKeyUpdate({ set: { settingValue: orgId } });
+      await tx
+        .insert(organizationMemberships)
+        .values({ userId, organizationId: orgId, role, status: 'active' })
+        .onDuplicateKeyUpdate({
+          set: { role, status: 'active', leftAt: null },
+        });
+    });
+  }
+
   async clearOrgId(userId: number): Promise<void> {
     await db
       .delete(userSettings)
@@ -380,15 +436,54 @@ export class OrgScopeRepository implements IOrgScopeRepository {
       ));
   }
 
+  async leaveMembership(userId: number, orgId: number): Promise<void> {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(organizationMemberships)
+        .set({ status: 'left', leftAt: new Date(), isPrimary: false })
+        .where(
+          and(
+            eq(organizationMemberships.userId, userId),
+            eq(organizationMemberships.organizationId, orgId),
+          ),
+        );
+      await tx
+        .delete(userSettings)
+        .where(
+          and(
+            eq(userSettings.userId, userId),
+            eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+            eq(userSettings.settingValue, orgId),
+          ),
+        );
+    });
+  }
+
   async listUserIdsByOrgId(orgId: number): Promise<number[]> {
-    const rows = await db
-      .select({ userId: userSettings.userId })
-      .from(userSettings)
-      .where(and(
-        eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
-        eq(userSettings.settingValue, String(orgId)),
-      ));
-    return [...new Set(rows.map((row) => row.userId))];
+    const [legacyRows, memberRows] = await Promise.all([
+      db
+        .select({ userId: userSettings.userId })
+        .from(userSettings)
+        .where(and(
+          eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
+          eq(userSettings.settingValue, String(orgId)),
+        )),
+      db
+        .select({ userId: organizationMemberships.userId })
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.organizationId, orgId),
+            eq(organizationMemberships.status, 'active'),
+          ),
+        ),
+    ]);
+    return [
+      ...new Set([
+        ...legacyRows.map((row) => row.userId),
+        ...memberRows.map((row) => row.userId),
+      ]),
+    ];
   }
 }
 

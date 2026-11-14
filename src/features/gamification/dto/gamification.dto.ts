@@ -13,8 +13,7 @@ export interface BadgeCriteria {
 
 /** `points_history.source_type` ENUM values used by the award engine. */
 export type PointsSourceType =
-  | 'machine_own'
-  | 'challenge_solve'
+  | 'lab_complete'
   | 'course_complete'
   | 'achievement'
   | 'daily_bonus'

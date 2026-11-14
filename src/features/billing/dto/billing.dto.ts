@@ -7,7 +7,7 @@
 export type PlanType = 'free' | 'premium' | 'enterprise' | 'student';
 export type BillingCycle = 'monthly' | 'annual';
 export type OrderStatus = 'pending' | 'paid' | 'failed' | 'refunded' | 'cancelled';
-export type PaymentMethodType = 'credit_card' | 'paypal' | 'crypto' | 'bank_transfer' | 'enterprise_invoice';
+export type PaymentMethodType = 'credit_card' | 'paypal' | 'enterprise_invoice';
 export type DiscountType = 'percentage' | 'fixed_amount';
 
 /** Request actor derived from the authenticated session (F2 §04). */

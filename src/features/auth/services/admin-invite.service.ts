@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'crypto';
+import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { cacheKeys, redisClient } from '../../../app/cache/redis';
 import { db, userRoles, users, roles } from '../../../app/database';
@@ -22,6 +23,21 @@ import type {
  * sanctioned store for this transient primitive, consistent with the F1
  * contract's Redis-backed session/revocation primitives.
  */
+const platformAdminInvitePayloadSchema = z.object({
+  purpose: z.literal('platform_admin'),
+  email: z.string().email(),
+  fullName: z.string().min(1),
+  expiresAt: z.string().datetime(),
+});
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 export class AdminInviteService {
   private readonly ttlSeconds: number;
 
@@ -43,6 +59,9 @@ export class AdminInviteService {
 
     const token = randomUUID();
     const payload = JSON.stringify({
+      // Purpose marker: the accept handler refuses anything that is not an
+      // explicit platform-admin invitation.
+      purpose: 'platform_admin' as const,
       email: input.email,
       fullName: input.fullName,
       expiresAt: new Date(Date.now() + this.ttlSeconds * 1000).toISOString(),
@@ -62,7 +81,15 @@ export class AdminInviteService {
       throw new BadRequestError('This invitation is invalid or has expired.');
     }
 
-    const invite = JSON.parse(raw) as { email: string; fullName: string; expiresAt: string };
+    const parsed = platformAdminInvitePayloadSchema.safeParse(safeJsonParse(raw));
+    if (!parsed.success) {
+      // Malformed or wrong-purpose payloads are unusable; remove them so they
+      // cannot be retried, and fail with a single clear message.
+      await redisClient.del(cacheKeys.adminInvite(input.token));
+      throw new BadRequestError('This invitation is invalid or has expired.');
+    }
+
+    const invite = parsed.data;
 
     if (invite.email !== input.email) {
       throw new BadRequestError('The invitation does not match this email address.');
@@ -132,12 +159,20 @@ export class AdminInviteService {
         continue;
       }
 
-      const parsed = JSON.parse(raw) as { email: string; fullName: string; expiresAt: string };
+      const parsed = platformAdminInvitePayloadSchema.safeParse(safeJsonParse(raw));
+      if (!parsed.success) {
+        logger.warn(
+          { key: keys[i] },
+          'Skipping malformed platform-admin invite payload in Redis',
+        );
+        continue;
+      }
+
       invites.push({
         id: keys[i].replace(cacheKeys.adminInvite(''), ''),
-        email: parsed.email,
-        fullName: parsed.fullName,
-        expiresAt: parsed.expiresAt,
+        email: parsed.data.email,
+        fullName: parsed.data.fullName,
+        expiresAt: parsed.data.expiresAt,
       });
     }
 

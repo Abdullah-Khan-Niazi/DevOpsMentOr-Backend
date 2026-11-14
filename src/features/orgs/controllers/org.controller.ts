@@ -63,6 +63,19 @@ export class OrgController {
     return sendSuccess(res, org, 'Organization retrieved successfully.');
   }
 
+  async listMyMemberships(req: Request, res: Response): Promise<Response> {
+    const memberships = await orgService.listMyMemberships(userIdFrom(req));
+    return sendSuccess(res, memberships, 'Memberships retrieved successfully.');
+  }
+
+  async switchOrg(req: Request, res: Response): Promise<Response> {
+    const result = await orgService.switchOrg(
+      userIdFrom(req),
+      Number((req.body as { organizationId: number }).organizationId),
+    );
+    return sendSuccess(res, result, 'Organization switched successfully.');
+  }
+
   async updateMyOrg(req: Request, res: Response): Promise<Response> {
     const org = await orgService.updateMyOrg(actorFrom(req), userIdFrom(req), req.body);
     return sendSuccess(res, org, 'Organization updated successfully.');

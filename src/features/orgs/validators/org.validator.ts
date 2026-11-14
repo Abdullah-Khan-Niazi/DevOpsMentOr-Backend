@@ -184,6 +184,13 @@ export const classIdParamSchema = z
   })
   .strip();
 
+/** Multi-org: switch the active organization to one of the user's memberships. */
+export const switchOrgSchema = z
+  .object({
+    organizationId: z.coerce.number().int().positive(),
+  })
+  .strip();
+
 export const orgAndClassParamSchema = z
   .object({
     orgId: z.coerce.number().int().positive(),
@@ -204,3 +211,37 @@ export const classAndInvitationParamSchema = z
     invitationId: z.coerce.number().int().positive(),
   })
   .strip();
+
+/* ─── chaos sprint: cohort course assignments ─────────────────────────────── */
+
+export const classAndAssignmentParamSchema = z
+  .object({
+    classId: z.coerce.number().int().positive(),
+    assignmentId: z.coerce.number().int().positive(),
+  })
+  .strip();
+
+export const courseIdParamSchema = z
+  .object({
+    courseId: z.coerce.number().int().positive(),
+  })
+  .strip();
+
+export const createAssignmentSchema = z
+  .object({
+    courseId: z.coerce.number().int().positive(),
+    dueDate: z.string().datetime({ offset: true }).optional().nullable(),
+    isMandatory: z.boolean().optional(),
+  })
+  .strip();
+
+export const updateAssignmentSchema = z
+  .object({
+    dueDate: z.string().datetime({ offset: true }).optional().nullable(),
+    isMandatory: z.boolean().optional(),
+  })
+  .strip()
+  .refine(
+    (data) => data.dueDate !== undefined || data.isMandatory !== undefined,
+    { message: 'Provide a due date or the mandatory flag to update.' },
+  );

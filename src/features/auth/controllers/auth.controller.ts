@@ -4,6 +4,7 @@ import { sendSuccess } from '../../../shared/utils';
 import { authService } from '../services/auth.service';
 import type {
   AdminLoginDto,
+  Disable2faDto,
   Enable2faDto,
   ForgotPasswordDto,
   LoginDto,
@@ -132,7 +133,7 @@ export class AuthController {
 
   async disable2fa(req: Request, res: Response): Promise<Response> {
     const userId = Number(req.user?.sub);
-    const result = await authService.disable2fa(userId, req.body as Verify2faDto);
+    const result = await authService.disable2fa(userId, req.body as Disable2faDto);
     return sendSuccess(res, result, '2FA disabled.', HTTP_STATUS.OK);
   }
 
