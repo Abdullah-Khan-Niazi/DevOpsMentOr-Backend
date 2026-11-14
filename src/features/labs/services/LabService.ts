@@ -43,7 +43,7 @@ export interface LabServiceDeps {
   >;
   orchestration: Pick<
     ContainerOrchestrationAdapter,
-    'createInstance' | 'stopInstance' | 'terminateInstance'
+    'createInstance' | 'stopInstance' | 'terminateInstance' | 'getInstance'
   >;
   entitlement: Pick<EntitlementService, 'assertLabAccess' | 'getLabTtlHours' | 'getExtensionLimit'>;
   vpn: Pick<VpnService, 'ensureAssignmentForProvision' | 'releaseAssignmentForUser'>;
