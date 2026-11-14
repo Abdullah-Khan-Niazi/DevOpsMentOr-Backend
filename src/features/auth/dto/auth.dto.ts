@@ -64,8 +64,12 @@ export interface Enable2faDto {
 
 export interface Verify2faDto {
   code: string;
-  /** Pending secret issued by enable2fa; required for first-time activation. */
-  secret?: string;
+}
+
+export interface Disable2faDto {
+  code: string;
+  /** Account password (step-up) required alongside the TOTP code. */
+  password: string;
 }
 
 export interface AuthTokensDto {

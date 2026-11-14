@@ -191,3 +191,58 @@ export interface OrgUserDetailDto extends OrgUserDto {
   quizzesPassed: number;
   labHours: number;
 }
+
+/* ─── chaos sprint: cohort course assignments ─────────────────────────────── */
+
+/** Deadline state is always computed server-side against `now`. */
+export type AssignmentDeadlineState =
+  | 'completed'
+  | 'overdue'
+  | 'due_soon'
+  | 'on_track'
+  | 'no_deadline';
+
+/** CLS-ASSIGN-02/03: a course assigned to a cohort. */
+export interface ClassAssignmentDto {
+  assignmentId: number;
+  classId: number;
+  courseId: number;
+  courseTitle: string;
+  courseSlug: string;
+  courseIsPremium: boolean;
+  assignedBy: number;
+  assignedAt: string;
+  dueDate: string | null;
+  isMandatory: boolean;
+}
+
+/** Staff view: assignment + completion stats for the cohort. */
+export interface ClassAssignmentWithStatsDto extends ClassAssignmentDto {
+  rosterCount: number;
+  completedCount: number;
+  overdueCount: number;
+  state: AssignmentDeadlineState;
+}
+
+/** Student view: assignment through one of their active class memberships. */
+export interface StudentAssignmentDto extends ClassAssignmentDto {
+  className: string;
+  state: AssignmentDeadlineState;
+  progressPercent: number;
+}
+
+/** Result of the course access formula: assigned ∪ org subscription ∪ free. */
+export interface CourseAccessDto {
+  courseId: number;
+  courseTitle: string;
+  canAccess: boolean;
+  reason: 'free' | 'platform_admin' | 'assigned' | 'org_subscription' | 'not_entitled' | 'unpublished';
+  message?: string;
+  assignment?: {
+    assignmentId: number;
+    classId: number;
+    className: string;
+    dueDate: string | null;
+    isMandatory: boolean;
+  };
+}

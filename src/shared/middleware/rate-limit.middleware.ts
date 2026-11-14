@@ -10,14 +10,20 @@ interface RateLimitOptions {
   max: number;
   /** Scope prefix used in the Redis key. */
   scope: string;
+  /**
+   * When true, a Redis outage rejects the request with 503 instead of letting
+   * it through. Required for credential surfaces, where failing open would
+   * disable brute-force protection exactly when the cache is degraded.
+   */
+  failClosed?: boolean;
 }
 
 /**
  * Redis-backed fixed-window rate limiter.
  *
- * Counters are atomic INCR + EXPIRE pairs; failures are logged and let the
- * request through (fail-open) so the auth surface never bricks on a Redis
- * outage while still being protected in normal operation.
+ * Counters are atomic INCR + EXPIRE pairs. By default failures are logged and
+ * let the request through (fail-open) so non-credential surfaces never brick
+ * on a Redis outage; credential routes opt into `failClosed`.
  */
 export function rateLimit(options: RateLimitOptions) {
   return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
@@ -42,6 +48,17 @@ export function rateLimit(options: RateLimitOptions) {
     } catch (err) {
       if (err instanceof AppError) {
         next(err);
+        return;
+      }
+
+      if (options.failClosed) {
+        logger.error({ err, scope: options.scope }, 'Rate limiter unavailable; failing closed');
+        next(
+          new AppError(
+            'Request protection is temporarily unavailable. Please try again shortly.',
+            HTTP_STATUS.SERVICE_UNAVAILABLE,
+          ),
+        );
         return;
       }
 

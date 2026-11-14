@@ -26,12 +26,15 @@ if (useSsl) {
       : rawCa
         ? readFileSync(rawCa, 'utf8')
         : undefined;
-  poolConfig.ssl = ca
-    ? { rejectUnauthorized: true, ca }
-    : { rejectUnauthorized: false };
   if (!ca) {
-    logger.warn('Database SSL enabled with rejectUnauthorized=false (no DB_SSL_CA provided).');
+    // Never silently downgrade to rejectUnauthorized=false: that accepts any
+    // certificate and turns TLS into an unauthenticated channel.
+    throw new Error(
+      'DATABASE_URL enables ssl-mode but DB_SSL_CA is not configured. Provide the CA certificate ' +
+        '(PEM contents or a file path) so the database TLS connection can be verified.',
+    );
   }
+  poolConfig.ssl = { rejectUnauthorized: true, ca };
 }
 
 export const pool =

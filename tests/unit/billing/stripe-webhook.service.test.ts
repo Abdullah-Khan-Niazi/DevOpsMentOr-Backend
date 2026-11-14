@@ -50,7 +50,7 @@ function makeDeps(overrides: Partial<Mocked<StripeWebhookServiceDeps>> = {}): Mo
   };
 }
 
-describe('F9 StripeWebhookService (BIL-13, AC-05/06)', () => {
+describe('StripeWebhookService (BIL-13, AC-05/06)', () => {
   it('rejects requests with an invalid signature before any processing', async () => {
     const deps = makeDeps();
     (deps.stripe.verifyWebhookSignature as ReturnType<typeof vi.fn>).mockImplementation(() => {

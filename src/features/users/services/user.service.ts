@@ -1,5 +1,6 @@
 import { ConflictError, NotFoundError, BadRequestError, ForbiddenError } from '../../../shared/errors';
 import { passwordService } from '../../../shared/services';
+import { USER_WRITABLE_SETTING_KEYS } from '../../../shared/constants';
 import { buildPaginationMeta } from '../../../shared/utils';
 import { cacheKeys, redisClient } from '../../../app/cache/redis';
 import type { PaginatedData } from '../../../shared/types';
@@ -309,9 +310,27 @@ export class UserService {
     userId: number,
     settings: Array<{ key: string; value: unknown }>,
   ): Promise<UserSettingDto[]> {
-    for (const setting of settings) {
-      await this.settingsRepo.upsert(userId, setting.key, setting.value);
+    // Defense-in-depth for internal callers: the route validator already
+    // restricts keys, but the service must never write server-owned state
+    // (org scope, roles, plans) even if a future caller bypasses the schema.
+    const rejected = settings.filter(
+      (setting) => !(USER_WRITABLE_SETTING_KEYS as readonly string[]).includes(setting.key),
+    );
+    if (rejected.length > 0) {
+      throw new BadRequestError(
+        `These settings are managed by the platform and cannot be changed here: ${rejected
+          .map((setting) => setting.key)
+          .join(', ')}.`,
+      );
     }
+
+    await this.settingsRepo.upsertMany(
+      userId,
+      settings.map((setting) => ({
+        settingKey: setting.key,
+        settingValue: setting.value,
+      })),
+    );
     return this.settingsRepo.listByUser(userId);
   }
 

@@ -25,6 +25,24 @@ function defaultDeps(): AdminCurriculumServiceDeps {
 }
 
 /**
+ * Slugify a lesson title for asset matching / deep links. Empty or
+ * symbol-only titles fall back to a stable "lesson" slug; the unique index
+ * still guarantees collisions are surfaced as a clear conflict error.
+ */
+function slugifyLessonTitle(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 140);
+  return slug || 'lesson';
+}
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return (error as { code?: string }).code === 'ER_DUP_ENTRY';
+}
+
+/**
  * F4 §08: Platform Admin write path. Every mutation verifies the target
  * belongs to the single canonical course (§05 invariant 1), enforces the
  * ordering and publish invariants, writes one audit_logs row, and refreshes
@@ -45,6 +63,71 @@ export class AdminCurriculumService {
   }
 
   /** F4-API-08: PATCH course metadata. */
+  /** Difficulty options for the course-create drawer. */
+  async listDifficulties(): Promise<Array<{ difficultyId: number; name: string }>> {
+    return this.deps.repo.listDifficultyLevels();
+  }
+
+  /** Category options for the course-create drawer. */
+  async listCategories(): Promise<Array<{ categoryId: number; name: string; slug: string }>> {
+    return this.deps.repo.listCategories();
+  }
+
+  /**
+   * Creates a DRAFT course (multi-course support). Publishing is a separate,
+   * explicit action through `updateCourse` so a half-built course can never
+   * appear in the learner catalog.
+   */
+  async createCourse(
+    actor: CurriculumActor,
+    input: {
+      title: string;
+      slug?: string;
+      description?: string | null;
+      difficultyId: number;
+      categoryId?: number | null;
+      estimatedHours?: number;
+      isPremium?: boolean;
+    },
+  ): Promise<CourseDto> {
+    const slug = (input.slug?.trim() || slugifyLessonTitle(input.title)).slice(0, 250);
+
+    let courseId: number;
+    try {
+      courseId = await this.deps.repo.createCourse({
+        title: input.title.trim(),
+        slug,
+        description: input.description ?? null,
+        difficultyId: input.difficultyId,
+        categoryId: input.categoryId ?? null,
+        instructorId: actor.userId,
+        estimatedHours: input.estimatedHours ?? 0,
+        isPublished: false,
+        isPremium: input.isPremium ?? false,
+        prerequisites: null,
+        learningObjectives: null,
+      });
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        throw new ConflictError(
+          'A course with this slug already exists. Choose a different slug.',
+        );
+      }
+      throw error;
+    }
+
+    crashAudit(this.deps.audit, actor, AUDIT_ACTIONS.CREATE_COURSE, 'course', courseId, {
+      title: input.title,
+      slug,
+    });
+
+    const created = await this.deps.repo.findCourseById(courseId);
+    if (!created) {
+      throw new NotFoundError('Course was created but could not be reloaded.');
+    }
+    return toCourseDto(created);
+  }
+
   async updateCourse(
     actor: CurriculumActor,
     input: Partial<{
@@ -228,6 +311,7 @@ export class AdminCurriculumService {
     moduleId: number,
     input: {
       title: string;
+      slug?: string | null;
       content?: string;
       contentType: ContentType;
       videoUrl: string | null;
@@ -239,15 +323,27 @@ export class AdminCurriculumService {
     const module = await this.requireModuleInCanonicalCourse(moduleId);
     await this.assertLessonOrderFree(moduleId, input.lessonOrder);
 
-    const lessonId = await this.deps.repo.createLesson({
-      moduleId,
-      title: input.title,
-      content: input.content ?? null,
-      contentType: input.contentType,
-      videoUrl: input.videoUrl,
-      videoDurationSeconds: input.videoDurationSeconds,
-      lessonOrder: input.lessonOrder,
-    });
+    const slug = input.slug?.trim() ? input.slug.trim() : slugifyLessonTitle(input.title);
+    let lessonId: number;
+    try {
+      lessonId = await this.deps.repo.createLesson({
+        moduleId,
+        title: input.title,
+        slug,
+        content: input.content ?? null,
+        contentType: input.contentType,
+        videoUrl: input.videoUrl,
+        videoDurationSeconds: input.videoDurationSeconds,
+        lessonOrder: input.lessonOrder,
+      });
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        throw new ConflictError(
+          'A lesson with this slug already exists. Choose a different slug.',
+        );
+      }
+      throw error;
+    }
     await this.applyLessonTags(lessonId, input.tagIds ?? []);
 
     crashAudit(this.deps.audit, actor, AUDIT_ACTIONS.CREATE_LESSON, 'lesson', lessonId, {
@@ -265,6 +361,7 @@ export class AdminCurriculumService {
     lessonId: number,
     input: Partial<{
       title: string;
+      slug: string | null;
       content: string | null;
       contentType: ContentType;
       videoUrl: string | null;
@@ -282,6 +379,7 @@ export class AdminCurriculumService {
 
     const patch: Record<string, unknown> = {};
     if (input.title !== undefined) patch.title = input.title;
+    if ('slug' in input) patch.slug = input.slug;
     if ('content' in input) patch.content = input.content;
     if (input.contentType !== undefined) patch.contentType = input.contentType;
     if ('videoUrl' in input) patch.videoUrl = input.videoUrl;
@@ -293,7 +391,16 @@ export class AdminCurriculumService {
     if (input.isPublished !== undefined) patch.isPublished = input.isPublished;
 
     if (Object.keys(patch).length > 0) {
-      await this.deps.repo.updateLesson(lessonId, patch);
+      try {
+        await this.deps.repo.updateLesson(lessonId, patch);
+      } catch (error) {
+        if (isDuplicateKeyError(error)) {
+          throw new ConflictError(
+            'A lesson with this slug already exists. Choose a different slug.',
+          );
+        }
+        throw error;
+      }
     }
     if (input.tagIds !== undefined) {
       await this.applyLessonTags(lessonId, input.tagIds);
@@ -427,6 +534,7 @@ export class AdminCurriculumService {
       lessonId: row.lessonId,
       moduleId: row.moduleId,
       title: row.title,
+      slug: row.slug,
       content: row.content,
       contentType: row.contentType,
       videoUrl: row.videoUrl,

@@ -3,6 +3,11 @@ import { auditLogs } from '../../../app/database/schema';
 
 export interface AuditEntryInput {
   adminUserId: number;
+  /**
+   * Denormalized actor email from the access token. Persisted so the trail
+   * stays readable after the account row is gone; null when not on hand.
+   */
+  actorEmail?: string | null;
   action: string;
   targetType: string | null;
   targetId: number | null;
@@ -20,6 +25,7 @@ export class AuditLogService {
   async record(input: AuditEntryInput): Promise<void> {
     await db.insert(auditLogs).values({
       adminUserId: input.adminUserId,
+      actorEmail: input.actorEmail ?? null,
       action: input.action,
       targetType: input.targetType,
       targetId: input.targetId,

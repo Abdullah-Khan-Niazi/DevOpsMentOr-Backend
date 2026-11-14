@@ -38,11 +38,13 @@ import type {
 import { classRepository } from '../repositories/class.repository';
 import { invitationRepository } from '../repositories/invitation.repository';
 import { orgRepository, orgScopeRepository } from '../repositories/org.repository';
+import { membershipRepository } from '../repositories/membership.repository';
 import { teamMemberRepository } from '../repositories/team-member.repository';
 
 export interface OrgServiceDeps {
   orgs: typeof orgRepository;
   scopes: typeof orgScopeRepository;
+  memberships: typeof membershipRepository;
   classes: typeof classRepository;
   members: typeof teamMemberRepository;
   invitations: typeof invitationRepository;
@@ -54,6 +56,7 @@ function defaultDeps(): OrgServiceDeps {
   return {
     orgs: orgRepository,
     scopes: orgScopeRepository,
+    memberships: membershipRepository,
     classes: classRepository,
     members: teamMemberRepository,
     invitations: invitationRepository,
@@ -109,24 +112,19 @@ export class OrgService {
     };
   }
 
-  /** Self-service organization creation. An account that already belongs to
-   * (or holds a role in) an organization cannot create a second one, because
-   * roles are global and the scope pointer is single-valued. */
+  /**
+   * Self-service organization creation. Multi-org aware: only users who
+   * already administer an organization are blocked; students/professors of
+   * another organization may found their own (per-org roles isolate access).
+   */
   async createMyOrg(actor: OrgActor, input: CreateOrgInput): Promise<OrgCreatedDto> {
-    const [scope, isAdmin, isProfessor, isStudent] = await Promise.all([
-      this.deps.scopes.getOrgId(actor.userId),
-      this.deps.orgs.hasRole(actor.userId, ROLES.ORG_ADMIN),
-      this.deps.orgs.hasRole(actor.userId, ROLES.PROFESSOR),
-      this.deps.orgs.hasRole(actor.userId, ROLES.ORG_STUDENT),
-    ]);
-    if (scope !== null) {
+    // Multi-org rule: anyone may create an organization EXCEPT a user who
+    // already administers one. Students/professors of another org can found
+    // their own; per-org membership roles keep the two contexts isolated.
+    const existingMembership = await this.deps.memberships.getActiveForUser(actor.userId);
+    if (existingMembership?.role === ROLES.ORG_ADMIN) {
       throw new ConflictError(
-        'ORG_SCOPE_CONFLICT: your account is already linked to an organization.',
-      );
-    }
-    if (isAdmin || isProfessor || isStudent) {
-      throw new ConflictError(
-        'ORG_SCOPE_CONFLICT: an organization-scoped role cannot create another organization.',
+        'You already administer an organization. Transfer or delete it before creating another.',
       );
     }
 
@@ -139,6 +137,62 @@ export class OrgService {
       throw err;
     }
     return org;
+  }
+
+  /** Every active organization membership for the signed-in user. */
+  async listMyMemberships(userId: number): Promise<
+    Array<{
+      organizationId: number;
+      organizationName: string;
+      organizationSlug: string;
+      role: 'org_admin' | 'professor' | 'org_student';
+      isPrimary: boolean;
+      joinedAt: string;
+    }>
+  > {
+    const memberships = await this.deps.memberships.listActiveForUser(userId);
+    return memberships.map((membership) => ({
+      organizationId: membership.organizationId,
+      organizationName: membership.organizationName,
+      organizationSlug: membership.organizationSlug,
+      role: membership.role,
+      isPrimary: membership.isPrimary,
+      joinedAt: membership.joinedAt.toISOString(),
+    }));
+  }
+
+  /**
+   * Switches the active organization. The membership must exist and be
+   * active; the legacy pointer is updated for compatibility. Roles in the JWT
+   * are global, but every org guard resolves the per-org membership role, so
+   * switching cannot leak privileges across tenants.
+   */
+  async switchOrg(
+    userId: number,
+    organizationId: number,
+  ): Promise<{
+    organizationId: number;
+    organizationName: string;
+    role: 'org_admin' | 'professor' | 'org_student';
+    switched: true;
+  }> {
+    const memberships = await this.deps.memberships.listActiveForUser(userId);
+    const target = memberships.find(
+      (membership) => membership.organizationId === organizationId,
+    );
+    if (!target) {
+      throw new ForbiddenError(
+        'You are not an active member of that organization.',
+      );
+    }
+    await this.deps.memberships.setPrimary(userId, organizationId);
+    await this.deps.scopes.setOrgId(userId, organizationId);
+    return {
+      organizationId: target.organizationId,
+      organizationName: target.organizationName,
+      role: target.role,
+      switched: true,
+    };
   }
 
   async listOrgsAdmin(page: number, pageSize: number, search: string | undefined): Promise<AdminOrgListDto> {
@@ -300,19 +354,19 @@ export class OrgService {
     if (!target) {
       throw new NotFoundError('Target user not found.');
     }
-    if (await this.deps.orgs.hasRole(userId, ROLES.ORG_ADMIN)) {
-      throw new ConflictError('User is already an organization admin.');
-    }
-    const currentScope = await this.deps.scopes.getOrgId(userId);
-    if (currentScope !== null && currentScope !== orgId) {
+    const existingMembership = await this.deps.memberships.getActiveForUser(userId);
+    if (existingMembership?.role === ROLES.ORG_ADMIN) {
+      if (existingMembership.organizationId === orgId) {
+        throw new ConflictError('User is already an organization admin of this organization.');
+      }
       throw new ConflictError(
-        'ORG_SCOPE_CONFLICT: the user is already linked to another organization.',
+        'This user already administers another organization and cannot administer two.',
       );
     }
 
     const roleId = await this.deps.orgs.findRoleId(ROLES.ORG_ADMIN);
     await this.deps.orgs.assignRole(userId, roleId);
-    await this.deps.scopes.setOrgId(userId, orgId);
+    await this.deps.scopes.setOrgIdWithRole(userId, orgId, ROLES.ORG_ADMIN);
 
     crashAudit(this.deps.audit, actor, AUDIT_ACTIONS.ASSIGN_ORG_ADMIN, 'organization', orgId, {
       userId,
@@ -612,16 +666,19 @@ export class OrgService {
 
     // Never move an existing org scope; roles are global and a scope move
     // would grant this invitation's admin role against another tenant.
-    const currentScope = await this.deps.scopes.getOrgId(userId);
-    if (currentScope !== null && currentScope !== invite.orgId) {
+    const existingMembership = await this.deps.memberships.getActiveForUser(userId);
+    if (
+      existingMembership?.role === ROLES.ORG_ADMIN &&
+      existingMembership.organizationId !== invite.orgId
+    ) {
       throw new ConflictError(
-        'ORG_SCOPE_CONFLICT: your account is already linked to another organization.',
+        'You already administer another organization and cannot administer two.',
       );
     }
 
     const roleId = await this.deps.orgs.findRoleId(ROLES.ORG_ADMIN);
     await this.deps.orgs.assignRole(userId, roleId);
-    await this.deps.scopes.setOrgId(userId, invite.orgId);
+    await this.deps.scopes.setOrgIdWithRole(userId, invite.orgId, ROLES.ORG_ADMIN);
     await redisClient.del(`org_admin_invite:${token}`);
 
     return this.getOrgAdminDetail(invite.orgId);

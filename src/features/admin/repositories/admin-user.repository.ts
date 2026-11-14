@@ -6,6 +6,7 @@ import {
   organizations,
   roles,
   teamMembers,
+  organizationMemberships,
   teams,
   userFollows,
   userProfiles,
@@ -65,6 +66,20 @@ export class AdminUserRepository implements IAdminUserRepository {
       const orgIdStr = String(filter.organizationId);
       conditions.push(
         or(
+          // Authoritative tenancy rows first.
+          inArray(
+            users.userId,
+            db
+              .select({ userId: organizationMemberships.userId })
+              .from(organizationMemberships)
+              .where(
+                and(
+                  eq(organizationMemberships.organizationId, filter.organizationId),
+                  eq(organizationMemberships.status, 'active'),
+                ),
+              ),
+          ),
+          // Legacy scope pointer for un-backfilled rows.
           inArray(
             users.userId,
             db

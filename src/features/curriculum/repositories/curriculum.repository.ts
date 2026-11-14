@@ -60,6 +60,7 @@ export interface LessonRow {
   lessonId: number;
   moduleId: number;
   title: string;
+  slug: string | null;
   content: string | null;
   contentType: ContentType;
   videoUrl: string | null;
@@ -88,6 +89,7 @@ export interface QuestionRow {
   quizId: number;
   questionText: string;
   questionType: QuestionType;
+  config: Record<string, unknown> | null;
   points: number;
   explanation: string | null;
   questionOrder: number;
@@ -112,6 +114,23 @@ export interface AnswerRow {
  */
 export class CurriculumRepository {
   /* ── Course ─────────────────────────────────────────────────────────── */
+
+  /** Published course catalog (multi-course support, chaos sprint). */
+  async listPublishedCourses(): Promise<CourseRow[]> {
+    const rows = await db
+      .select()
+      .from(academyCourses)
+      .where(eq(academyCourses.isPublished, true))
+      .orderBy(asc(academyCourses.courseId));
+    // Catalog rows carry no joined taxonomy/instructor labels; DTO mapping
+    // renders them as nulls rather than issuing N+1 lookups.
+    return rows.map((row) => ({
+      ...row,
+      difficultyName: null,
+      categoryName: null,
+      instructorName: null,
+    }));
+  }
 
   async getCanonicalCourse(): Promise<CourseRow | null> {
     const rows = await db
@@ -146,17 +165,82 @@ export class CurriculumRepository {
     return rows[0] ?? null;
   }
 
+  /** Difficulty taxonomy for admin pickers. */
+  async listDifficultyLevels(): Promise<Array<{ difficultyId: number; name: string }>> {
+    return db
+      .select({
+        difficultyId: difficultyLevels.difficultyId,
+        name: difficultyLevels.name,
+      })
+      .from(difficultyLevels)
+      .orderBy(asc(difficultyLevels.levelValue));
+  }
+
+  /** Category taxonomy for admin pickers. */
+  async listCategories(): Promise<Array<{ categoryId: number; name: string; slug: string }>> {
+    return db
+      .select({
+        categoryId: categories.categoryId,
+        name: categories.name,
+        slug: categories.slug,
+      })
+      .from(categories)
+      .orderBy(asc(categories.name));
+  }
+
+  /** Single course with joined taxonomy/instructor labels (admin editor). */
+  async findCourseById(courseId: number): Promise<CourseRow | null> {
+    const rows = await db
+      .select({
+        courseId: academyCourses.courseId,
+        title: academyCourses.title,
+        slug: academyCourses.slug,
+        description: academyCourses.description,
+        difficultyId: academyCourses.difficultyId,
+        difficultyName: difficultyLevels.name,
+        categoryId: academyCourses.categoryId,
+        categoryName: categories.name,
+        instructorId: academyCourses.instructorId,
+        instructorName: users.fullName,
+        coverImageUrl: academyCourses.coverImageUrl,
+        videoTrailerUrl: academyCourses.videoTrailerUrl,
+        estimatedHours: academyCourses.estimatedHours,
+        totalLessons: academyCourses.totalLessons,
+        totalQuizzes: academyCourses.totalQuizzes,
+        isPublished: academyCourses.isPublished,
+        prerequisites: academyCourses.prerequisites,
+        learningObjectives: academyCourses.learningObjectives,
+        createdAt: academyCourses.createdAt,
+        updatedAt: academyCourses.updatedAt,
+      })
+      .from(academyCourses)
+      .leftJoin(difficultyLevels, eq(difficultyLevels.difficultyId, academyCourses.difficultyId))
+      .leftJoin(categories, eq(categories.categoryId, academyCourses.categoryId))
+      .leftJoin(users, eq(users.userId, academyCourses.instructorId))
+      .where(eq(academyCourses.courseId, courseId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
   async createCourse(input: {
     title: string;
     slug: string;
     description: string | null;
     difficultyId: number;
+    categoryId?: number | null;
     instructorId: number;
     estimatedHours: number;
+    isPublished?: boolean;
+    isPremium?: boolean;
     prerequisites: string[] | null;
     learningObjectives: string[] | null;
   }): Promise<number> {
-    const inserted = await db.insert(academyCourses).values(input);
+    const inserted = await db.insert(academyCourses).values({
+      ...input,
+      categoryId: input.categoryId ?? null,
+      isPublished: input.isPublished ?? false,
+      isPremium: input.isPremium ?? false,
+    });
     const id = inserted[0]?.insertId;
     if (!id) {
       throw new Error('Failed to create the canonical course.');
@@ -355,13 +439,17 @@ export class CurriculumRepository {
   async createLesson(input: {
     moduleId: number;
     title: string;
+    slug?: string | null;
     content: string | null;
     contentType: ContentType;
     videoUrl: string | null;
     videoDurationSeconds: number | null;
     lessonOrder: number;
   }): Promise<number> {
-    const inserted = await db.insert(lessons).values(input);
+    const inserted = await db.insert(lessons).values({
+      ...input,
+      slug: input.slug ?? null,
+    });
     const id = inserted[0]?.insertId;
     if (!id) {
       throw new Error('Failed to create lesson.');
@@ -518,11 +606,15 @@ export class CurriculumRepository {
     quizId: number;
     questionText: string;
     questionType: QuestionType;
+    config?: Record<string, unknown> | null;
     points: number;
     explanation: string | null;
     questionOrder: number;
   }): Promise<number> {
-    const inserted = await db.insert(quizQuestions).values(input);
+    const inserted = await db.insert(quizQuestions).values({
+      ...input,
+      config: input.config ?? null,
+    });
     const id = inserted[0]?.insertId;
     if (!id) {
       throw new Error('Failed to create question.');

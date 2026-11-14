@@ -913,7 +913,7 @@ export class GamificationRepository {
   async replaceSeasonContent(
     seasonId: number,
     items: Array<{
-      contentType: 'lab' | 'machine' | 'challenge';
+      contentType: 'lab';
       contentId: number;
       releaseOrder: number;
       isReleased: boolean;

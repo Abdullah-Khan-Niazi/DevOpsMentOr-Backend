@@ -15,10 +15,24 @@ import { systemTelemetryService } from '../shared/services/system-telemetry.serv
 export function createApp() {
   const app = express();
 
+  // Credentialed CORS (`credentials: true`) makes a wildcard origin unsafe:
+  // browsers would accept authenticated cross-site requests from any site.
+  if (env.CORS_ORIGIN.trim() === '*') {
+    throw new Error(
+      "CORS_ORIGIN='*' is not allowed while credentialed CORS is enabled. Configure an explicit origin list.",
+    );
+  }
+
+  // Behind a reverse proxy, req.ip must resolve the real client address so
+  // rate limiting keys on the caller, not the load balancer.
+  if (env.TRUST_PROXY > 0) {
+    app.set('trust proxy', env.TRUST_PROXY);
+  }
+
   app.use(helmet());
   app.use(
     cors({
-      origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((v) => v.trim()),
+      origin: env.CORS_ORIGIN.split(',').map((v) => v.trim()),
       credentials: true,
     }),
   );

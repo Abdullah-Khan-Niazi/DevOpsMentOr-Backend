@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { UserStatus } from '../../../shared/constants';
+import { USER_WRITABLE_SETTING_KEYS, UserStatus } from '../../../shared/constants';
 import { paginationQuerySchema } from '../../../shared/validators';
 
 export const createUserSchema = z.object({
@@ -69,13 +69,31 @@ export const skillIdParamSchema = z.object({
   skillId: z.coerce.number().int().positive(),
 });
 
-/** USR-09: settings UPSERT payload. Values are JSON; keys are namespaced. */
+/**
+ * USR-09: settings UPSERT payload.
+ *
+ * Only explicitly user-writable preference keys are accepted. Server-owned
+ * keys (`org_id`, workspace pointers, plans, roles) are rejected with an
+ * actionable message instead of being written and silently ignored — a
+ * client-writable `org_id` would let a user repoint their own organization
+ * scope and cross tenant boundaries.
+ */
 export const updateMySettingsSchema = z
   .object({
     settings: z
       .array(
         z.object({
-          key: z.string().min(1).max(100).regex(/^[a-z][a-z0-9_.]{0,99}$/),
+          key: z
+            .string()
+            .min(1)
+            .max(100)
+            .refine(
+              (key) => (USER_WRITABLE_SETTING_KEYS as readonly string[]).includes(key),
+              {
+                message:
+                  'This setting is managed by the platform and cannot be changed here. Only theme, timezone and notify_email can be updated.',
+              },
+            ),
           value: z.unknown(),
         }),
       )

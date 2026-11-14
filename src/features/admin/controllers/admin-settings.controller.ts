@@ -12,6 +12,7 @@ export class AdminSettingsController {
   async update(req: Request, res: Response): Promise<Response> {
     const actor: AdminActor = {
       userId: Number(req.user?.sub),
+      email: req.user?.email ?? null,
       ipAddress: req.ip ?? null,
       userAgent: req.get('user-agent') ?? null,
     };

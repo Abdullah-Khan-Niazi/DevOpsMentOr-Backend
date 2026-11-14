@@ -158,8 +158,16 @@ export const oAuthCompleteSchema = z
 
 export const verify2faSchema = z
   .object({
+    // The pending secret is generated and persisted server-side; clients must
+    // never propose the secret they are enrolled with.
     code: otpSchema,
-    secret: z.string().min(16).optional(),
+  })
+  .strip();
+
+export const disable2faSchema = z
+  .object({
+    code: otpSchema,
+    password: z.string().min(1, 'Password is required.').max(72),
   })
   .strip();
 

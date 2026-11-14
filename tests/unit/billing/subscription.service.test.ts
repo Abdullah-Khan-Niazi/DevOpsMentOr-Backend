@@ -89,7 +89,7 @@ const baseInput = {
   currency: 'usd',
 };
 
-describe('F9 SubscriptionService (BIL-02/03/04)', () => {
+describe('SubscriptionService (BIL-02/03/04)', () => {
   it('rejects a second active subscription with 409 SUBSCRIPTION_ALREADY_ACTIVE', async () => {
     const deps = makeDeps();
     (deps.repo.findActiveByUser as ReturnType<typeof vi.fn>).mockResolvedValue(ACTIVE_ROW);
