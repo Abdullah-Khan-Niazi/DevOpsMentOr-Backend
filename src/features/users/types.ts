@@ -18,6 +18,8 @@ export interface UserEntity {
   isVerified: boolean;
   twoFactorEnabled: boolean;
   twoFactorSecret: string | null;
+  /** Server-generated secret awaiting TOTP confirmation; cleared on promote. */
+  twoFactorPendingSecret: string | null;
   banReason: string | null;
   lastLoginAt: Date | null;
   lastLoginIp: string | null;

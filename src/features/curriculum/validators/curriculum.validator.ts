@@ -4,7 +4,29 @@ import { z } from 'zod';
  * assignment) and coerces numeric route params. */
 
 const contentTypes = ['text', 'video', 'interactive', 'lab'] as const;
-export const questionTypes = ['multiple_choice', 'true_false', 'fill_blank', 'multiple_select'] as const;
+export const questionTypes = [
+  'multiple_choice',
+  'true_false',
+  'fill_blank',
+  'multiple_select',
+  'bucket_sort',
+  'ordering',
+] as const;
+
+/**
+ * Rich question payloads (chaos sprint).
+ * - bucket_sort: `{ buckets: string[] }` — each correct answer's text names its bucket.
+ * - ordering:    `{ items: string[] }` is derived from `answer_order`; config is
+ *                optional and may carry hints/instructions.
+ * Correctness always lives in `quiz_answers.is_correct` / `answer_order`;
+ * `config` carries presentation metadata only and is validated here.
+ */
+export const richQuestionConfigSchema = z
+  .object({
+    instructions: z.string().max(2000).optional(),
+    buckets: z.array(z.string().min(1).max(120)).min(2).max(8).optional(),
+  })
+  .strip();
 
 /** Route params */
 export const moduleIdParamSchema = z
@@ -39,6 +61,28 @@ export const adminModuleListQuerySchema = z
       .enum(['true', 'false'])
       .transform((value) => value === 'true')
       .optional(),
+  })
+  .strip();
+
+/** POST /api/admin/curriculum/courses — create a DRAFT course. */
+export const createCourseSchema = z
+  .object({
+    title: z.string().min(3).max(255),
+    slug: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .regex(
+        /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
+        'Slug must use lowercase letters, numbers and single hyphens.',
+      )
+      .max(255)
+      .optional(),
+    description: z.string().max(2000).optional().nullable(),
+    difficultyId: z.coerce.number().int().positive(),
+    categoryId: z.coerce.number().int().positive().optional().nullable(),
+    estimatedHours: z.coerce.number().int().min(0).max(10000).optional(),
+    isPremium: z.boolean().optional(),
   })
   .strip();
 
@@ -98,9 +142,22 @@ export const reorderModulesSchema = z
   .strip();
 
 /** F4-API-15: POST /api/admin/curriculum/modules/:moduleId/lessons */
+const lessonSlugSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(
+    /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
+    'Slug must use lowercase letters, numbers and single hyphens.',
+  )
+  .max(160)
+  .optional()
+  .nullable();
+
 export const createLessonSchema = z
   .object({
     title: z.string().min(3).max(255),
+    slug: lessonSlugSchema,
     content: z.string().max(200000).optional(),
     contentType: z.enum(contentTypes).default('text'),
     videoUrl: z.string().url().max(255).optional().nullable(),
@@ -114,6 +171,7 @@ export const createLessonSchema = z
 export const updateLessonSchema = z
   .object({
     title: z.string().min(3).max(255).optional(),
+    slug: lessonSlugSchema,
     content: z.string().max(200000).optional().nullable(),
     contentType: z.enum(contentTypes).optional(),
     videoUrl: z.string().url().max(255).optional().nullable(),
@@ -176,6 +234,7 @@ export const createQuestionSchema = z
   .object({
     questionText: z.string().min(3).max(2000),
     questionType: z.enum(questionTypes).default('multiple_choice'),
+    config: richQuestionConfigSchema.optional().nullable(),
     points: z.coerce.number().int().min(1).max(100).default(10),
     explanation: z.string().max(2000).optional().nullable(),
     questionOrder: z.coerce.number().int().min(1),
@@ -188,6 +247,7 @@ export const updateQuestionSchema = z
   .object({
     questionText: z.string().min(3).max(2000).optional(),
     questionType: z.enum(questionTypes).optional(),
+    config: richQuestionConfigSchema.optional().nullable(),
     points: z.coerce.number().int().min(1).max(100).optional(),
     explanation: z.string().max(2000).optional().nullable(),
     questionOrder: z.coerce.number().int().min(1).optional(),

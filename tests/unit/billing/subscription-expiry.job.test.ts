@@ -36,7 +36,7 @@ function makeDeps(overrides: Partial<Mocked<SubscriptionExpiryJobDeps>> = {}): M
   };
 }
 
-describe('F9 SubscriptionExpiryJob (AC-14)', () => {
+describe('SubscriptionExpiryJob (AC-14)', () => {
   it('deactivates expired non-renewing subscriptions and notifies the user', async () => {
     const deps = makeDeps();
     const job = new SubscriptionExpiryJob(deps);

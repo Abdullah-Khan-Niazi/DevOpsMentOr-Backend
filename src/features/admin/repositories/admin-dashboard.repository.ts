@@ -458,7 +458,8 @@ export class AdminDashboardRepository implements IAdminDashboardRepository {
         createdAt: auditLogs.createdAt,
       })
       .from(auditLogs)
-      .innerJoin(users, eq(users.userId, auditLogs.adminUserId))
+      // Left join: audit rows must survive actor deletion (SET NULL).
+      .leftJoin(users, eq(users.userId, auditLogs.adminUserId))
       .orderBy(desc(auditLogs.createdAt))
       .limit(limit);
 

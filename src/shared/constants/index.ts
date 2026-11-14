@@ -114,7 +114,12 @@ export const AUDIT_ACTIONS = {
   REVOKE_CLASS_JOIN_CODE: 'revoke_class_join_code',
   DELETE_CLASS: 'delete_class',
   DELETE_ORG: 'delete_org',
+  // ─── chaos sprint — cohort course assignments ────────────────────────────
+  CREATE_CLASS_ASSIGNMENT: 'create_class_assignment',
+  UPDATE_CLASS_ASSIGNMENT: 'update_class_assignment',
+  DELETE_CLASS_ASSIGNMENT: 'delete_class_assignment',
   // ─── F4 curriculum admin mutations ──────────────────────────────────────
+  CREATE_COURSE: 'create_course',
   UPDATE_COURSE: 'update_course',
   CREATE_MODULE: 'create_module',
   UPDATE_MODULE: 'update_module',
@@ -179,6 +184,16 @@ export const ORG_CONSTANTS = {
   IMPORT_ROW_LIMIT: 200,
   IMPORT_FILE_SIZE_LIMIT: 1024 * 1024,
 } as const;
+
+/**
+ * Settings a user may write through `PATCH /users/me/settings` (USR-09).
+ *
+ * This is an explicit allowlist, not a denylist: keys such as `org_id` are
+ * server-owned authorization state, and accepting them from the client would
+ * let a user repoint their own organization scope. Any server-managed key is
+ * rejected with a clear validation error instead of being silently ignored.
+ */
+export const USER_WRITABLE_SETTING_KEYS = ['theme', 'timezone', 'notify_email'] as const;
 
 export const ROLES = {
   PLATFORM_ADMIN: 'platform_admin',

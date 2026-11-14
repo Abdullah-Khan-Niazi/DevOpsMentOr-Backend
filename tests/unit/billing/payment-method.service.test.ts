@@ -49,7 +49,7 @@ const addInput = {
   paypalEmail: null,
 };
 
-describe('F9 PaymentMethodService (BIL-06..09, invariants 9-10)', () => {
+describe('PaymentMethodService (BIL-06..09, invariants 9-10)', () => {
   it('promotes the first payment method to default automatically', async () => {
     const deps = makeDeps();
     (deps.repo.listPaymentMethods as ReturnType<typeof vi.fn>).mockResolvedValue([]);

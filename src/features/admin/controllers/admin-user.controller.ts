@@ -6,6 +6,8 @@ import { adminUserService } from '../services/admin-user.service';
 function actorFrom(req: Request): AdminActor {
   return {
     userId: Number(req.user?.sub),
+    // The JWT already carries the email claim; no extra lookup is needed.
+    email: req.user?.email ?? null,
     ipAddress: req.ip ?? null,
     userAgent: req.get('user-agent') ?? null,
   };

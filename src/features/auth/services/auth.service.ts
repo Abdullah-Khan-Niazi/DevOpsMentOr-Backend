@@ -24,6 +24,7 @@ import type {
   AdminLoginDto,
   AuthResponseDto,
   AuthTokensDto,
+  Disable2faDto,
   Enable2faDto,
   ForgotPasswordDto,
   LoginDto,
@@ -71,6 +72,8 @@ import type { JwtPayload } from '../../../shared/types';
 import type { UserWithRoles } from '../../users/types';
 
 const OTP_CODE_LENGTH = 6;
+/** Wrong-code submissions tolerated for a single OTP before it is invalidated. */
+const OTP_MAX_ATTEMPTS = 5;
 
 export class AuthService {
   constructor(
@@ -556,6 +559,12 @@ export class AuthService {
     return { message: 'Password reset successfully. You can now sign in.' };
   }
 
+  /**
+   * Starts (or restarts) a 2FA enrollment. The secret is generated and
+   * persisted server-side as `two_factor_pending_secret`; it is only promoted
+   * to `two_factor_secret` after a valid TOTP is confirmed in `verify2fa`.
+   * Clients never supply the secret they will be enrolled with.
+   */
   async enable2fa(userId: number, _input: Enable2faDto): Promise<TwoFactorSetupDto> {
     const user = await this.usersRepo.findById(userId);
 
@@ -570,7 +579,14 @@ export class AuthService {
     const secret = totpService.generateSecret();
     const otpAuthUri = totpService.buildOtpAuthUri(secret, user.email);
 
-    // Verify-then-store is done in verify2fa; here we only hand out the secret.
+    await db
+      .update(users)
+      .set({
+        twoFactorPendingSecret: totpService.encryptSecret(secret),
+        updatedAt: new Date(),
+      })
+      .where(eq(users.userId, userId));
+
     return { secret, otpAuthUri };
   }
 
@@ -581,31 +597,59 @@ export class AuthService {
       throw new NotFoundError('User not found.');
     }
 
-    const secret =
-      input.secret ?? (user.twoFactorSecret ? totpService.decryptSecret(user.twoFactorSecret) : null);
+    // Already enrolled: confirm against the stored secret only. There is no
+    // client-supplied secret path in either branch.
+    if (user.twoFactorEnabled) {
+      const enrolledSecret = user.twoFactorSecret
+        ? totpService.decryptSecret(user.twoFactorSecret)
+        : null;
 
-    if (!secret) {
+      if (!enrolledSecret) {
+        throw new BadRequestError('Two-factor authentication is already enabled.');
+      }
+
+      const valid = await totpService.validateCode(enrolledSecret, input.code);
+      if (!valid) {
+        throw new BadRequestError('Invalid code. Please try again.');
+      }
+
+      return { message: 'Two-factor authentication enabled.' };
+    }
+
+    const pendingSecret = user.twoFactorPendingSecret
+      ? totpService.decryptSecret(user.twoFactorPendingSecret)
+      : null;
+
+    if (!pendingSecret) {
       throw new BadRequestError('Enable two-factor authentication first.');
     }
 
-    const valid = await totpService.validateCode(secret, input.code);
+    const valid = await totpService.validateCode(pendingSecret, input.code);
     if (!valid) {
       throw new BadRequestError('Invalid code. Please try again.');
     }
 
-    await db
-      .update(users)
-      .set({
-        twoFactorEnabled: true,
-        twoFactorSecret: totpService.encryptSecret(secret),
-        updatedAt: new Date(),
-      })
-      .where(eq(users.userId, userId));
+    const encrypted = totpService.encryptSecret(pendingSecret);
+    await db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({
+          twoFactorEnabled: true,
+          twoFactorSecret: encrypted,
+          twoFactorPendingSecret: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.userId, userId));
+    });
 
     return { message: 'Two-factor authentication enabled.' };
   }
 
-  async disable2fa(userId: number, input: Verify2faDto): Promise<MessageResponseDto> {
+  /**
+   * Step-up required: disabling 2FA needs both a valid TOTP and the account
+   * password, so a stolen access token alone cannot remove the second factor.
+   */
+  async disable2fa(userId: number, input: Disable2faDto): Promise<MessageResponseDto> {
     const user = await this.usersRepo.findById(userId);
 
     if (!user) {
@@ -616,15 +660,31 @@ export class AuthService {
       throw new BadRequestError('Two-factor authentication is not enabled.');
     }
 
+    if (!user.passwordHash || user.passwordHash.length === 0) {
+      throw new BadRequestError(
+        'This account has no password set. Set a password before disabling two-factor authentication.',
+      );
+    }
+
+    const passwordValid = await passwordService.compare(input.password, user.passwordHash);
+    if (!passwordValid) {
+      throw new UnauthorizedError('Password is incorrect.');
+    }
+
     const secret = totpService.decryptSecret(user.twoFactorSecret);
     const valid = await totpService.validateCode(secret, input.code);
     if (!valid) {
-      throw new BadRequestError('Invalid code. Please try again.');
+      throw new BadRequestError('Invalid two-factor authentication code.');
     }
 
     await db
       .update(users)
-      .set({ twoFactorEnabled: false, twoFactorSecret: null, updatedAt: new Date() })
+      .set({
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+        twoFactorPendingSecret: null,
+        updatedAt: new Date(),
+      })
       .where(eq(users.userId, userId));
 
     return { message: 'Two-factor authentication disabled.' };
@@ -1076,20 +1136,34 @@ export class AuthService {
   ): Promise<void> {
     const record = await this.otps.findActiveCode(userId, type, code);
 
-    if (!record) {
-      const stale = await this.otps.findByUserIdAndType(userId, type, code);
-
-      if (stale) {
-        if (stale.isUsed) {
-          throw new BadRequestError('OTP_ALREADY_USED');
-        }
-        throw new BadRequestError('OTP_EXPIRED');
-      }
-
-      throw new BadRequestError('Invalid code.');
+    if (record) {
+      // Single use: a correct code is consumed and resets nothing.
+      await this.otps.markUsed(record.otpId);
+      return;
     }
 
-    await this.otps.markUsed(record.otpId);
+    const stale = await this.otps.findByUserIdAndType(userId, type, code);
+
+    if (stale) {
+      if (stale.isUsed) {
+        throw new BadRequestError('OTP_ALREADY_USED');
+      }
+      throw new BadRequestError('OTP_EXPIRED');
+    }
+
+    // Wrong code: count the failure against the newest active OTP for this
+    // user/type and invalidate it once the cap is reached. Messages stay
+    // non-enumerating: they never reveal whether the address has an account.
+    const active = await this.otps.findLatestActive(userId, type);
+    if (active) {
+      const attempts = await this.otps.incrementAttempts(active.otpId);
+      if (attempts >= OTP_MAX_ATTEMPTS) {
+        await this.otps.markUsed(active.otpId);
+        throw new BadRequestError('Too many incorrect codes. Request a new code.');
+      }
+    }
+
+    throw new BadRequestError('Invalid code.');
   }
 
   private async recordLoginFailure(

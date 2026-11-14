@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { ROLES } from '../../../shared/constants';
 import { ForbiddenError, NotFoundError } from '../../../shared/errors';
 import { classRepository } from '../repositories/class.repository';
+import { membershipRepository } from '../repositories/membership.repository';
 import { orgRepository, orgScopeRepository } from '../repositories/org.repository';
 import { teamMemberRepository } from '../repositories/team-member.repository';
 
@@ -10,18 +11,32 @@ function isPlatformAdmin(req: Request): boolean {
   return req.user?.roles?.includes(ROLES.PLATFORM_ADMIN) ?? false;
 }
 
-function hasOrgRole(req: Request): boolean {
+/**
+ * Per-organization role resolution. `organization_memberships` is the
+ * authority; when a user has no membership row yet (pre-backfill), the global
+ * JWT role is used as a transitional fallback. This is what makes "admin in
+ * org A, student in org B" safe: the org role — not the global role union —
+ * decides staff access inside a given organization.
+ */
+async function resolveOrgRole(
+  req: Request,
+  userId: number,
+): Promise<'org_admin' | 'professor' | 'org_student' | null> {
+  const membershipRole = await membershipRepository.getActiveRole(userId);
+  if (membershipRole) {
+    return membershipRole;
+  }
   const roles = new Set(req.user?.roles ?? []);
-  return (
-    roles.has(ROLES.ORG_ADMIN) ||
-    roles.has(ROLES.PROFESSOR) ||
-    roles.has(ROLES.ORG_STUDENT)
-  );
-}
-
-function hasStaffRole(req: Request): boolean {
-  const roles = new Set(req.user?.roles ?? []);
-  return roles.has(ROLES.ORG_ADMIN) || roles.has(ROLES.PROFESSOR);
+  if (roles.has(ROLES.ORG_ADMIN)) {
+    return 'org_admin';
+  }
+  if (roles.has(ROLES.PROFESSOR)) {
+    return 'professor';
+  }
+  if (roles.has(ROLES.ORG_STUDENT)) {
+    return 'org_student';
+  }
+  return null;
 }
 
 /**
@@ -47,7 +62,8 @@ export function requireOrgMembership() {
         next(new ForbiddenError('Your organization no longer exists.'));
         return;
       }
-      if (!hasOrgRole(req) && !isPlatformAdmin(req)) {
+      const orgRole = await resolveOrgRole(req, userId);
+      if (!orgRole && !isPlatformAdmin(req)) {
         next(new ForbiddenError('You do not hold an organization-scoped role.'));
         return;
       }
@@ -73,7 +89,9 @@ export function requireOrgStaff() {
         next(new ForbiddenError('Your organization no longer exists.'));
         return;
       }
-      if (!hasStaffRole(req) && !isPlatformAdmin(req)) {
+      const orgRole = await resolveOrgRole(req, userId);
+      const isStaff = orgRole === 'org_admin' || orgRole === 'professor';
+      if (!isStaff && !isPlatformAdmin(req)) {
         next(new ForbiddenError('You do not have staff access to this organization.'));
         return;
       }
@@ -140,9 +158,10 @@ async function isClassMember(req: Request, userId: number, classId: number): Pro
   }
   const scopedOrgId = await orgScopeRepository.getOrgId(userId);
 
-  // Only an org admin scoped to the class's org gets broad org visibility.
+  // Only an org admin for THIS organization gets broad org visibility.
+  const orgRole = await resolveOrgRole(req, userId);
   if (
-    req.user?.roles?.includes(ROLES.ORG_ADMIN) &&
+    orgRole === 'org_admin' &&
     scopedOrgId !== null &&
     cls.organizationId !== null &&
     scopedOrgId === cls.organizationId
@@ -173,7 +192,8 @@ async function isClassStaff(req: Request, userId: number, classId: number): Prom
   if (await teamMemberRepository.isProfessorOf(classId, userId)) {
     return true;
   }
-  if (!req.user?.roles?.includes(ROLES.ORG_ADMIN)) {
+  const orgRole = await resolveOrgRole(req, userId);
+  if (orgRole !== 'org_admin') {
     return false;
   }
   const scopedOrgId = await orgScopeRepository.getOrgId(userId);

@@ -36,11 +36,51 @@ export class QuizService {
   constructor(private readonly deps: QuizServiceDeps = defaultDeps()) {}
 
   /** §05 invariant 6: exactly-one / at-least-one correct answer per type. */
-  assertAnswerInvariant(questionType: QuestionType, answers: AnswerInput[]): void {
+  assertAnswerInvariant(
+    questionType: QuestionType,
+    answers: AnswerInput[],
+    config: Record<string, unknown> | null = null,
+  ): void {
     if (answers.length === 0) {
       throw new ValidationError('A question must have at least one answer.');
     }
     const correctCount = answers.filter((answer) => answer.isCorrect).length;
+
+    if (questionType === 'ordering') {
+      if (answers.length < 2) {
+        throw new ValidationError('Ordering questions require at least two items.');
+      }
+      const orders = new Set(answers.map((answer) => answer.answerOrder));
+      if (orders.size !== answers.length) {
+        throw new ValidationError(
+          'Ordering questions require a unique position for every item.',
+        );
+      }
+      return;
+    }
+
+    if (questionType === 'bucket_sort') {
+      if (answers.length < 2) {
+        throw new ValidationError('Bucket questions require at least two cards.');
+      }
+      const buckets = Array.isArray(config?.buckets) ? config.buckets : [];
+      if (buckets.length < 2) {
+        throw new ValidationError(
+          'Bucket questions require at least two buckets in the question config.',
+        );
+      }
+      const bucketCount = buckets.length;
+      const hasInvalidBucket = answers.some(
+        (answer) => answer.answerOrder < 1 || answer.answerOrder > bucketCount,
+      );
+      if (hasInvalidBucket) {
+        throw new ValidationError(
+          `Each card must target a bucket between 1 and ${bucketCount}.`,
+        );
+      }
+      return;
+    }
+
     if (questionType === 'multiple_choice' || questionType === 'true_false') {
       if (correctCount !== 1) {
         throw new ValidationError(
@@ -141,6 +181,7 @@ export class QuizService {
     input: {
       questionText: string;
       questionType: QuestionType;
+      config?: Record<string, unknown> | null;
       points: number;
       explanation: string | null;
       questionOrder: number;
@@ -151,12 +192,13 @@ export class QuizService {
     if (!quiz) {
       throw new NotFoundError('Quiz not found.');
     }
-    this.assertAnswerInvariant(input.questionType, input.answers);
+    this.assertAnswerInvariant(input.questionType, input.answers, input.config ?? null);
 
     const questionId = await this.deps.repo.createQuestion({
       quizId,
       questionText: input.questionText,
       questionType: input.questionType,
+      config: input.config ?? null,
       points: input.points,
       explanation: input.explanation,
       questionOrder: input.questionOrder,
@@ -178,6 +220,7 @@ export class QuizService {
     input: Partial<{
       questionText: string;
       questionType: QuestionType;
+      config: Record<string, unknown> | null;
       points: number;
       explanation: string | null;
       questionOrder: number;
@@ -192,13 +235,29 @@ export class QuizService {
 
     const nextType = input.questionType ?? existing.questionType;
     const nextAnswers = input.answers;
+    const nextConfig =
+      input.config !== undefined ? input.config : (existing.config ?? null);
     if (nextAnswers) {
-      this.assertAnswerInvariant(nextType, nextAnswers);
+      this.assertAnswerInvariant(nextType, nextAnswers, nextConfig);
+    } else if (input.config !== undefined) {
+      // Config-only change: re-validate against the stored answers so a
+      // bucket shrink cannot leave cards pointing at a missing bucket.
+      const existingAnswers = await this.deps.repo.listAnswersByQuestion(questionId);
+      this.assertAnswerInvariant(
+        nextType,
+        existingAnswers.map((answer) => ({
+          answerText: answer.answerText,
+          isCorrect: answer.isCorrect,
+          answerOrder: answer.answerOrder,
+        })),
+        nextConfig,
+      );
     }
 
     const patch: Record<string, unknown> = {};
     if (input.questionText !== undefined) patch.questionText = input.questionText;
     if (input.questionType !== undefined) patch.questionType = input.questionType;
+    if (input.config !== undefined) patch.config = input.config;
     if (input.points !== undefined) patch.points = input.points;
     if ('explanation' in input) patch.explanation = input.explanation;
     if (input.questionOrder !== undefined) patch.questionOrder = input.questionOrder;
@@ -263,10 +322,15 @@ export class QuizService {
 
   /** Returns a question DTO where answer `is_correct` flags are removed. */
   stripCorrectAnswers(question: QuestionDto): LearnerQuestionDto {
-    return {
-      ...question,
-      answers: question.answers.map(({ isCorrect: _isCorrect, ...rest }: AnswerDto) => rest),
-    };
+    const answers = question.answers.map(
+      ({ isCorrect: _isCorrect, ...rest }: AnswerDto) => rest,
+    );
+    if (question.questionType === 'ordering' || question.questionType === 'bucket_sort') {
+      // For rich types `answerOrder` encodes the correct position/bucket, so
+      // the learner payload is shuffled — correctness always stays server-side.
+      return { ...question, answers: shuffleAnswers(answers) };
+    }
+    return { ...question, answers };
   }
 
   private async getQuestionAdminDetail(questionId: number): Promise<QuestionDto> {
@@ -280,6 +344,7 @@ export class QuizService {
       quizId: row.quizId,
       questionText: row.questionText,
       questionType: row.questionType,
+      config: row.config ?? null,
       points: row.points,
       explanation: row.explanation,
       questionOrder: row.questionOrder,
@@ -293,6 +358,16 @@ export class QuizService {
       })),
     };
   }
+}
+
+/** Fisher–Yates shuffle used only for learner-facing rich-question options. */
+function shuffleAnswers<T>(items: T[]): T[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
 }
 
 function crashAudit(

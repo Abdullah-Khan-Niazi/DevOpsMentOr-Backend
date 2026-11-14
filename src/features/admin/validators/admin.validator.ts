@@ -20,7 +20,9 @@ export const inviteUserSchema = z
     emails: z.array(z.string().email()).min(1).max(100),
     type: z.enum(['individual_learner', 'organization']),
     organizationId: z.number().int().positive().optional(),
-    role: z.enum(['individual_learner', 'org_admin', 'professor', 'org_student', 'platform_admin']).optional(),
+    // platform_admin is intentionally NOT accepted here: platform
+    // administrator invitations use the dedicated admin-invite flow.
+    role: z.enum(['individual_learner', 'org_admin', 'professor', 'org_student']).optional(),
   })
   .strip();
 

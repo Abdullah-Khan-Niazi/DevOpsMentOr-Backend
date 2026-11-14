@@ -23,6 +23,16 @@ function defaultDeps(): QuizAttemptServiceDeps {
   return { repo: progressRepository };
 }
 
+/** Learner-facing shuffle for rich question options (solution never included). */
+function shuffled<T>(items: T[]): T[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
 /**
  * F5 quiz attempt engine: validates submitted question IDs against the quiz,
  * scores every question type (§05 rules 6-7), evaluates pass/fail against
@@ -153,18 +163,25 @@ export class QuizAttemptService {
     if (rows.length > 0) {
       await activityLogService.recordEvent(userId, 'QUIZ_STARTED', { quizId });
     }
-    return rows.map((row) => ({
-      questionId: row.questionId,
-      questionText: row.questionText,
-      questionType: row.questionType as QuizQuestionDto['questionType'],
-      points: row.points,
-      questionOrder: row.questionOrder,
-      answers: row.answers.map((answer) => ({
+    return rows.map((row) => {
+      const isRichType = row.questionType === 'ordering' || row.questionType === 'bucket_sort';
+      const answers = row.answers.map((answer, index) => ({
         answerId: answer.answerId,
         answerText: answer.answerText,
-        answerOrder: answer.answerOrder,
-      })),
-    }));
+        // Rich types store the solution in answerOrder, so the learner sees a
+        // neutral (shuffled) order instead.
+        answerOrder: isRichType ? index + 1 : answer.answerOrder,
+      }));
+      return {
+        questionId: row.questionId,
+        questionText: row.questionText,
+        questionType: row.questionType as QuizQuestionDto['questionType'],
+        config: (row.config as Record<string, unknown> | null) ?? null,
+        points: row.points,
+        questionOrder: row.questionOrder,
+        answers: isRichType ? shuffled(answers) : answers,
+      };
+    });
   }
 
   /* ── §05 rules 6-7: question type scoring (pure, unit-testable) ─────── */
@@ -193,7 +210,12 @@ export class QuizAttemptService {
 
     for (const question of questions) {
       const submitted = answers.filter((answer) => answer.questionId === question.questionId);
-      const correctAnswers = question.answers.filter((answer) => answer.isCorrect);
+      // ordering/bucket_sort encode the solution in `answerOrder`, so every
+      // row participates; other types use only the flagged correct answers.
+      const correctAnswers =
+        question.questionType === 'ordering' || question.questionType === 'bucket_sort'
+          ? question.answers
+          : question.answers.filter((answer) => answer.isCorrect);
       const isCorrect = this.evaluateQuestion(question, submitted, correctAnswers);
       const earned = isCorrect ? question.points : 0;
       pointsEarned += earned;
@@ -230,6 +252,47 @@ export class QuizAttemptService {
         return correctAnswers.some(
           (answer) => answer.answerText.trim().toLowerCase() === submittedText.toLowerCase(),
         );
+      }
+      case 'ordering': {
+        // Submission order matters: entries arrive in the learner's chosen order.
+        const correct = [...correctAnswers]
+          .sort((a, b) => a.answerOrder - b.answerOrder)
+          .map((answer) => answer.answerId);
+        const chosen = submitted
+          .map((answer) => answer.answerId)
+          .filter((id): id is number => typeof id === 'number');
+        return (
+          chosen.length === correct.length &&
+          chosen.every((answerId, index) => answerId === correct[index])
+        );
+      }
+      case 'bucket_sort': {
+        // Each submitted entry is { answerId: card, answerText: chosen bucket label }.
+        const buckets = Array.isArray(question.config?.buckets)
+          ? (question.config?.buckets as unknown[]).map((bucket) => String(bucket).toLowerCase())
+          : [];
+        if (buckets.length === 0) {
+          return false;
+        }
+        const correctBucketByCard = new Map(
+          correctAnswers.map((answer) => [
+            answer.answerId,
+            buckets[answer.answerOrder - 1] ?? null,
+          ]),
+        );
+        const cards = submitted.filter(
+          (answer) => typeof answer.answerId === 'number',
+        );
+        if (cards.length !== correctAnswers.length) {
+          return false;
+        }
+        return cards.every((card) => {
+          const expected = correctBucketByCard.get(card.answerId as number);
+          if (!expected) {
+            return false;
+          }
+          return (card.answerText ?? '').trim().toLowerCase() === expected;
+        });
       }
       default: {
         const selectedId = submitted[0]?.answerId ?? null;

@@ -56,8 +56,15 @@ export const cacheKeys = {
   rateLimit: (scope: string, identifier: string): string => `rate:${scope}:${identifier}`,
   /** `identity:{userId}` → JSON SessionIdentity; TTL = IDENTITY_CACHE_TTL_SECONDS. */
   identity: (userId: number): string => `identity:${userId}`,
-  /** `admin_invite:{token}` → JSON { email, fullName, expiresAt }. */
+  /** `admin_invite:{token}` → JSON { purpose: 'platform_admin', email, fullName, expiresAt }. */
   adminInvite: (token: string): string => `admin_invite:${token}`,
+  /**
+   * `user_invite:{token}` → JSON { email, type, organizationId, role, expiresAt }.
+   * Member (student/professor/org-admin) invitations live in their own
+   * namespace so they can never be redeemed through the platform-admin
+   * accept endpoint.
+   */
+  userInvite: (token: string): string => `user_invite:${token}`,
   /** `lp_stats` → JSON LearnerPoolStatsDto; TTL = 60s (F2 forward hook). */
   learnerPoolStats: (): string => 'lp_stats',
   /** `admin_kpi` → JSON AdminDashboardDto; TTL = 5min (ADM-06). */

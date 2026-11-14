@@ -129,14 +129,14 @@ export interface LearnerPoolStatsDto {
 }
 
 export type SkillCategory =
-  | 'offensive'
-  | 'defensive'
-  | 'forensics'
-  | 'networking'
-  | 'web'
-  | 'mobile'
   | 'cloud'
-  | 'ai_ml'
+  | 'containers'
+  | 'automation'
+  | 'observability'
+  | 'scripting'
+  | 'networking'
+  | 'security'
+  | 'platform'
   | 'governance';
 
 export type ProficiencyLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';

@@ -32,8 +32,15 @@ const envSchema = z.object({
 
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  /** Number of trusted reverse-proxy hops (0 disables `trust proxy`). */
+  TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(0),
 
   OTP_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  /**
+   * Optional HMAC key for hashing OTPs at rest. When absent (or empty) the key
+   * is derived from JWT_ACCESS_SECRET. Never logged.
+   */
+  OTP_HASH_SECRET: z.string().optional(),
   INVITE_TTL_HOURS: z.coerce.number().int().positive().default(48),
   IDENTITY_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(60),
 
@@ -62,6 +69,8 @@ const envSchema = z.object({
   // Empty by default: the adapters fail with a user-safe error until the
   // deployment supplies a real endpoint/key (F6 §12 BLOCKING conditions).
   CONTAINER_ORCHESTRATION_API_URL: z.string().default(''),
+  /** Optional bearer key sent to the container orchestration API when set. */
+  CONTAINER_ORCHESTRATION_API_KEY: z.string().default(''),
   LLM_API_URL: z.string().default(''),
   LLM_API_KEY: z.string().default(''),
   AI_MENTOR_MODEL: z.string().default(''),

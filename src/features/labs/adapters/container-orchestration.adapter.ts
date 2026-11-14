@@ -39,11 +39,21 @@ export interface ContainerHttpProbeResult {
  * credentials or command output are ever logged.
  */
 export class ContainerOrchestrationAdapter {
+  /**
+   * Optional shared bearer key for the orchestration API. Present only when
+   * `CONTAINER_ORCHESTRATION_API_KEY` is configured; the value is never logged.
+   */
+  private authHeaders(): Record<string, string> {
+    return env.CONTAINER_ORCHESTRATION_API_KEY
+      ? { Authorization: `Bearer ${env.CONTAINER_ORCHESTRATION_API_KEY}` }
+      : {};
+  }
+
   async createInstance(input: ContainerInstanceInput): Promise<ContainerInstanceEndpoint> {
     const endpoint = this.endpointOrThrow();
     const response = await fetch(`${endpoint}/instances`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(30_000),
     });
@@ -68,6 +78,7 @@ export class ContainerOrchestrationAdapter {
     const endpoint = this.endpointOrThrow();
     const response = await fetch(`${endpoint}/instances/${instanceId}/stop`, {
       method: 'POST',
+      headers: this.authHeaders(),
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {
@@ -83,6 +94,7 @@ export class ContainerOrchestrationAdapter {
     const endpoint = this.endpointOrThrow();
     const response = await fetch(`${endpoint}/instances/${instanceId}`, {
       method: 'DELETE',
+      headers: this.authHeaders(),
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok && response.status !== 404) {
@@ -99,7 +111,7 @@ export class ContainerOrchestrationAdapter {
     const endpoint = this.endpointOrThrow();
     const response = await fetch(`${endpoint}/instances/${instanceId}/exec`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ command }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -118,7 +130,7 @@ export class ContainerOrchestrationAdapter {
     const endpoint = this.endpointOrThrow();
     const response = await fetch(`${endpoint}/instances/${instanceId}/http`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ path }),
       signal: AbortSignal.timeout(30_000),
     });

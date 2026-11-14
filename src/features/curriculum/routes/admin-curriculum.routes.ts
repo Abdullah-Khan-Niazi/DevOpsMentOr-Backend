@@ -15,6 +15,7 @@ import {
   quizIdParamSchema,
   reorderLessonsSchema,
   reorderModulesSchema,
+  createCourseSchema,
   updateCourseSchema,
   updateLessonSchema,
   updateModuleSchema,
@@ -51,6 +52,27 @@ adminCurriculumRoutes.patch(
   authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
   validateRequest(updateCourseSchema, 'body'),
   asyncHandler((req, res) => adminCurriculumController.updateCourse(req, res)),
+);
+
+/** Reference data for the course-create drawer. */
+adminCurriculumRoutes.get(
+  '/curriculum/difficulties',
+  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
+  asyncHandler((req, res) => adminCurriculumController.listDifficulties(req, res)),
+);
+
+adminCurriculumRoutes.get(
+  '/curriculum/categories',
+  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
+  asyncHandler((req, res) => adminCurriculumController.listCategories(req, res)),
+);
+
+/** Multi-course: create a DRAFT course from the master control panel. */
+adminCurriculumRoutes.post(
+  '/curriculum/courses',
+  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  validateRequest(createCourseSchema, 'body'),
+  asyncHandler((req, res) => adminCurriculumController.createCourse(req, res)),
 );
 
 /** F4-API-09 */

@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { HTTP_STATUS, PERMISSIONS, type UserStatus } from '../../../shared/constants';
 import { sendSuccess } from '../../../shared/utils';
+import { adminUserService } from '../../admin/services/admin-user.service';
 import { userService } from '../services/user.service';
 import type { CreateUserDto, UpdateUserDto } from '../dto/user.dto';
 import type { PaginationQueryDto } from '../../../shared/validators';
@@ -37,7 +38,17 @@ export class UserController {
   }
 
   async deleteUser(req: Request, res: Response): Promise<Response> {
-    await userService.deleteUser(Number(req.params.id));
+    // Route through the soft-delete path: hard delete would orphan audit
+    // history, and the account's live sessions must be revoked.
+    await adminUserService.deleteUser(
+      {
+        userId: Number(req.user?.sub),
+        email: req.user?.email ?? null,
+        ipAddress: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      },
+      Number(req.params.id),
+    );
     return sendSuccess(res, null, 'User deleted successfully.');
   }
 

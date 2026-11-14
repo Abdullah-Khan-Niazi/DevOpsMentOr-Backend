@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { PERMISSIONS } from '../../../shared/constants';
 import {
   authenticate,
+  authorizeAnyPermissions,
   authorizePermissions,
   optionalAuthenticate,
   validateRequest,
@@ -208,9 +209,16 @@ userRoutes.delete(
  *     tags: [Users]
  *     summary: Lightweight user card (F2 forward hook for F3/F6)
  */
+// Staff-only: the snapshot exposes email + moderation state, so it must not
+// be readable by any authenticated learner (account enumeration / PII).
 userRoutes.get(
   '/:userId/snapshot',
   authenticate,
+  authorizeAnyPermissions(
+    PERMISSIONS.USERS_READ,
+    PERMISSIONS.ORG_MANAGE,
+    PERMISSIONS.CLASS_STUDENTS_READ,
+  ),
   validateRequest(userIdParamSchema, 'params'),
   asyncHandler(async (req, res) => {
     const snapshot = await userService.getSnapshot(Number(req.params.userId));

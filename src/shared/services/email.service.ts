@@ -29,6 +29,8 @@ export class EmailService {
     if (env.GOOGLE_MAIL_REFRESH_TOKEN && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
       this.transporter = nodemailer.createTransport({
         service: 'gmail',
+        requireTLS: true,
+        tls: { minVersion: 'TLSv1.2' },
         auth: {
           type: 'OAuth2',
           user: env.GMAIL_USER || env.SMTP_USER,
@@ -40,11 +42,14 @@ export class EmailService {
       return this.transporter;
     }
 
-    // Standard SMTP transport
+    // Standard SMTP transport. TLS is mandatory and never negotiates below
+    // TLS 1.2, even when the server advertises opportunistic STARTTLS only.
     this.transporter = nodemailer.createTransport({
       host: env.SMTP_HOST,
       port: env.SMTP_PORT,
       secure: env.SMTP_PORT === 465,
+      requireTLS: true,
+      tls: { minVersion: 'TLSv1.2' },
       auth: env.SMTP_USER
         ? { user: env.SMTP_USER, pass: env.SMTP_PASS }
         : undefined,
