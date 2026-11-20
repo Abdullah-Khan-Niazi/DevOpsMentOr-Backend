@@ -1,5 +1,6 @@
 import { and, count, desc, eq, gte, gt, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../../app/database';
+import { systemTelemetryService } from '../../../shared/services/system-telemetry.service';
 import {
   activityLogs,
   certificates,
@@ -398,6 +399,10 @@ export class AnalyticsRepository implements IAnalyticsRepository {
       if (r.status) counts[r.status] = Number(r.count);
     }
 
+    const consumption = await systemTelemetryService.measureLabContainersConsumption(
+      counts.running ?? 0,
+    );
+
     return {
       totalInstances: total[0]?.value ?? 0,
       activeInstances: counts.running ?? 0,
@@ -406,6 +411,10 @@ export class AnalyticsRepository implements IAnalyticsRepository {
       terminatedInstances: counts.terminated ?? 0,
       totalRamGb: Number(resources[0]?.totalRamGb ?? 0),
       totalCpuCores: Number(resources[0]?.totalCpuCores ?? 0),
+      consumedRamMb: consumption.consumedRamMb,
+      consumedRamGb: consumption.consumedRamGb,
+      consumedCpuCores: consumption.consumedCpuCores,
+      consumedCpuPercent: consumption.consumedCpuPercent,
       avgDurationMinutes: Math.round(Number(duration[0]?.avgDuration ?? 0)),
     };
   }

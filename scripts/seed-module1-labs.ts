@@ -11,6 +11,7 @@ import {
   lessons,
   modules,
   permissions,
+  pool,
   proLabs,
   pwnboxInstances,
   rolePermissions,
@@ -38,95 +39,110 @@ interface LabSeedItem {
 
 const ALL_MODULES = [
   {
-    "moduleOrder": 1,
-    "title": "Module 1: Operating System & Linux Basics",
-    "description": "Foundational Linux systems engineering: kernel & process lifecycle, FHS storage layout, CLI file operations, package management & Vim, users/groups/permissions, pipes & Bash scripting, and networking/SSH security.",
-    "estimatedMinutes": 315
+    moduleOrder: 1,
+    title: 'OS & Linux Basics',
+    description:
+      'Foundational Linux systems engineering: kernel & process lifecycle, FHS storage layout, CLI file operations, package management & Vim, users/groups/permissions, pipes & Bash scripting, and networking/SSH security.',
+    estimatedMinutes: 315,
   },
   {
-    "moduleOrder": 2,
-    "title": "Module 2: Computer Networking & DNS",
-    "description": "TCP/IP routing, subnetting, HTTP/TLS internals, DNS resolution, and troubleshooting.",
-    "estimatedMinutes": 180
+    moduleOrder: 2,
+    title: 'Version Control with Git',
+    description:
+      'Distributed version control with Git: repository internals, branching strategies, merge conflict resolution, rebasing, and remote workflows.',
+    estimatedMinutes: 180,
   },
   {
-    "moduleOrder": 3,
-    "title": "Module 3: Git & Distributed Version Control",
-    "description": "Branching workflows, rebasing, merge conflict resolution, and Git hooks.",
-    "estimatedMinutes": 180
+    moduleOrder: 3,
+    title: 'Build and Package Manager Tools',
+    description:
+      'Software build automation, dependency management across Maven, Gradle, npm, and artifact packaging.',
+    estimatedMinutes: 180,
   },
   {
-    "moduleOrder": 4,
-    "title": "Module 4: Build Tools & Artifact Repositories",
-    "description": "Build lifecycles, package managers, semantic versioning, and Sonatype Nexus storage.",
-    "estimatedMinutes": 180
+    moduleOrder: 4,
+    title: 'Cloud & IaaS Basics',
+    description:
+      'Cloud virtual machines, VPC networking, perimeter firewalls, SSH hardening, and reverse proxy deployment.',
+    estimatedMinutes: 180,
   },
   {
-    "moduleOrder": 5,
-    "title": "Module 5: Cloud Infrastructure & IaaS Basics",
-    "description": "Virtual machines, cloud storage, VPC networking, and cloud security groups.",
-    "estimatedMinutes": 180
+    moduleOrder: 5,
+    title: 'Artifact Repository Manager with Nexus',
+    description:
+      'Binary lifecycle management, hosted/proxy/group repositories, RBAC, and artifact publishing with Sonatype Nexus.',
+    estimatedMinutes: 180,
   },
   {
-    "moduleOrder": 6,
-    "title": "Module 6: Containers with Docker",
-    "description": "Master ephemeral container lifecycles, port bridging and environment injection, container diagnostics, immutable Dockerfile authoring, stateful Docker volumes, multi-tier Compose orchestration, private registries, and Nexus deployment.",
-    "estimatedMinutes": 360
+    moduleOrder: 6,
+    title: 'Containers with Docker',
+    description:
+      'Master ephemeral container lifecycles, port bridging and environment injection, container diagnostics, immutable Dockerfile authoring, stateful Docker volumes, multi-tier Compose orchestration, private registries, and Nexus deployment.',
+    estimatedMinutes: 360,
   },
   {
-    "moduleOrder": 7,
-    "title": "Module 7: CI/CD Pipelines with Jenkins",
-    "description": "Declarative Jenkinsfiles, automated test gates, build agents, and artifact promotion.",
-    "estimatedMinutes": 240
+    moduleOrder: 7,
+    title: 'Build Automation - CI/CD with Jenkins',
+    description:
+      'Declarative Jenkinsfile pipelines, webhook triggers, build agents, credential vaults, and automated release gates.',
+    estimatedMinutes: 240,
   },
   {
-    "moduleOrder": 8,
-    "title": "Module 8: AWS Cloud Services & Architecture",
-    "description": "EC2, IAM, S3, RDS, VPC, CloudWatch, and resilient multi-AZ architectures.",
-    "estimatedMinutes": 300
+    moduleOrder: 8,
+    title: 'AWS Service',
+    description:
+      'Core AWS cloud architecture: IAM least-privilege policies, VPC subnets, EC2 compute provisioning, S3, and AWS CLI automation.',
+    estimatedMinutes: 300,
   },
   {
-    "moduleOrder": 9,
-    "title": "Module 9: Core Kubernetes Container Orchestration",
-    "description": "Initialize Kubernetes control planes, build Deployments and ClusterIP/NodePort Services, decouple state with ConfigMaps/Secrets/PVCs, configure Ingress routing and RBAC, harden health probes, package Helm charts, and orchestrate multi-environment releases via Helmfile.",
-    "estimatedMinutes": 480
+    moduleOrder: 9,
+    title: 'Container Orchestration with Kubernetes',
+    description:
+      'Initialize Kubernetes control planes, build Deployments and ClusterIP/NodePort Services, decouple state with ConfigMaps/Secrets/PVCs, configure Ingress routing and RBAC, harden health probes, package Helm charts, and orchestrate multi-environment releases via Helmfile.',
+    estimatedMinutes: 480,
   },
   {
-    "moduleOrder": 10,
-    "title": "Module 10: Managed Kubernetes (Amazon EKS)",
-    "description": "Production EKS provisioning, IAM IRSA, cluster autoscaling, and AWS Load Balancer Controller.",
-    "estimatedMinutes": 240
+    moduleOrder: 10,
+    title: 'Kubernetes on AWS - EKS',
+    description:
+      'Managed Amazon EKS cluster provisioning, IAM Roles for Service Accounts (IRSA), autoscaling, and ingress controllers.',
+    estimatedMinutes: 240,
   },
   {
-    "moduleOrder": 11,
-    "title": "Module 11: Infrastructure as Code with Terraform",
-    "description": "Declarative HCL modules, remote state backends, workspaces, and drift remediation.",
-    "estimatedMinutes": 240
+    moduleOrder: 11,
+    title: 'Infrastructure as Code with Terraform',
+    description:
+      'Declarative HCL infrastructure provisioning, remote state backends, reusable modules, and state drift remediation.',
+    estimatedMinutes: 240,
   },
   {
-    "moduleOrder": 12,
-    "title": "Module 12: Programming with Python for DevOps",
-    "description": "Automate DevOps engineering workflows with strict typing and environment secrets, control-flow validation gates, collections and comprehensions, resilient exception handling, OS/subprocess automation, JSON serialization, modular libraries, OOP infrastructure modeling, decorators, REST API integration, and Flask webhook microservices.",
-    "estimatedMinutes": 480
+    moduleOrder: 12,
+    title: 'Programming with Python',
+    description:
+      'Automate DevOps engineering workflows with strict typing and environment secrets, control-flow validation gates, collections and comprehensions, resilient exception handling, OS/subprocess automation, JSON serialization, modular libraries, OOP infrastructure modeling, decorators, REST API integration, and Flask webhook microservices.',
+    estimatedMinutes: 480,
   },
   {
-    "moduleOrder": 13,
-    "title": "Module 13: Configuration Management with Ansible",
-    "description": "Agentless SSH inventories, idempotent playbooks, roles, and Ansible Vault.",
-    "estimatedMinutes": 240
+    moduleOrder: 13,
+    title: 'Automation with Python',
+    description:
+      'Cloud and infrastructure automation using Python SDKs (Boto3), scheduled remediation scripts, and event-driven workflows.',
+    estimatedMinutes: 240,
   },
   {
-    "moduleOrder": 14,
-    "title": "Module 14: Observability with Prometheus & Grafana",
-    "description": "Metrics scraping, PromQL alerting rules, dashboards, and log aggregation.",
-    "estimatedMinutes": 240
+    moduleOrder: 14,
+    title: 'Configuration Management with Ansible',
+    description:
+      'Agentless SSH inventories, idempotent YAML playbooks, reusable roles, and Ansible Vault secrets management.',
+    estimatedMinutes: 240,
   },
   {
-    "moduleOrder": 15,
-    "title": "Module 15: GitOps with ArgoCD & DevSecOps",
-    "description": "Continuous reconciliation with ArgoCD, supply-chain scanning, and policy-as-code.",
-    "estimatedMinutes": 240
-  }
+    moduleOrder: 15,
+    title: 'Monitoring with Prometheus',
+    description:
+      'Time-series metrics collection, PromQL queries, alerting rules, exporters, and observability dashboards.',
+    estimatedMinutes: 240,
+  },
 ];
 
 const ALL_LABS: LabSeedItem[] = [
@@ -692,32 +708,11 @@ const ALL_LABS: LabSeedItem[] = [
   }
 ];
 
-const TRACK_DEFINITIONS = [
-  {
-    "moduleNumber": 1,
-    "trackName": "Module 1: Operating System & Linux Basics",
-    "slug": "module-1-os-linux-basics",
-    "description": "Complete all 7 hands-on Linux engineering labs covering process management, FHS, CLI operations, APT & Vim, permissions, shell scripting, and SSH security."
-  },
-  {
-    "moduleNumber": 6,
-    "trackName": "Module 6: Containers with Docker",
-    "slug": "module-6-containers-with-docker",
-    "description": "Complete all 8 Docker engineering labs spanning ephemeral lifecycles, port bridging, telemetry, Dockerfiles, persistent volumes, Docker Compose, private registries, and Nexus deployment."
-  },
-  {
-    "moduleNumber": 9,
-    "trackName": "Module 9: Core Kubernetes Container Orchestration",
-    "slug": "module-9-core-kubernetes",
-    "description": "Complete all 8 Kubernetes labs covering control plane mechanics, Deployments & Services, Secrets & PVCs, Namespaces & Ingress, RBAC security, production probes, Helm charts, and Helmfile orchestration."
-  },
-  {
-    "moduleNumber": 12,
-    "trackName": "Module 12: Programming with Python for DevOps",
-    "slug": "module-12-python-programming",
-    "description": "Complete all 12 Python automation labs from runtime types & control flow through subprocess orchestration, OOP servers, decorators, REST API clients, and Flask webhook microservices."
-  }
-];
+const CANONICAL_TRACK = {
+  trackName: 'End-to-End DevOps Course',
+  slug: 'devops-engineering-track',
+  description: 'Complete 15-module End-to-End DevOps course with hands-on labs.',
+};
 
 async function ensureLearnerLabPermissions(): Promise<void> {
   const learnerRole = await db.query.roles.findFirst({
@@ -892,138 +887,158 @@ async function seedAllModulesAndLabs(): Promise<void> {
   }
   console.log(`Seeded all ${ALL_LABS.length} labs across Modules 1, 6, 9, and 12 (lab_id 1..35).`);
 
-  const course = await db.query.academyCourses.findFirst({
-    orderBy: (row, { asc }) => [asc(row.courseId)],
-  });
+  // Consolidate curriculum to 1 Track, 1 Course, 15 Modules (1..15), and 35 uploaded Labs (1..35)
+  const conn = await pool.getConnection();
+  try {
+    await conn.query('SET FOREIGN_KEY_CHECKS = 0');
 
-  if (course) {
-    const moduleMap = new Map<number, number>();
-    for (const modDef of ALL_MODULES) {
-      let modRow = await db.query.modules.findFirst({
-        where: and(eq(modules.courseId, course.courseId), eq(modules.moduleOrder, modDef.moduleOrder)),
-      });
-      if (!modRow) {
-        const inserted = await db.insert(modules).values({
-          courseId: course.courseId,
-          title: modDef.title,
-          description: modDef.description,
-          moduleOrder: modDef.moduleOrder,
-          estimatedMinutes: modDef.estimatedMinutes,
+    // Preserve team class assignments under course_id = 1 without violating unique keys
+    await conn.query(
+      `DELETE ca FROM class_assignments ca
+       INNER JOIN class_assignments existing
+         ON existing.team_id = ca.team_id AND existing.course_id = 1
+       WHERE ca.course_id > 1`,
+    );
+    await conn.query('UPDATE class_assignments SET course_id = 1 WHERE course_id > 1');
+
+    // Purge placeholder knowledge check quizzes and attempts
+    await conn.query('DELETE FROM user_quiz_answers');
+    await conn.query('DELETE FROM quiz_attempts');
+    await conn.query('DELETE FROM quiz_answers');
+    await conn.query('DELETE FROM quiz_questions');
+    await conn.query('DELETE FROM quizzes');
+
+    // Purge extra placeholder courses, modules, and lessons
+    await conn.query('DELETE FROM lessons');
+    await conn.query('DELETE FROM modules');
+    await conn.query('DELETE FROM academy_courses WHERE course_id > 1');
+
+    // Purge extra tracks & track content links
+    await conn.query('DELETE FROM track_content');
+    await conn.query(`DELETE FROM season_content WHERE content_type = 'track' AND content_id > 1`);
+    await conn.query('DELETE FROM tracks WHERE track_id > 1');
+
+    const firstCourse = await db.query.academyCourses.findFirst({
+      where: eq(academyCourses.courseId, 1),
+    });
+
+    if (firstCourse) {
+      await db
+        .update(academyCourses)
+        .set({
+          title: 'End-to-End DevOps Course',
+          slug: 'end-to-end-devops-course',
+          description:
+            'Complete 15-module End-to-End DevOps engineering curriculum with hands-on sandbox labs.',
+          estimatedHours: 66,
+          totalLessons: ALL_LABS.length,
+          totalQuizzes: 0,
           isPublished: true,
-        });
-        moduleMap.set(modDef.moduleOrder, inserted[0].insertId);
-      } else {
-        await db
-          .update(modules)
-          .set({
-            title: modDef.title,
-            description: modDef.description,
-            estimatedMinutes: modDef.estimatedMinutes,
-            isPublished: true,
-          })
-          .where(eq(modules.moduleId, modRow.moduleId));
-        moduleMap.set(modDef.moduleOrder, modRow.moduleId);
-      }
+          isPremium: false,
+        })
+        .where(eq(academyCourses.courseId, 1));
+    } else {
+      await db.insert(academyCourses).values({
+        courseId: 1,
+        title: 'End-to-End DevOps Course',
+        slug: 'end-to-end-devops-course',
+        description:
+          'Complete 15-module End-to-End DevOps engineering curriculum with hands-on sandbox labs.',
+        difficultyId: defaultDiffId,
+        categoryId,
+        instructorId: 1,
+        estimatedHours: 66,
+        totalLessons: ALL_LABS.length,
+        totalQuizzes: 0,
+        isPublished: true,
+        isPremium: false,
+      });
+    }
+
+    for (const modDef of ALL_MODULES) {
+      await db.insert(modules).values({
+        moduleId: modDef.moduleOrder,
+        courseId: 1,
+        title: modDef.title,
+        description: modDef.description,
+        moduleOrder: modDef.moduleOrder,
+        estimatedMinutes: modDef.estimatedMinutes,
+        isPublished: true,
+      });
     }
 
     for (const item of ALL_LABS) {
-      const moduleId = moduleMap.get(item.moduleNumber);
-      if (!moduleId) continue;
-
-      const existingLesson = await db.query.lessons.findFirst({
-        where: and(eq(lessons.moduleId, moduleId), eq(lessons.lessonOrder, item.lessonOrder)),
+      await db.insert(lessons).values({
+        lessonId: item.labId,
+        moduleId: item.moduleNumber,
+        title: item.labName,
+        slug: item.slug,
+        content: item.description,
+        contentType: 'lab',
+        lessonOrder: item.lessonOrder,
+        isPublished: true,
       });
-
-      if (existingLesson) {
-        await db
-          .update(lessons)
-          .set({
-            title: `${item.labName} (${item.slug})`,
-            slug: item.slug,
-            content: item.description,
-            contentType: 'lab',
-            isPublished: true,
-          })
-          .where(eq(lessons.lessonId, existingLesson.lessonId));
-      } else {
-        await db.insert(lessons).values({
-          moduleId,
-          title: `${item.labName} (${item.slug})`,
-          slug: item.slug,
-          content: item.description,
-          contentType: 'lab',
-          lessonOrder: item.lessonOrder,
-          isPublished: true,
-        });
-      }
     }
 
-    const allLessons = await db
-      .select()
-      .from(lessons)
-      .where(eq(lessons.isPublished, true));
-    await db
-      .update(academyCourses)
-      .set({ totalLessons: allLessons.length, isPublished: true })
-      .where(eq(academyCourses.courseId, course.courseId));
-
-    console.log(`Seeded all 15 modules and ${ALL_LABS.length} hands-on lab lessons under course "${course.title}".`);
-  }
-
-  // Seed Tracks for active modules
-  for (const tdef of TRACK_DEFINITIONS) {
-    const modLabs = ALL_LABS.filter((l) => l.moduleNumber === tdef.moduleNumber);
-    const existingTrack = await db.query.tracks.findFirst({
-      where: eq(tracks.slug, tdef.slug),
+    const firstTrack = await db.query.tracks.findFirst({
+      where: eq(tracks.trackId, 1),
     });
 
-    let trackId: number;
-    if (existingTrack) {
-      trackId = existingTrack.trackId;
+    if (firstTrack) {
       await db
         .update(tracks)
         .set({
-          trackName: tdef.trackName,
-          description: tdef.description,
-          totalLabs: modLabs.length,
+          trackName: CANONICAL_TRACK.trackName,
+          slug: CANONICAL_TRACK.slug,
+          description: CANONICAL_TRACK.description,
+          difficultyId: defaultDiffId,
+          categoryId,
+          totalLabs: ALL_LABS.length,
           isActive: true,
           isPremium: false,
         })
-        .where(eq(tracks.trackId, trackId));
+        .where(eq(tracks.trackId, 1));
     } else {
-      const inserted = await db.insert(tracks).values({
-        trackName: tdef.trackName,
-        slug: tdef.slug,
-        description: tdef.description,
+      await db.insert(tracks).values({
+        trackId: 1,
+        trackName: CANONICAL_TRACK.trackName,
+        slug: CANONICAL_TRACK.slug,
+        description: CANONICAL_TRACK.description,
         difficultyId: defaultDiffId,
         categoryId,
-        totalLabs: modLabs.length,
+        totalLabs: ALL_LABS.length,
         isActive: true,
         isPremium: false,
       });
-      trackId = inserted[0].insertId;
     }
 
-    await db.delete(trackContent).where(eq(trackContent.trackId, trackId));
-    for (let idx = 0; idx < modLabs.length; idx++) {
-      await db.insert(trackContent).values({
-        trackId,
-        contentType: 'lab',
-        contentId: modLabs[idx].labId,
-        displayOrder: idx + 1,
-        required: true,
-      });
-    }
-    console.log(`Seeded track "${tdef.trackName}" with ${modLabs.length} labs.`);
+    await db.insert(trackContent).values({
+      trackId: 1,
+      contentType: 'course',
+      contentId: 1,
+      displayOrder: 1,
+      required: true,
+    });
+
+    console.log(
+      `Consolidated curriculum to 1 Track ("${CANONICAL_TRACK.trackName}"), 1 Course ("End-to-End DevOps Course"), 15 Modules (1..15), and ${ALL_LABS.length} Labs (empty placeholders preserved).`,
+    );
+  } finally {
+    await conn.query('SET FOREIGN_KEY_CHECKS = 1');
+    conn.release();
   }
 }
 
 async function main(): Promise<void> {
   await ensureLearnerLabPermissions();
   await seedVpnPool();
-  await resetStaleInstancesAndCompletions();
+  // Skip terminating currently running pwnbox_instances so active lab sessions stay live
+  await db
+    .update(pwnboxInstances)
+    .set({ status: 'terminated', terminatedAt: new Date() })
+    .where(inArray(pwnboxInstances.status, ['pending', 'stopped']));
   await seedAllModulesAndLabs();
-  console.log('All 15 modules and 35 hands-on labs database seeding complete!');
+  console.log('Consolidated 15-module End-to-End DevOps Course database seeding complete!');
 }
 
 main()
