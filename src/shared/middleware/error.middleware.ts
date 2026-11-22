@@ -26,6 +26,10 @@ export function errorMiddleware(
     if (!err.isOperational) {
       logger.error({ err }, 'Non-operational application error');
     }
+    const retryAfterSeconds = readRetryAfterSeconds(err.errors);
+    if (retryAfterSeconds !== null) {
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+    }
     return sendFailure(res, err.message, err.statusCode, err.errors);
   }
 
@@ -35,4 +39,17 @@ export function errorMiddleware(
     'An unexpected error occurred.',
     HTTP_STATUS.INTERNAL_SERVER_ERROR,
   );
+}
+
+/**
+ * 429 / cooldown errors carry `{ code, retryAfterSeconds }` as their first
+ * detail; mirror it into the standard `Retry-After` header (whole seconds,
+ * never negative) so clients and proxies can back off without parsing the body.
+ */
+function readRetryAfterSeconds(errors: unknown[]): number | null {
+  const first = errors[0];
+  if (typeof first !== 'object' || first === null) return null;
+  const value = (first as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.ceil(value));
 }

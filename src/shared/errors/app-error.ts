@@ -27,14 +27,14 @@ export class BadRequestError extends AppError {
 }
 
 export class UnauthorizedError extends AppError {
-  constructor(message = 'Unauthorized.') {
-    super(message, HTTP_STATUS.UNAUTHORIZED);
+  constructor(message = 'Unauthorized.', errors: unknown[] = []) {
+    super(message, HTTP_STATUS.UNAUTHORIZED, errors);
   }
 }
 
 export class ForbiddenError extends AppError {
-  constructor(message = 'Forbidden.') {
-    super(message, HTTP_STATUS.FORBIDDEN);
+  constructor(message = 'Forbidden.', errors: unknown[] = []) {
+    super(message, HTTP_STATUS.FORBIDDEN, errors);
   }
 }
 
@@ -45,8 +45,8 @@ export class PaymentRequiredError extends AppError {
 }
 
 export class NotFoundError extends AppError {
-  constructor(message = 'Resource not found.') {
-    super(message, HTTP_STATUS.NOT_FOUND);
+  constructor(message = 'Resource not found.', errors: unknown[] = []) {
+    super(message, HTTP_STATUS.NOT_FOUND, errors);
   }
 }
 
