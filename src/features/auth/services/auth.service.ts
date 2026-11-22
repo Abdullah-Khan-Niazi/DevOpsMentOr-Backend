@@ -3,6 +3,7 @@ import { randomBytes, randomInt } from 'crypto';
 import {
   BadRequestError,
   ConflictError,
+  ERROR_CODES,
   ForbiddenError,
   NotFoundError,
   UnauthorizedError,
@@ -23,20 +24,18 @@ import { logger } from '../../../shared/logger';
 import type {
   AdminLoginDto,
   AuthResponseDto,
-  AuthTokensDto,
   Disable2faDto,
   Enable2faDto,
   ForgotPasswordDto,
   LoginDto,
   LoginHistoryEntryDto,
-  LogoutDto,
+  IssuedAuthTokensDto,
   MeResponseDto,
   MessageResponseDto,
   OAuthCompleteDto,
   OAuthLoginDto,
   OAuthLoginResultDto,
   OAuthSignupDto,
-  RefreshTokenDto,
   RegisterDto,
   ResetPasswordDto,
   ResendVerificationDto,
@@ -74,6 +73,8 @@ import type { UserWithRoles } from '../../users/types';
 const OTP_CODE_LENGTH = 6;
 /** Wrong-code submissions tolerated for a single OTP before it is invalidated. */
 const OTP_MAX_ATTEMPTS = 5;
+/** Fallback access-token lifetime when JWT_ACCESS_EXPIRES_IN is not a `<n><s|m|h|d>` value. */
+const DEFAULT_ACCESS_TTL_SECONDS = 900;
 
 export class AuthService {
   constructor(
@@ -410,21 +411,35 @@ export class AuthService {
     };
   }
 
-  async refreshToken(input: RefreshTokenDto): Promise<AuthTokensDto> {
-    const payload = tokenService.verifyRefreshToken(input.refreshToken);
-
-    if (await this.isJtiBlacklisted(payload)) {
-      throw new UnauthorizedError('Invalid or expired refresh token.');
+  /**
+   * Rotates the refresh token of a session. A presented refresh JWT that was
+   * already rotated (blacklisted) or is no longer the session's current token
+   * is a reuse: the whole session is revoked.
+   */
+  async refreshToken(refreshJwt: string | null): Promise<IssuedAuthTokensDto> {
+    if (!refreshJwt) {
+      throw this.invalidRefreshError();
     }
 
-    const session = await this.sessionsRepo.findActiveByRefreshToken(payload.jti ?? '');
+    let payload: JwtPayload;
+    try {
+      payload = tokenService.verifyRefreshToken(refreshJwt);
+    } catch {
+      throw this.invalidRefreshError();
+    }
+    if (!payload.jti) {
+      throw this.invalidRefreshError();
+    }
+
+    const blacklisted = await this.isJtiBlacklisted(payload);
+    const session = blacklisted ? null : await this.sessionsRepo.findActiveByRefreshToken(payload.jti);
     if (!session) {
-      throw new UnauthorizedError('Invalid or expired refresh token.');
+      throw await this.rejectStaleRefreshToken(payload.jti, blacklisted);
     }
 
     const user = await this.usersRepo.findById(session.userId);
     if (!user) {
-      throw new UnauthorizedError('User not found.');
+      throw this.invalidRefreshError();
     }
 
     const accountStatus = getUserStatus(user);
@@ -433,37 +448,68 @@ export class AuthService {
     }
 
     // Rotation: blacklist the consumed refresh JTI, then rotate the DB row.
-    if (payload.jti && payload.exp) {
+    if (payload.exp) {
       await revocationService.blacklist(payload.jti, payload.exp);
     }
 
     const newPair = await this.generateTokens(user);
-    await this.sessionsRepo.rotate(payload.jti ?? '', {
+    const rotated = await this.sessionsRepo.rotate(payload.jti, {
       sessionToken: newPair.accessJti,
       newRefreshToken: newPair.refreshJti,
       expiresAt: newPair.refreshExpiresAt,
     });
+    if (!rotated) {
+      // A concurrent refresh rotated (or a logout ended) this session between the
+      // read and the update: the issued pair is not stored, so it must not leave.
+      throw this.invalidRefreshError();
+    }
+    await this.persistRefreshSessionMapping(newPair.refreshJti, session.sessionId, newPair.refreshExpiresAt);
 
-    return { accessToken: newPair.accessToken, refreshToken: newPair.refreshToken };
+    return {
+      accessToken: newPair.accessToken,
+      expiresInSeconds: newPair.expiresInSeconds,
+      refreshToken: newPair.refreshToken,
+      refreshExpiresAt: newPair.refreshExpiresAt,
+    };
   }
 
-  async logout(input: LogoutDto, accessJti?: string): Promise<void> {
+  /**
+   * Ends the session of the presented refresh cookie and revokes the access
+   * token when one is known. Never throws for a missing or invalid refresh token.
+   */
+  async logout(refreshJwt: string | null, accessJti?: string): Promise<void> {
     if (accessJti) {
-      await revocationService.blacklist(accessJti, Math.floor(Date.now() / 1000) + 900);
+      await revocationService.blacklist(accessJti, this.accessExpiryUnix());
     }
 
-    let payload: JwtPayload | null = null;
+    if (!refreshJwt) {
+      return;
+    }
+
+    let payload: JwtPayload;
     try {
-      payload = tokenService.verifyRefreshToken(input.refreshToken);
+      payload = tokenService.verifyRefreshToken(refreshJwt);
     } catch {
-      payload = null;
+      return;
     }
 
-    if (payload?.jti && payload?.exp) {
+    if (payload.jti && payload.exp) {
       await revocationService.blacklist(payload.jti, payload.exp);
     }
+    if (payload.jti) {
+      await this.sessionsRepo.deactivateByRefreshToken(payload.jti);
+    }
+  }
 
-    await this.sessionsRepo.deactivateByRefreshToken(payload?.jti ?? '');
+  /** Signs the user out of every session and revokes the current access token. */
+  async logoutAll(userId: number, accessJti?: string): Promise<void> {
+    await this.sessionsRepo.deactivateAllForUser(userId);
+
+    if (accessJti) {
+      await revocationService.blacklist(accessJti, this.accessExpiryUnix());
+    }
+
+    logger.info({ userId }, 'All sessions signed out');
   }
 
   async getMe(userId: number): Promise<MeResponseDto> {
@@ -514,6 +560,9 @@ export class AuthService {
       .update(users)
       .set({ passwordHash, salt, updatedAt: new Date() })
       .where(eq(users.userId, userId));
+
+    // Credential change: every signed-in session is revoked.
+    await this.sessionsRepo.deactivateAllForUser(userId);
 
     logger.info({ userId }, 'Password set/updated successfully from security settings');
 
@@ -687,6 +736,9 @@ export class AuthService {
       })
       .where(eq(users.userId, userId));
 
+    // Security-setting change: every signed-in session is revoked.
+    await this.sessionsRepo.deactivateAllForUser(userId);
+
     return { message: 'Two-factor authentication disabled.' };
   }
 
@@ -776,7 +828,12 @@ export class AuthService {
     input: OAuthLoginDto,
     meta?: { ipAddress?: string; userAgent?: string },
   ): Promise<OAuthLoginResultDto> {
-    const oauthUser = await oauthService.getUserInfo(input.provider, input.code, input.redirectUri);
+    const oauthUser = await oauthService.getUserInfo(
+      input.provider,
+      input.code,
+      input.redirectUri,
+      input.codeVerifier,
+    );
     const normalizedEmail = oauthUser.email.trim().toLowerCase();
 
     const existingUser = await this.usersRepo.findByEmail(normalizedEmail);
@@ -836,7 +893,12 @@ export class AuthService {
     input: OAuthSignupDto,
     meta?: { ipAddress?: string; userAgent?: string },
   ): Promise<OAuthLoginResultDto> {
-    const oauthUser = await oauthService.getUserInfo(input.provider, input.code, input.redirectUri);
+    const oauthUser = await oauthService.getUserInfo(
+      input.provider,
+      input.code,
+      input.redirectUri,
+      input.codeVerifier,
+    );
 
     const existingUser = await this.usersRepo.findByEmail(oauthUser.email);
     if (existingUser) {
@@ -870,6 +932,7 @@ export class AuthService {
     if (!pending) {
       throw new BadRequestError(
         'Your OAuth session has expired. Please sign in with your provider again.',
+        [{ code: ERROR_CODES.OAUTH_PENDING_INVALID }],
       );
     }
 
@@ -1041,10 +1104,10 @@ export class AuthService {
     loginType: 'email' | 'google' | 'github',
     meta?: { ipAddress?: string; userAgent?: string },
     recordHistory = false,
-  ): Promise<AuthTokensDto> {
+  ): Promise<IssuedAuthTokensDto> {
     const pair = await this.generateTokens(user);
 
-    await this.sessionsRepo.create({
+    const sessionId = await this.sessionsRepo.create({
       userId: user.userId,
       sessionToken: pair.accessJti,
       refreshToken: pair.refreshJti,
@@ -1052,6 +1115,8 @@ export class AuthService {
       ipAddress: meta?.ipAddress,
       userAgent: meta?.userAgent,
     });
+
+    await this.persistRefreshSessionMapping(pair.refreshJti, sessionId, pair.refreshExpiresAt);
 
     await db
       .update(users)
@@ -1068,7 +1133,12 @@ export class AuthService {
       });
     }
 
-    return { accessToken: pair.accessToken, refreshToken: pair.refreshToken };
+    return {
+      accessToken: pair.accessToken,
+      expiresInSeconds: pair.expiresInSeconds,
+      refreshToken: pair.refreshToken,
+      refreshExpiresAt: pair.refreshExpiresAt,
+    };
   }
 
   private async generateTokens(user: {
@@ -1094,6 +1164,7 @@ export class AuthService {
       accessJti: pair.accessJti,
       refreshJti: pair.refreshJti,
       refreshExpiresAt,
+      expiresInSeconds: this.accessTtlSeconds(),
     };
   }
 
@@ -1187,6 +1258,78 @@ export class AuthService {
       return false;
     }
     return revocationService.isBlacklisted(payload.jti);
+  }
+
+  private invalidRefreshError(): UnauthorizedError {
+    return new UnauthorizedError('Invalid or expired refresh token.', [
+      { code: ERROR_CODES.REFRESH_TOKEN_INVALID },
+    ]);
+  }
+
+  /**
+   * Handles a refresh JWT that did not match an active current session. When it
+   * was rotated away (blacklisted) or is no longer the session's refresh token,
+   * the session is revoked and REFRESH_TOKEN_REUSED is returned. Otherwise the
+   * token is unknown, expired or inactive and REFRESH_TOKEN_INVALID is returned.
+   */
+  private async rejectStaleRefreshToken(refreshJti: string, blacklisted: boolean): Promise<UnauthorizedError> {
+    const sessionId = await this.readRefreshSessionMapping(refreshJti);
+    if (sessionId === null) {
+      return this.invalidRefreshError();
+    }
+
+    const record = await this.sessionsRepo.findById(sessionId);
+    if (!record || !record.isActive) {
+      // Already ended (logout, logout-all, revocation): nothing left to revoke.
+      return this.invalidRefreshError();
+    }
+
+    const reused = blacklisted || record.refreshToken !== refreshJti;
+    if (!reused) {
+      return this.invalidRefreshError();
+    }
+
+    await this.sessionsRepo.deactivateById(record.sessionId);
+    await revocationService.blacklist(record.sessionToken, this.accessExpiryUnix());
+
+    logger.warn({ userId: record.userId, sessionId: record.sessionId }, 'Refresh token reuse detected');
+
+    return new UnauthorizedError('Session revoked.', [{ code: ERROR_CODES.REFRESH_TOKEN_REUSED }]);
+  }
+
+  /** Records refresh jti -> session id for reuse detection. Failure never fails the login or refresh. */
+  private async persistRefreshSessionMapping(refreshJti: string, sessionId: number, expiresAt: Date): Promise<void> {
+    try {
+      const ttlSeconds = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 1000));
+      await this.sessionsRepo.saveRefreshSessionMapping(refreshJti, sessionId, ttlSeconds);
+    } catch (err) {
+      logger.warn({ err, sessionId }, 'Could not record refresh session mapping; reuse detection degraded');
+    }
+  }
+
+  /** Reads the session a refresh jti belongs to. A Redis failure reads as unknown (fails closed). */
+  private async readRefreshSessionMapping(refreshJti: string): Promise<number | null> {
+    try {
+      return await this.sessionsRepo.findSessionIdByRefreshJti(refreshJti);
+    } catch (err) {
+      logger.warn({ err }, 'Could not read refresh session mapping');
+      return null;
+    }
+  }
+
+  /** Access-token lifetime in seconds, parsed from JWT_ACCESS_EXPIRES_IN (`<n><s|m|h|d>`). */
+  private accessTtlSeconds(): number {
+    const match = /^(\d+)([smhd])$/.exec(env.JWT_ACCESS_EXPIRES_IN);
+    if (!match) {
+      return DEFAULT_ACCESS_TTL_SECONDS;
+    }
+    const multipliers: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+    return Number(match[1]) * multipliers[match[2]];
+  }
+
+  /** Unix time at which an access token issued now expires. */
+  private accessExpiryUnix(): number {
+    return Math.floor(Date.now() / 1000) + this.accessTtlSeconds();
   }
 }
 

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { env } from '../../../app/config/env';
 import { PERMISSIONS } from '../../../shared/constants';
-import { authenticate, authorizePermissions, rateLimit, validateRequest } from '../../../shared/middleware';
+import { authenticate, authorizePermissions, optionalAuthenticate, rateLimit, requireCsrf, validateRequest } from '../../../shared/middleware';
 import { asyncHandler } from '../../../shared/utils';
 import { adminInviteController } from '../controllers/admin-invite.controller';
 import { apiTokenController } from '../controllers/api-token.controller';
@@ -14,6 +14,7 @@ import {
   disable2faSchema,
   forgotPasswordSchema,
   loginSchema,
+  logoutAllSchema,
   logoutSchema,
   oAuthCompleteSchema,
   oAuthLoginSchema,
@@ -107,15 +108,27 @@ authRoutes.post(
 authRoutes.post(
   '/refresh',
   refreshLimiter,
+  requireCsrf,
   validateRequest(refreshTokenSchema, 'body'),
   asyncHandler((req, res) => authController.refreshToken(req, res)),
 );
 
+// The access token is optional here: logout must still clear the refresh
+// cookie after the 15-minute access token has expired.
 authRoutes.post(
   '/logout',
-  authenticate,
+  optionalAuthenticate,
+  requireCsrf,
   validateRequest(logoutSchema, 'body'),
   asyncHandler((req, res) => authController.logout(req, res)),
+);
+
+authRoutes.post(
+  '/logout-all',
+  authenticate,
+  requireCsrf,
+  validateRequest(logoutAllSchema, 'body'),
+  asyncHandler((req, res) => authController.logoutAll(req, res)),
 );
 
 authRoutes.get(

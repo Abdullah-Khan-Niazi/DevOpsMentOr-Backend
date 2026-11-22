@@ -16,6 +16,7 @@ import {
 } from '../../../app/database/schema';
 import { ORG_CONSTANTS, ROLES } from '../../../shared/constants';
 import { getSkipTake } from '../../../shared/utils';
+import { sessionRepository } from '../../auth/repositories/session.repository';
 import type { AdminListFilter, AdminUserDetailDto, PlatformAdminDto } from '../dto/admin.dto';
 
 export interface AdminUserRow {
@@ -386,10 +387,14 @@ export class AdminUserRepository implements IAdminUserRepository {
 
   async setBan(userId: number, isBanned: boolean, banReason: string | null): Promise<void> {
     await db.update(users).set({ isBanned, banReason }).where(eq(users.userId, userId));
+    if (isBanned) {
+      await sessionRepository.deactivateAllForUser(userId);
+    }
   }
 
   async softDelete(userId: number): Promise<void> {
     await db.update(users).set({ deletedAt: new Date() }).where(eq(users.userId, userId));
+    await sessionRepository.deactivateAllForUser(userId);
   }
 
   async restore(userId: number): Promise<void> {

@@ -1,17 +1,21 @@
 import type { Request, Response } from 'express';
 import { HTTP_STATUS } from '../../../shared/constants';
 import { sendSuccess } from '../../../shared/utils';
+import { AUTH_COOKIES, clearAuthCookies, readCookie, setAuthCookies } from '../../../shared/utils/auth-cookies';
 import { authService } from '../services/auth.service';
 import type {
   AdminLoginDto,
+  AuthResponseDto,
+  AuthSessionBodyDto,
+  AuthTokensDto,
   Disable2faDto,
   Enable2faDto,
   ForgotPasswordDto,
+  IssuedAuthTokensDto,
   LoginDto,
   OAuthCompleteDto,
   OAuthLoginDto,
   OAuthSignupDto,
-  RefreshTokenDto,
   RegisterDto,
   ResetPasswordDto,
   ResendVerificationDto,
@@ -19,6 +23,25 @@ import type {
   Verify2faDto,
   VerifyEmailDto,
 } from '../dto/auth.dto';
+
+/** Strips the refresh token from an issued pair; the refresh token only ever leaves the server as a cookie. */
+function toPublicTokens(tokens: IssuedAuthTokensDto): AuthTokensDto {
+  return { accessToken: tokens.accessToken, expiresInSeconds: tokens.expiresInSeconds };
+}
+
+/** Sets the refresh and CSRF cookies and builds the body of a token-issuing response. */
+function issueSession(res: Response, result: AuthResponseDto): AuthSessionBodyDto {
+  setAuthCookies(res, {
+    refreshToken: result.tokens.refreshToken,
+    refreshExpiresAt: result.tokens.refreshExpiresAt,
+  });
+  return { user: result.user, tokens: toPublicTokens(result.tokens) };
+}
+
+/** Refresh token from the httpOnly cookie (the request body never carries it). */
+function refreshTokenFrom(req: Request): string | null {
+  return readCookie(req, AUTH_COOKIES.refresh) ?? null;
+}
 
 export class AuthController {
   async register(req: Request, res: Response): Promise<Response> {
@@ -34,7 +57,7 @@ export class AuthController {
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
     });
-    return sendSuccess(res, result, 'Email verified.', HTTP_STATUS.OK);
+    return sendSuccess(res, issueSession(res, result), 'Email verified.', HTTP_STATUS.OK);
   }
 
   async resendVerification(req: Request, res: Response): Promise<Response> {
@@ -48,18 +71,31 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
     });
 
-    return sendSuccess(res, result, 'Login successful.', HTTP_STATUS.OK);
+    return sendSuccess(res, issueSession(res, result), 'Login successful.', HTTP_STATUS.OK);
   }
 
   async refreshToken(req: Request, res: Response): Promise<Response> {
-    const tokens = await authService.refreshToken(req.body as RefreshTokenDto);
-    return sendSuccess(res, tokens, 'Token refreshed successfully.', HTTP_STATUS.OK);
+    try {
+      const tokens = await authService.refreshToken(refreshTokenFrom(req));
+      setAuthCookies(res, { refreshToken: tokens.refreshToken, refreshExpiresAt: tokens.refreshExpiresAt });
+      return sendSuccess(res, toPublicTokens(tokens), 'Token refreshed successfully.', HTTP_STATUS.OK);
+    } catch (err) {
+      clearAuthCookies(res);
+      throw err;
+    }
   }
 
   async logout(req: Request, res: Response): Promise<Response> {
-    const body = req.body as RefreshTokenDto;
-    await authService.logout(body, req.user?.jti);
+    await authService.logout(refreshTokenFrom(req), req.user?.jti);
+    clearAuthCookies(res);
     return sendSuccess(res, null, 'Logged out successfully.', HTTP_STATUS.OK);
+  }
+
+  async logoutAll(req: Request, res: Response): Promise<Response> {
+    const userId = Number(req.user?.sub);
+    await authService.logoutAll(userId, req.user?.jti);
+    clearAuthCookies(res);
+    return sendSuccess(res, null, 'Signed out of all sessions.', HTTP_STATUS.OK);
   }
 
   async getMe(req: Request, res: Response): Promise<Response> {
@@ -74,11 +110,11 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
     });
 
-    if ('exists' in result && !result.exists) {
+    if (!('tokens' in result)) {
       return sendSuccess(res, result, 'OAuth account setup required.', HTTP_STATUS.OK);
     }
 
-    return sendSuccess(res, result, 'OAuth login successful.', HTTP_STATUS.OK);
+    return sendSuccess(res, issueSession(res, result), 'OAuth login successful.', HTTP_STATUS.OK);
   }
 
   async oauthSignup(req: Request, res: Response): Promise<Response> {
@@ -87,11 +123,11 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
     });
 
-    if ('exists' in result && !result.exists) {
+    if (!('tokens' in result)) {
       return sendSuccess(res, result, 'OAuth account setup required.', HTTP_STATUS.OK);
     }
 
-    return sendSuccess(res, result, 'OAuth signup successful.', HTTP_STATUS.CREATED);
+    return sendSuccess(res, issueSession(res, result), 'OAuth signup successful.', HTTP_STATUS.CREATED);
   }
 
   async oauthComplete(req: Request, res: Response): Promise<Response> {
@@ -100,7 +136,7 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
     });
 
-    return sendSuccess(res, result, 'OAuth account created.', HTTP_STATUS.CREATED);
+    return sendSuccess(res, issueSession(res, result), 'OAuth account created.', HTTP_STATUS.CREATED);
   }
 
   async forgotPassword(req: Request, res: Response): Promise<Response> {
@@ -143,7 +179,7 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
     });
 
-    return sendSuccess(res, result, 'Admin login successful.', HTTP_STATUS.OK);
+    return sendSuccess(res, issueSession(res, result), 'Admin login successful.', HTTP_STATUS.OK);
   }
 
   async getLoginHistory(req: Request, res: Response): Promise<Response> {

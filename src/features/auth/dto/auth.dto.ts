@@ -49,14 +49,6 @@ export interface ResetPasswordDto {
   newPassword: string;
 }
 
-export interface RefreshTokenDto {
-  refreshToken: string;
-}
-
-export interface LogoutDto {
-  refreshToken: string;
-}
-
 export interface Enable2faDto {
   /** Optional manual confirmation code; when absent a fresh secret is issued. */
   code?: string;
@@ -72,12 +64,26 @@ export interface Disable2faDto {
   password: string;
 }
 
+/** Token payload returned in response bodies. The refresh token never appears here (it is an httpOnly cookie). */
 export interface AuthTokensDto {
   accessToken: string;
-  refreshToken: string;
+  expiresInSeconds: number;
 }
 
+/** Internal result of a token issue. The controller moves the refresh token into the cookie and strips it from the body. */
+export interface IssuedAuthTokensDto extends AuthTokensDto {
+  refreshToken: string;
+  refreshExpiresAt: Date;
+}
+
+/** Internal service result for every token-issuing method. */
 export interface AuthResponseDto {
+  user: UserResponseDto;
+  tokens: IssuedAuthTokensDto;
+}
+
+/** Response body for every token-issuing endpoint. */
+export interface AuthSessionBodyDto {
   user: UserResponseDto;
   tokens: AuthTokensDto;
 }
@@ -88,12 +94,16 @@ export interface OAuthLoginDto {
   provider: OAuthProvider;
   code: string;
   redirectUri: string;
+  /** PKCE (RFC 7636) code verifier sent with the code exchange. */
+  codeVerifier: string;
 }
 
 export interface OAuthSignupDto {
   provider: OAuthProvider;
   code: string;
   redirectUri: string;
+  /** PKCE (RFC 7636) code verifier sent with the code exchange. */
+  codeVerifier: string;
   username?: string;
   fullName?: string;
 }
