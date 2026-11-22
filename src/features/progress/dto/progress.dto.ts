@@ -3,6 +3,8 @@
  * endpoint response shapes and the §02 consumable output contracts.
  */
 
+import type { LabInstanceStatus, XpDeltaDto } from '../../labs/dto/labs.dto';
+
 export type LearningActivityType =
   | 'LESSON_STARTED'
   | 'LESSON_COMPLETED'
@@ -16,7 +18,12 @@ export type LearningActivityType =
   | 'QUIZ_STARTED'
   | 'QUIZ_PASSED'
   | 'QUIZ_FAILED'
-  | 'COURSE_COMPLETED';
+  | 'COURSE_COMPLETED'
+  | 'LAB_STEP_STAGED'
+  | 'LAB_STEP_PASSED'
+  | 'LAB_STEP_FAILED'
+  | 'LAB_HINT_REVEALED'
+  | 'QUIZ_TERMINAL_STAGED';
 
 /** Lesson-grain progress row (user_progress with lesson_id set). */
 export interface LessonProgressDto {
@@ -52,7 +59,10 @@ export interface CourseProgressDto {
   isCompleted: boolean;
 }
 
-/** §02 continue-learning pointer: last-accessed lesson with its context. */
+/** Kind of a published module item (lesson, lab or quiz). */
+export type ModuleItemKind = 'lesson' | 'lab' | 'quiz';
+
+/** §02 continue-learning pointer: last-accessed item with its context. FE routes by `kind`. */
 export interface ContinueLearningPointerDto {
   lessonId: number;
   moduleId: number;
@@ -61,6 +71,9 @@ export interface ContinueLearningPointerDto {
   moduleTitle: string;
   progressPct: number;
   lastAccessedAt: string;
+  kind: ModuleItemKind;
+  labId: number | null;
+  quizId: number | null;
 }
 
 /** Activity history item from activity_logs. */
@@ -69,18 +82,6 @@ export interface ActivityLogDto {
   activityType: LearningActivityType;
   details: Record<string, unknown> | null;
   createdAt: string;
-}
-
-/** §02 consumable snapshot for F7 achievement triggers / F8 analytics. */
-export interface LearnerProgressSnapshot {
-  userId: number;
-  courseProgressPct: number;
-  completedLessonCount: number;
-  completedModuleCount: number;
-  completedLabCount: number;
-  quizPassCount: number;
-  lastActivityAt: Date | null;
-  currentStreakDays: number;
 }
 
 /** One student row in the professor / org-admin class progress table. */
@@ -105,6 +106,12 @@ export interface ModuleAverageDto {
   averageProgressPercentage: number;
 }
 
+/** Courses selectable in staff views (the class's assigned courses / the student's started courses). */
+export interface CourseOptionDto {
+  courseId: number;
+  title: string;
+}
+
 /** Professor / org-admin drill-down into one student. */
 export interface StudentDetailProgressDto {
   student: {
@@ -115,6 +122,15 @@ export interface StudentDetailProgressDto {
   course: CourseProgressDto | null;
   modules: ModuleProgressSummary[];
   activity: ActivityLogDto[];
+  courseOptions: CourseOptionDto[];
+}
+
+/** Professor / org-admin class progress table response (`/progress/class/:classId/students`). */
+export interface ClassStudentsProgressDto {
+  className: string;
+  students: StudentProgressDto[];
+  moduleAverages: ModuleAverageDto[];
+  courseOptions: CourseOptionDto[];
 }
 
 /** Org-admin aggregate listing. */
@@ -134,6 +150,7 @@ export interface AdminUserProgressDto {
   modules: ModuleProgressSummary[];
   quizAttempts: QuizAttemptDto[];
   activity: ActivityLogDto[];
+  courseOptions: CourseOptionDto[];
 }
 
 /** Quiz attempt record. */
@@ -148,44 +165,172 @@ export interface QuizAttemptDto {
   timeTakenSeconds: number | null;
 }
 
-/** Per-question outcome inside a submitted attempt (F5-API-07 success). */
-export interface QuestionResultDto {
+/** PATCH /progress/lessons/:lessonId/complete success payload (C§4.3). */
+export interface LessonCompleteResultDto {
+  lesson: LessonProgressDto;
+  newlyCompleted: boolean;
+  moduleNewlyCompleted: boolean;
+  courseNewlyCompleted: boolean;
+  xp: XpDeltaDto;
+}
+
+/** One published item of a module (GET /progress/modules/:moduleId/items). */
+export interface ModuleItemProgressDto {
+  itemId: number;
+  kind: ModuleItemKind;
+  isStarted: boolean;
+  isCompleted: boolean;
+  completedAt: string | null;
+  lab?: { passedSteps: number; totalSteps: number };
+  quiz?: { isPassed: boolean; bestScore: number | null; attemptsUsedToday: number };
+}
+
+/** Learner quiz intro (GET /progress/quizzes/:quizId). */
+export interface QuizStatusDto {
+  quizId: number;
+  moduleId: number;
+  courseId: number;
+  title: string;
+  description: string | null;
+  passingScore: number;
+  timeLimitMinutes: number | null;
+  questionCount: number;
+  totalPoints: number;
+  isPassed: boolean;
+  bestScore: number | null;
+  /** Attempts started in the rolling 24 h window. */
+  attemptsUsedToday: number;
+  /** QUIZ_LIMITS.maxAttemptsPerDay; 0 = unlimited. */
+  maxAttemptsPerDay: number;
+  /** Cooldown or daily-cap expiry; null when a new attempt may start now. */
+  nextAttemptAt: string | null;
+  openAttemptId: number | null;
+  /** Maxima over the active questions (penalties are per question). */
+  penalties: { wrongAnswerMax: number; terminalGuessMax: number };
+  /** FE shows the guess-penalty disclosure only when true. */
+  hasTerminalQuestions: boolean;
+  /** First passed attempt, for Review. */
+  passedAttemptId: number | null;
+  lastAttempt: { attemptId: number; score: number; isPassed: boolean; completedAt: string | null } | null;
+}
+
+export type QuizQuestionType =
+  | 'multiple_choice'
+  | 'true_false'
+  | 'fill_blank'
+  | 'multiple_select'
+  | 'bucket_sort'
+  | 'ordering'
+  | 'terminal';
+
+/** Learner-safe answer submitted for one question (mirrors submitQuizAnswerSchema). */
+export type QuizAnswerResponse =
+  | { type: 'choice'; answerId: number }
+  | { type: 'multi'; answerIds: number[] }
+  | { type: 'text'; text: string }
+  | { type: 'ordering'; answerIds: number[] }
+  | { type: 'buckets'; placements: Array<{ answerId: number; bucket: number }> }
+  | { type: 'terminal_check' };
+
+/** Terminal block of a learner question. Setup and check commands are never included. */
+export interface TerminalStageDto {
+  attemptId: number;
+  questionId: number;
+  instanceId: number;
+  status: LabInstanceStatus;
+  terminalWsUrl: string | null;
+  expiresAt: string | null;
+  stagedAt: string;
+  provisioned: boolean;
+}
+
+/** Learner-safe quiz question inside an attempt (no isCorrect, answerOrder, explanation or config). */
+export interface LearnerQuizQuestionDto {
+  questionId: number;
+  position: number;
+  questionText: string;
+  questionType: QuizQuestionType;
+  points: number;
+  instructions: string | null;
+  /** bucket_sort only. */
+  buckets: string[] | null;
+  /** [] for fill_blank and terminal text/check. */
+  options: Array<{ answerId: number; answerText: string }>;
+  terminal: null | {
+    labId: number;
+    labName: string;
+    mode: 'answer' | 'check';
+    answerFormat: 'choice' | 'text' | null;
+    /** Latest QUIZ_TERMINAL_STAGED of this attempt and question. */
+    staged: { instanceId: number; stagedAt: string } | null;
+  };
+  /** Per-question values from quiz_questions.config (0 when absent). */
+  penalties: { wrongAnswer: number; guess: number };
+  /** Set when this question was already answered in this attempt. */
+  response: QuizAnswerResultDto | null;
+}
+
+/** Server-created attempt (POST .../attempts/start, GET /progress/quiz-attempts/:attemptId). */
+export interface QuizAttemptStartDto {
+  attemptId: number;
+  quizId: number;
+  attemptNumber: number;
+  startedAt: string;
+  expiresAt: string | null;
+  passingScore: number;
+  totalQuestions: number;
+  totalPoints: number;
+  questions: LearnerQuizQuestionDto[];
+}
+
+/** Immediate per-question feedback (POST .../answers). */
+export interface QuizAnswerResultDto {
   questionId: number;
   isCorrect: boolean;
   pointsEarned: number;
+  guessed: boolean;
+  penalties: { wrongAnswer: number; guess: number };
   explanation: string | null;
+  answeredAt: string;
+  xp: XpDeltaDto;
 }
 
-/** F5-API-07 success payload. */
+/** Completed attempt summary (POST .../complete and GET /progress/quiz-attempts/:attemptId `result`). */
 export interface QuizAttemptResultDto {
   attemptId: number;
+  quizId: number;
   score: number;
   isPassed: boolean;
-  attemptNumber: number;
+  passingScore: number;
   correctCount: number;
+  answeredCount: number;
   totalQuestions: number;
-  breakdown: QuestionResultDto[];
+  timeTakenSeconds: number;
+  firstPass: boolean;
+  /** Pass reward: sum of points earned on the first pass, else 0. */
+  xpAwarded: number;
+  penaltiesTotal: number;
+  breakdown: Array<{ questionId: number; isCorrect: boolean; pointsEarned: number; explanation: string | null }>;
+  reviewAvailable: boolean;
+  completedLessonIds: number[];
+  xp: XpDeltaDto;
 }
 
-/** Learner-safe quiz question (is_correct stripped; SCR-F5-02 rendering). */
-export interface QuizQuestionDto {
-  questionId: number;
-  questionText: string;
-  questionType:
-    | 'multiple_choice'
-    | 'true_false'
-    | 'fill_blank'
-    | 'multiple_select'
-    | 'bucket_sort'
-    | 'ordering';
-  /** Presentation metadata for rich types; never contains correctness. */
-  config: Record<string, unknown> | null;
-  points: number;
-  questionOrder: number;
-  answers: Array<{
-    answerId: number;
-    answerText: string;
-    /** Shuffled placeholder order for rich types — never the solution order. */
-    answerOrder: number;
+/** Review after the quiz is passed (GET /progress/quiz-attempts/:attemptId/review). */
+export interface QuizReviewDto {
+  attemptId: number;
+  questions: Array<{
+    questionId: number;
+    questionText: string;
+    questionType: string;
+    yourResponse: unknown;
+    isCorrect: boolean;
+    explanation: string | null;
+    correct: {
+      answerIds?: number[];
+      orderedAnswerIds?: number[];
+      placements?: Array<{ answerId: number; bucket: number }>;
+      text?: string;
+    } | null;
   }>;
 }
