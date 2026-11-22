@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { sendSuccess } from '../../../shared/utils';
-import { HTTP_STATUS } from '../../../shared/constants';
+import { HTTP_STATUS, PERMISSIONS } from '../../../shared/constants';
 import type { VpnRegion } from '../dto/labs.dto';
 import { labService } from '../services/LabService';
 import { vpnService } from '../services/VpnService';
@@ -32,6 +32,7 @@ export class LabController {
       userId(req),
       Number(req.params.labId),
       req.body.region ?? null,
+      { allowInactive: req.user?.permissions.includes(PERMISSIONS.PLATFORM_LABS_MANAGE) === true },
     );
     return sendSuccess(res, { instance }, 'Lab instance provisioned successfully.', HTTP_STATUS.CREATED);
   }

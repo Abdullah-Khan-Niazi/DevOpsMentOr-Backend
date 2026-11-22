@@ -14,6 +14,12 @@ export class TrackController {
     return sendSuccess(res, { tracks }, 'Tracks retrieved successfully.');
   }
 
+  /** Single-track helper: the active track with the lowest id. */
+  async getDefaultTrack(_req: Request, res: Response): Promise<Response> {
+    const track = await trackService.getDefaultTrack();
+    return sendSuccess(res, { track }, 'Track retrieved successfully.');
+  }
+
   /** LAB-14: optional identity so item completion is resolved for signed-in users. */
   async getTrackDetail(req: Request, res: Response): Promise<Response> {
     const track = await trackService.getTrackDetail(
