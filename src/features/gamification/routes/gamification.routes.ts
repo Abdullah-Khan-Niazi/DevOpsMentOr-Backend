@@ -76,6 +76,13 @@ learnerRoutes.get(
   asyncHandler((req, res) => gamificationController.getMyProfile(req, res)),
 );
 
+/** GAM-01 top-bar summary */
+learnerRoutes.get(
+  '/gamification/me/summary',
+  authorizePermissions(PERMISSIONS.GAMIFICATION_PROFILE_READ),
+  asyncHandler((req, res) => gamificationController.getMeSummary(req, res)),
+);
+
 /** GAM-02 */
 learnerRoutes.get(
   '/gamification/badges',
