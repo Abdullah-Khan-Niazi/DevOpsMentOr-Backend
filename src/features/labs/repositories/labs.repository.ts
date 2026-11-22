@@ -17,6 +17,42 @@ import {
 } from '../../../app/database/schema';
 import type { LabInstanceStatus, LabType, TrackContentType, VpnRegion } from '../dto/labs.dto';
 
+/** Transaction handle (same alias as the gamification ledger repository). */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** The shared pool handle or a transaction handle. */
+export type DbOrTx = typeof db | Tx;
+
+/** One LAB_* activity event for a user and lab (details parsed). */
+export interface LabActivityRow {
+  activityId: number;
+  activityType: string;
+  details: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+/** Usage counters for the admin lab detail (contracts §6.2). */
+export interface LabUsageCounts {
+  itemIds: number[];
+  activeInstances: number;
+  completions: number;
+  learnersWithProgress: number;
+}
+
+/** `activity_logs.details` may arrive as an object or as JSON text; never throws. */
+function parseActivityDetails(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
 /** Lab row joined to difficulty/category names. */
 export interface LabRow {
   labId: number;
@@ -88,7 +124,8 @@ export interface InstanceInsertInput {
   hostname: string | null;
   assignedIp: string | null;
   sshPort: number;
-  rootPassword: string | null;
+  /** Legacy column: never generated anymore (D27), so new rows store NULL. */
+  rootPassword?: string | null;
   ramGb: number;
   cpuCores: number;
   diskGb: number;
@@ -283,7 +320,11 @@ export class LabsRepository {
       .from(proLabs)
       .where(eq(proLabs.labId, labId))
       .limit(1);
-    return rows[0] ?? null;
+    const row = rows[0];
+    if (!row) return null;
+    // flag_values now holds the v2 step spec (read it with parseLabSpec); this
+    // narrow legacy type is kept only until the labs feature migrates.
+    return { ...row, flagValues: row.flagValues as Record<string, string> | null };
   }
 
   async findSherlockByLabId(labId: number): Promise<SherlockRow | null> {
@@ -413,8 +454,8 @@ export class LabsRepository {
   }
 
   /** Any live instance for a user (across all labs). */
-  async findAnyActiveInstanceForUser(userId: number): Promise<InstanceRow | null> {
-    const rows = await db
+  async findAnyActiveInstanceForUser(userId: number, executor: DbOrTx = db): Promise<InstanceRow | null> {
+    const rows = await executor
       .select(this.instanceSelect())
       .from(pwnboxInstances)
       .leftJoin(activityLogs, labEventJoin())
@@ -451,8 +492,8 @@ export class LabsRepository {
     return this.toInstanceRow(rows[0]);
   }
 
-  async insertInstance(input: InstanceInsertInput): Promise<number> {
-    const inserted = await db.insert(pwnboxInstances).values(input);
+  async insertInstance(input: InstanceInsertInput, tx: DbOrTx = db): Promise<number> {
+    const inserted = await tx.insert(pwnboxInstances).values(input);
     const id = inserted[0]?.insertId;
     if (!id) {
       throw new Error('Failed to create lab instance.');
@@ -460,7 +501,7 @@ export class LabsRepository {
     return id;
   }
 
-  async updateInstanceStatus(instanceId: number, status: LabInstanceStatus): Promise<void> {
+  async updateInstanceStatus(instanceId: number, status: LabInstanceStatus, tx: DbOrTx = db): Promise<void> {
     const patch: Record<string, unknown> = { status };
     if (status === 'terminated') {
       patch.terminatedAt = new Date();
@@ -468,7 +509,7 @@ export class LabsRepository {
     if (status === 'running') {
       patch.startedAt = new Date();
     }
-    await db.update(pwnboxInstances).set(patch).where(eq(pwnboxInstances.instanceId, instanceId));
+    await tx.update(pwnboxInstances).set(patch).where(eq(pwnboxInstances.instanceId, instanceId));
   }
 
   async updateInstanceExpiry(instanceId: number, expiresAt: Date): Promise<void> {
@@ -859,22 +900,6 @@ export class LabsRepository {
     return rows[0]?.createdAt ?? null;
   }
 
-  /** Whether the user already completed a track (TRACK_COMPLETED dedup). */
-  async hasTrackCompletionEvent(userId: number, trackId: number): Promise<boolean> {
-    const rows = await db
-      .select({ id: activityLogs.logId })
-      .from(activityLogs)
-      .where(
-        and(
-          eq(activityLogs.userId, userId),
-          eq(activityLogs.activityType, 'TRACK_COMPLETED'),
-          sql`json_extract(${activityLogs.details}, '$.trackId') = ${trackId}`,
-        ),
-      )
-      .limit(1);
-    return rows.length > 0;
-  }
-
   /** Completed lab ids for a user, derived from LAB_COMPLETED events. */
   async listCompletedLabIdsForUser(userId: number): Promise<number[]> {
     const rows = await db
@@ -938,6 +963,144 @@ export class LabsRepository {
       .where(eq(lessons.lessonId, lessonId))
       .limit(1);
     return rows[0] ?? null;
+  }
+
+  /* ── Lab step scoring, activity and usage (contracts §4.1, §11.3) ─────── */
+
+  /** Lab row by slug regardless of `is_active` (admin import and re-import). */
+  async findLabBySlugAnyStatus(slug: string): Promise<LabRow | null> {
+    return this.findLabBySlug(slug);
+  }
+
+  /** `difficulty_levels.points_multiplier` through `labs.difficulty_id`; null, NaN or <= 0 gives 1. */
+  async getPointsMultiplier(labId: number): Promise<number> {
+    const rows = await db
+      .select({ pointsMultiplier: difficultyLevels.pointsMultiplier })
+      .from(labs)
+      .innerJoin(difficultyLevels, eq(labs.difficultyId, difficultyLevels.difficultyId))
+      .where(eq(labs.labId, labId))
+      .limit(1);
+    const value = Number(rows[0]?.pointsMultiplier);
+    return Number.isFinite(value) && value > 0 ? value : 1;
+  }
+
+  /** LAB_* activity events of the given types for one user and lab, oldest first. */
+  async listLabActivity(
+    userId: number,
+    labId: number,
+    types: string[],
+    tx: DbOrTx = db,
+  ): Promise<LabActivityRow[]> {
+    if (types.length === 0) {
+      return [];
+    }
+    const rows = await tx
+      .select({
+        activityId: activityLogs.logId,
+        activityType: activityLogs.activityType,
+        details: activityLogs.details,
+        createdAt: activityLogs.createdAt,
+      })
+      .from(activityLogs)
+      .where(
+        and(
+          eq(activityLogs.userId, userId),
+          inArray(activityLogs.activityType, types),
+          sql`json_extract(${activityLogs.details}, '$.labId') = ${labId}`,
+        ),
+      )
+      .orderBy(asc(activityLogs.logId));
+    return rows.map((row) => ({ ...row, details: parseActivityDetails(row.details) }));
+  }
+
+  /** Latest LAB_STEP_STAGED event for (user, instance, step), or null when the step was never staged. */
+  async findLatestStageRecord(
+    userId: number,
+    instanceId: number,
+    stepId: string,
+    tx: DbOrTx = db,
+  ): Promise<LabActivityRow | null> {
+    const rows = await tx
+      .select({
+        activityId: activityLogs.logId,
+        activityType: activityLogs.activityType,
+        details: activityLogs.details,
+        createdAt: activityLogs.createdAt,
+      })
+      .from(activityLogs)
+      .where(
+        and(
+          eq(activityLogs.userId, userId),
+          eq(activityLogs.activityType, 'LAB_STEP_STAGED'),
+          sql`json_extract(${activityLogs.details}, '$.instanceId') = ${instanceId}`,
+          sql`json_unquote(json_extract(${activityLogs.details}, '$.stepId')) = ${stepId}`,
+        ),
+      )
+      .orderBy(desc(activityLogs.logId))
+      .limit(1);
+    const row = rows[0];
+    if (!row) {
+      return null;
+    }
+    return { ...row, details: parseActivityDetails(row.details) };
+  }
+
+  /** Appends one activity event; pass `tx` to write it inside the caller's transaction. */
+  async insertActivity(
+    input: { userId: number; activityType: string; details: Record<string, unknown> },
+    tx: DbOrTx = db,
+  ): Promise<number> {
+    const inserted = await tx.insert(activityLogs).values({
+      userId: input.userId,
+      activityType: input.activityType,
+      details: input.details,
+    });
+    const id = inserted[0]?.insertId;
+    if (!id) {
+      throw new Error('Failed to record lab activity.');
+    }
+    return id;
+  }
+
+  /** Where a lab is used and whether learners touched it (admin lab detail). */
+  async countLabUsage(labId: number): Promise<LabUsageCounts> {
+    const [itemRows, activeRows, completionRows, progressRows] = await Promise.all([
+      db.select({ itemId: lessons.lessonId }).from(lessons).where(eq(lessons.labId, labId)),
+      db
+        .select({ total: sql<number>`count(distinct ${pwnboxInstances.instanceId})` })
+        .from(pwnboxInstances)
+        .leftJoin(activityLogs, labEventJoin())
+        .where(
+          and(
+            sql`json_extract(${activityLogs.details}, '$.labId') = ${labId}`,
+            inArray(pwnboxInstances.status, ['pending', 'running', 'stopped']),
+          ),
+        ),
+      db
+        .select({ total: sql<number>`count(distinct ${activityLogs.userId})` })
+        .from(activityLogs)
+        .where(
+          and(
+            eq(activityLogs.activityType, 'LAB_COMPLETED'),
+            sql`json_extract(${activityLogs.details}, '$.labId') = ${labId}`,
+          ),
+        ),
+      db
+        .select({ total: sql<number>`count(distinct ${activityLogs.userId})` })
+        .from(activityLogs)
+        .where(
+          and(
+            sql`LEFT(${activityLogs.activityType}, 4) = 'LAB_'`,
+            sql`json_extract(${activityLogs.details}, '$.labId') = ${labId}`,
+          ),
+        ),
+    ]);
+    return {
+      itemIds: itemRows.map((row) => row.itemId),
+      activeInstances: Number(activeRows[0]?.total ?? 0),
+      completions: Number(completionRows[0]?.total ?? 0),
+      learnersWithProgress: Number(progressRows[0]?.total ?? 0),
+    };
   }
 
   async findUserRow(userId: number): Promise<{ userId: number; username: string } | null> {
