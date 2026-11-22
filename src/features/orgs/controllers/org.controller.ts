@@ -136,13 +136,15 @@ export class OrgController {
 
   async inviteOrgAdmin(req: Request, res: Response): Promise<Response> {
     const orgId = Number(req.params.orgId);
-    const result = await orgService.inviteOrgAdmin(actorFrom(req), orgId, req.body.email ?? req.body.userId);
+    const body = req.body as { email?: string; userId?: number };
+    const result = await orgService.inviteOrgAdmin(actorFrom(req), orgId, body.userId ?? (body.email as string));
     return sendSuccess(res, result, 'Admin invitation dispatched successfully.', HTTP_STATUS.CREATED);
   }
 
   async acceptOrgAdmin(req: Request, res: Response): Promise<Response> {
-    const token = req.body?.token ?? req.query?.token;
-    const detail = await orgService.acceptOrgAdmin(userIdFrom(req), String(token));
+    // Body validated by `acceptOrgAdminSchema`; query tokens are not accepted.
+    const { token } = req.body as { token: string };
+    const detail = await orgService.acceptOrgAdmin(userIdFrom(req), token);
     return sendSuccess(res, detail, 'Organization admin role accepted successfully.');
   }
 

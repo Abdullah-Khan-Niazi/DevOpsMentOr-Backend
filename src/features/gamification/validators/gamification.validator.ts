@@ -105,13 +105,26 @@ export const updateBadgeSchema = z
   })
   .strip();
 
+/** Trigger types the achievement evaluator understands (contracts 5.3, C3). */
+const ACHIEVEMENT_TRIGGER_TYPES = [
+  'lab_completions',
+  'course_completions',
+  'streak_days',
+  'points_balance',
+  'quiz_passes',
+  'module_complete',
+  'course_complete',
+  'lab_complete_count',
+  'quiz_pass_count',
+] as const;
+
 /** GAM-17: POST /api/admin/achievements */
 export const createAchievementSchema = z
   .object({
     name: z.string().min(3).max(100),
     description: z.string().max(1000).optional(),
     pointsAwarded: z.number().int().min(0).default(0),
-    triggerType: z.enum(['lab_completions', 'course_completions', 'streak_days', 'points_balance']),
+    triggerType: z.enum(ACHIEVEMENT_TRIGGER_TYPES),
     triggerValue: z.record(z.unknown()),
     isActive: z.boolean().default(true),
   })
@@ -123,9 +136,7 @@ export const updateAchievementSchema = z
     name: z.string().min(3).max(100).optional(),
     description: z.string().max(1000).nullable().optional(),
     pointsAwarded: z.number().int().min(0).optional(),
-    triggerType: z
-      .enum(['lab_completions', 'course_completions', 'streak_days', 'points_balance'])
-      .optional(),
+    triggerType: z.enum(ACHIEVEMENT_TRIGGER_TYPES).optional(),
     triggerValue: z.record(z.unknown()).nullable().optional(),
     isActive: z.boolean().optional(),
   })

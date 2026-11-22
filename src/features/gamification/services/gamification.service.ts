@@ -5,6 +5,7 @@ import { logger } from '../../../shared/logger';
 import type {
   CertificateDto,
   GamificationEventResult,
+  GamificationMeSummaryDto,
   GamificationProfileDto,
   GamificationSummary,
 } from '../dto/gamification.dto';
@@ -12,6 +13,8 @@ import type { GamificationEventHandler } from '../handlers/gamification-event.ha
 import { gamificationEventHandler } from '../handlers/gamification-event.handler';
 import type { GamificationRepository } from '../repositories/gamification.repository';
 import { gamificationRepository } from '../repositories/gamification.repository';
+import type { CertificateService } from './certificate.service';
+import { certificateService } from './certificate.service';
 import type { LeaderboardService } from './leaderboard.service';
 import { leaderboardService } from './leaderboard.service';
 
@@ -24,10 +27,13 @@ export interface GamificationServiceDeps {
     | 'listUserAchievements'
     | 'listUserCertificates'
     | 'listUserActivityDates'
+    | 'getLearnerSnapshot'
+    | 'findCertificateByUserCourse'
   >;
-  progress: Pick<ProgressService, 'getLearnerProgressSnapshot' | 'computeStreak'>;
+  progress: Pick<ProgressService, 'computeStreak'>;
   handler: Pick<GamificationEventHandler, 'handleProgressSnapshot'>;
-  leaderboard: Pick<LeaderboardService, 'getGamificationSummary'>;
+  leaderboard: Pick<LeaderboardService, 'getGamificationSummary' | 'refreshUserTotals'>;
+  certificates: Pick<CertificateService, 'issueCertificate'>;
 }
 
 function defaultDeps(): GamificationServiceDeps {
@@ -36,6 +42,7 @@ function defaultDeps(): GamificationServiceDeps {
     progress: progressService,
     handler: gamificationEventHandler,
     leaderboard: leaderboardService,
+    certificates: certificateService,
   };
 }
 
@@ -98,22 +105,77 @@ export class GamificationService {
     };
   }
 
+  /**
+   * GAM-01 top-bar summary (`GET /gamification/me/summary`): balance, total
+   * earned, last computed global rank and current streak. No badge or
+   * achievement lists.
+   */
+  async getMeSummary(userId: number): Promise<GamificationMeSummaryDto> {
+    const [balance, leaderboard, activityDays] = await Promise.all([
+      this.deps.repo.getBalance(userId),
+      this.deps.repo.findLeaderboardForUser(userId),
+      this.deps.repo.listUserActivityDates(userId),
+    ]);
+    return {
+      balance: balance.balance,
+      totalEarned: balance.totalEarned,
+      globalRank: leaderboard?.globalRank ?? null,
+      currentStreakDays: this.deps.progress.computeStreak(activityDays),
+    };
+  }
+
+  /**
+   * Post-commit hook after any learning event (lab, quiz, lesson progress).
+   * Called outside every lock: snapshot -> achievements and badges -> missing
+   * certificates -> leaderboard totals for this user.
+   */
+  async afterLearningEvent(userId: number): Promise<GamificationEventResult> {
+    const snapshot = await this.deps.repo.getLearnerSnapshot(userId);
+    const result = await this.deps.handler.handleProgressSnapshot(snapshot);
+    const certificateCourseIds = await this.issueMissingCertificates(userId, snapshot.completedCourseIds);
+    await this.deps.leaderboard.refreshUserTotals(userId);
+    return {
+      ...result,
+      certificateIssued: certificateCourseIds.length > 0,
+      certificateCourseIds,
+    };
+  }
+
   /** §02 forward hook: called by F5 after any progress milestone event. */
   async processProgressSnapshot(userId: number): Promise<GamificationEventResult> {
-    const snapshot = await this.deps.progress.getLearnerProgressSnapshot(userId);
-    return this.deps.handler.handleProgressSnapshot(snapshot);
+    return this.afterLearningEvent(userId);
   }
 
   /** §02 forward hook: called by F6 after a LAB_COMPLETED event fires. */
   async processLabCompletion(userId: number, event: LabCompletionEvent): Promise<GamificationEventResult> {
     logger.debug({ userId, labId: event.labId, passedAt: event.passedAt }, 'F7: lab completion event consumed');
-    const snapshot = await this.deps.progress.getLearnerProgressSnapshot(userId);
-    return this.deps.handler.handleProgressSnapshot(snapshot);
+    return this.afterLearningEvent(userId);
   }
 
   /** §02 forward hook: summary for F2 profile dashboard / F8 analytics. */
   async getGamificationSummary(userId: number): Promise<GamificationSummary> {
     return this.deps.leaderboard.getGamificationSummary(userId);
+  }
+
+  /**
+   * Issues a certificate for every completed course that does not have one.
+   * Each course is isolated: a failure is logged with its ids and the
+   * remaining courses are still processed. Returns the courses issued now.
+   */
+  private async issueMissingCertificates(userId: number, courseIds: readonly number[]): Promise<number[]> {
+    const issued: number[] = [];
+    for (const courseId of courseIds) {
+      try {
+        if (await this.deps.repo.findCertificateByUserCourse(userId, courseId)) {
+          continue;
+        }
+        await this.deps.certificates.issueCertificate(userId, courseId);
+        issued.push(courseId);
+      } catch (error) {
+        logger.error({ err: error, userId, courseId }, 'Certificate issuance failed for completed course');
+      }
+    }
+    return issued;
   }
 }
 

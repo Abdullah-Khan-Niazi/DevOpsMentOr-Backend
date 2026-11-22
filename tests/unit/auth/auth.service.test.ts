@@ -9,7 +9,9 @@ import type { IRoleRepository } from '../../../src/features/roles/repositories/r
 import type { UserWithRoles } from '../../../src/features/users/types';
 import { UserService } from '../../../src/features/users/services/user.service';
 import { ConflictError, ForbiddenError, UnauthorizedError } from '../../../src/shared/errors';
-import { revocationService, totpService } from '../../../src/shared/services';
+import { revocationService, totpService, tokenService } from '../../../src/shared/services';
+import { oauthService, OAuthService } from '../../../src/features/auth/services/oauth.service';
+import { consumePendingOAuth } from '../../../src/features/auth/repositories/oauth-pending.repository';
 
 vi.mock('../../../src/shared/services', () => ({
   passwordService: {
@@ -51,6 +53,27 @@ vi.mock('../../../src/shared/services', () => ({
     sendOtpEmail: vi.fn(async () => undefined),
   },
 }));
+
+const redisStore = vi.hoisted(() => new Map<string, string>());
+
+vi.mock('../../../src/app/cache/redis', () => ({
+  redisClient: {
+    set: vi.fn(async (key: string, value: string) => {
+      redisStore.set(key, value);
+      return 'OK';
+    }),
+    getdel: vi.fn(async (key: string) => {
+      const value = redisStore.get(key) ?? null;
+      redisStore.delete(key);
+      return value;
+    }),
+  },
+}));
+
+vi.mock('../../../src/features/auth/services/oauth.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/features/auth/services/oauth.service')>();
+  return { ...actual, oauthService: { getUserInfo: vi.fn() } };
+});
 
 const dbMock = vi.hoisted(() => {
   const sets: Record<string, unknown>[] = [];
@@ -156,9 +179,13 @@ describe('AuthService', () => {
     sessions = {
       create: vi.fn(),
       findActiveByRefreshToken: vi.fn(),
-      rotate: vi.fn(),
+      rotate: vi.fn().mockResolvedValue(true),
       deactivateByRefreshToken: vi.fn(),
       deactivateAllForUser: vi.fn(),
+      findById: vi.fn(),
+      deactivateById: vi.fn(),
+      saveRefreshSessionMapping: vi.fn(),
+      findSessionIdByRefreshJti: vi.fn(),
     };
     otps = {
       create: vi.fn(),
@@ -184,6 +211,7 @@ describe('AuthService', () => {
     service = new AuthService(users, new UserService(users), roles, sessions, otps, loginHistory);
     dbMock.sets.length = 0;
     dbMock.transaction.mockClear();
+    redisStore.clear();
   });
 
   describe('register', () => {
@@ -343,7 +371,7 @@ describe('AuthService', () => {
       });
       vi.mocked(users.findById).mockResolvedValue(activeUser);
 
-      const result = await service.refreshToken({ refreshToken: 'valid-refresh-token' });
+      const result = await service.refreshToken('valid-refresh-token');
 
       expect(result.accessToken).toBe('access-token');
       expect(result.refreshToken).toBe('refresh-token');
@@ -357,7 +385,7 @@ describe('AuthService', () => {
       vi.mocked(revocationService.isBlacklisted).mockResolvedValueOnce(true);
 
       await expect(
-        service.refreshToken({ refreshToken: 'stolen-refresh-token' }),
+        service.refreshToken('stolen-refresh-token'),
       ).rejects.toBeInstanceOf(UnauthorizedError);
     });
 
@@ -365,7 +393,7 @@ describe('AuthService', () => {
       vi.mocked(sessions.findActiveByRefreshToken).mockResolvedValue(null);
 
       await expect(
-        service.refreshToken({ refreshToken: 'invalid-refresh-token' }),
+        service.refreshToken('invalid-refresh-token'),
       ).rejects.toBeInstanceOf(UnauthorizedError);
     });
 
@@ -380,14 +408,199 @@ describe('AuthService', () => {
       vi.mocked(users.findById).mockResolvedValue(null);
 
       await expect(
-        service.refreshToken({ refreshToken: 'valid-refresh-token' }),
+        service.refreshToken('valid-refresh-token'),
       ).rejects.toBeInstanceOf(UnauthorizedError);
+    });
+  });
+
+  describe('refresh rotation and reuse detection', () => {
+    const activeSession = {
+      sessionId: 11,
+      userId: 1,
+      sessionToken: 'old-access-jti',
+      refreshToken: 'test-jti',
+      expiresAt: new Date(Date.now() + 86_400_000),
+    };
+
+    beforeEach(() => {
+      vi.mocked(revocationService.blacklist).mockClear();
+      vi.mocked(revocationService.isBlacklisted).mockResolvedValue(false);
+    });
+
+    it('rotation blacklists the consumed jti, rotates the row and updates the Redis mapping to the new jti', async () => {
+      vi.mocked(sessions.findActiveByRefreshToken).mockResolvedValue(activeSession);
+      vi.mocked(users.findById).mockResolvedValue(activeUser);
+
+      const result = await service.refreshToken('valid-refresh-token');
+
+      expect(revocationService.blacklist).toHaveBeenCalledWith('test-jti', 1900000000);
+      expect(sessions.rotate).toHaveBeenCalledWith('test-jti', expect.objectContaining({
+        sessionToken: 'test-jti',
+        newRefreshToken: 'test-refresh-jti',
+      }));
+      expect(sessions.saveRefreshSessionMapping).toHaveBeenCalledWith('test-refresh-jti', 11, expect.any(Number));
+      const ttl = vi.mocked(sessions.saveRefreshSessionMapping).mock.calls[0][2];
+      expect(ttl).toBeGreaterThan(0);
+      expect(result.refreshToken).toBe('refresh-token');
+    });
+
+    it('a Redis failure while saving the mapping does not fail the refresh', async () => {
+      vi.mocked(sessions.findActiveByRefreshToken).mockResolvedValue(activeSession);
+      vi.mocked(users.findById).mockResolvedValue(activeUser);
+      vi.mocked(sessions.saveRefreshSessionMapping).mockRejectedValue(new Error('redis down'));
+      await expect(service.refreshToken('valid-refresh-token')).resolves.toMatchObject({ accessToken: 'access-token' });
+    });
+
+    it('reuse of a rotated (blacklisted) token deactivates the session and blacklists its access jti', async () => {
+      vi.mocked(revocationService.isBlacklisted).mockResolvedValueOnce(true);
+      vi.mocked(sessions.findSessionIdByRefreshJti).mockResolvedValue(11);
+      vi.mocked(sessions.findById).mockResolvedValue({ ...activeSession, refreshToken: 'newer-refresh-jti', isActive: true });
+
+      await expect(service.refreshToken('old-refresh-token')).rejects.toMatchObject({
+        statusCode: 401,
+        errors: [{ code: 'REFRESH_TOKEN_REUSED' }],
+      });
+      expect(sessions.deactivateById).toHaveBeenCalledWith(11);
+      expect(revocationService.blacklist).toHaveBeenCalledWith('old-access-jti', expect.any(Number));
+      expect(sessions.rotate).not.toHaveBeenCalled();
+    });
+
+    it('reuse is also detected when the token is not blacklisted but is no longer the current one', async () => {
+      vi.mocked(sessions.findActiveByRefreshToken).mockResolvedValue(null);
+      vi.mocked(sessions.findSessionIdByRefreshJti).mockResolvedValue(11);
+      vi.mocked(sessions.findById).mockResolvedValue({ ...activeSession, refreshToken: 'newer-refresh-jti', isActive: true });
+
+      await expect(service.refreshToken('old-refresh-token')).rejects.toMatchObject({ errors: [{ code: 'REFRESH_TOKEN_REUSED' }] });
+      expect(sessions.deactivateById).toHaveBeenCalledWith(11);
+    });
+
+    it('an inactive session (already logged out) is REFRESH_TOKEN_INVALID and nothing is revoked again', async () => {
+      vi.mocked(revocationService.isBlacklisted).mockResolvedValueOnce(true);
+      vi.mocked(sessions.findSessionIdByRefreshJti).mockResolvedValue(11);
+      vi.mocked(sessions.findById).mockResolvedValue({ ...activeSession, isActive: false });
+
+      await expect(service.refreshToken('old-refresh-token')).rejects.toMatchObject({ errors: [{ code: 'REFRESH_TOKEN_INVALID' }] });
+      expect(sessions.deactivateById).not.toHaveBeenCalled();
+    });
+
+    it('an unknown token (no mapping) and a Redis read failure are REFRESH_TOKEN_INVALID (fail closed)', async () => {
+      vi.mocked(sessions.findActiveByRefreshToken).mockResolvedValue(null);
+      vi.mocked(sessions.findSessionIdByRefreshJti).mockResolvedValue(null);
+      await expect(service.refreshToken('unknown')).rejects.toMatchObject({ errors: [{ code: 'REFRESH_TOKEN_INVALID' }] });
+
+      vi.mocked(sessions.findSessionIdByRefreshJti).mockRejectedValue(new Error('redis down'));
+      await expect(service.refreshToken('unknown')).rejects.toMatchObject({ errors: [{ code: 'REFRESH_TOKEN_INVALID' }] });
+      expect(sessions.deactivateById).not.toHaveBeenCalled();
+    });
+
+    it('a missing cookie, an unverifiable JWT and a JWT without jti are REFRESH_TOKEN_INVALID', async () => {
+      await expect(service.refreshToken(null)).rejects.toMatchObject({ errors: [{ code: 'REFRESH_TOKEN_INVALID' }] });
+      vi.mocked(tokenService.verifyRefreshToken).mockImplementationOnce(() => { throw new Error('bad signature'); });
+      await expect(service.refreshToken('garbage')).rejects.toMatchObject({ errors: [{ code: 'REFRESH_TOKEN_INVALID' }] });
+      vi.mocked(tokenService.verifyRefreshToken).mockReturnValueOnce({ sub: '1', type: 'refresh' } as never);
+      await expect(service.refreshToken('no-jti')).rejects.toMatchObject({ errors: [{ code: 'REFRESH_TOKEN_INVALID' }] });
+    });
+
+    it('a concurrent rotation (rotate returns false) never leaks the issued pair or stores a mapping', async () => {
+      vi.mocked(sessions.findActiveByRefreshToken).mockResolvedValue(activeSession);
+      vi.mocked(users.findById).mockResolvedValue(activeUser);
+      vi.mocked(sessions.rotate).mockResolvedValueOnce(false);
+      await expect(service.refreshToken('valid-refresh-token')).rejects.toMatchObject({ errors: [{ code: 'REFRESH_TOKEN_INVALID' }] });
+      expect(sessions.saveRefreshSessionMapping).not.toHaveBeenCalled();
+    });
+
+    it('a suspended account cannot refresh', async () => {
+      vi.mocked(sessions.findActiveByRefreshToken).mockResolvedValue(activeSession);
+      vi.mocked(users.findById).mockResolvedValue(suspendedUser);
+      await expect(service.refreshToken('valid-refresh-token')).rejects.toBeInstanceOf(ForbiddenError);
+      expect(sessions.rotate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('logout everywhere and credential changes revoke sessions', () => {
+    it('logoutAll deactivates every session and blacklists the current access jti', async () => {
+      await service.logoutAll(1, 'access-jti');
+      expect(sessions.deactivateAllForUser).toHaveBeenCalledWith(1);
+      expect(revocationService.blacklist).toHaveBeenCalledWith('access-jti', expect.any(Number));
+    });
+
+    it('logout without a refresh token only blacklists the access jti and never throws', async () => {
+      await expect(service.logout(null, 'access-jti')).resolves.toBeUndefined();
+      expect(sessions.deactivateByRefreshToken).not.toHaveBeenCalled();
+    });
+
+    it('setPassword revokes all sessions after a successful change', async () => {
+      vi.mocked(users.findById).mockResolvedValue(activeUser);
+      await service.setPassword(1, { currentPassword: 'Password123!', newPassword: 'NewPassword123!' } as never);
+      expect(sessions.deactivateAllForUser).toHaveBeenCalledWith(1);
+    });
+
+    it('setPassword with a wrong current password revokes nothing', async () => {
+      vi.mocked(users.findById).mockResolvedValue(activeUser);
+      await expect(service.setPassword(1, { currentPassword: 'nope', newPassword: 'NewPassword123!' } as never)).rejects.toBeInstanceOf(UnauthorizedError);
+      expect(sessions.deactivateAllForUser).not.toHaveBeenCalled();
+    });
+
+    it('disable2fa revokes all sessions', async () => {
+      vi.mocked(users.findById).mockResolvedValue({ ...activeUser, twoFactorEnabled: true, twoFactorSecret: 'enc-enrolled' });
+      await service.disable2fa(1, { code: '123456', password: 'Password123!' });
+      expect(sessions.deactivateAllForUser).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('OAuth hardening', () => {
+    it('rejects a redirect URI outside the allowlist with OAUTH_REDIRECT_NOT_ALLOWED before any network call', async () => {
+      const real = new OAuthService();
+      await expect(real.getUserInfo('google', 'code', 'https://evil.example/callback', 'verifier')).rejects.toMatchObject({
+        statusCode: 400,
+        errors: [{ code: 'OAUTH_REDIRECT_NOT_ALLOWED' }],
+      });
+      await expect(real.getUserInfo('github', 'code', 'http://localhost:5173/api/auth/callback/google/', 'verifier')).rejects.toMatchObject({
+        errors: [{ code: 'OAUTH_REDIRECT_NOT_ALLOWED' }],
+      });
+    });
+
+    it('oauthLogin forwards provider, code, redirectUri and codeVerifier to the provider exchange', async () => {
+      vi.mocked(oauthService.getUserInfo).mockResolvedValue({ provider: 'google', providerId: 'g-1', email: 'New@Example.com', name: 'New User' } as never);
+      vi.mocked(users.findByEmail).mockResolvedValue(null);
+      await service.oauthLogin({
+        provider: 'google', code: 'auth-code', redirectUri: 'http://localhost:5173/api/auth/callback/google', codeVerifier: 'v'.repeat(43),
+      } as never);
+      expect(oauthService.getUserInfo).toHaveBeenCalledWith('google', 'auth-code', 'http://localhost:5173/api/auth/callback/google', 'v'.repeat(43));
+    });
+
+    it('oauthSignup forwards the codeVerifier too', async () => {
+      vi.mocked(oauthService.getUserInfo).mockResolvedValue({ provider: 'github', providerId: 'h-1', email: 'new@example.com', name: 'New' } as never);
+      vi.mocked(users.findByEmail).mockResolvedValue(null);
+      await service.oauthSignup({
+        provider: 'github', code: 'c', redirectUri: 'http://localhost:5173/api/auth/callback/github', codeVerifier: 'x'.repeat(43),
+      } as never);
+      expect(oauthService.getUserInfo).toHaveBeenCalledWith('github', 'c', 'http://localhost:5173/api/auth/callback/github', 'x'.repeat(43));
+    });
+
+    it('a pending token is one-time: after it was consumed, completing registration is OAUTH_PENDING_INVALID', async () => {
+      vi.mocked(oauthService.getUserInfo).mockResolvedValue({ provider: 'google', providerId: 'g-1', email: 'new@example.com', name: 'New User' } as never);
+      vi.mocked(users.findByEmail).mockResolvedValue(null);
+      const result = await service.oauthLogin({
+        provider: 'google', code: 'c', redirectUri: 'http://localhost:5173/api/auth/callback/google', codeVerifier: 'v'.repeat(43),
+      } as never) as { pendingToken: string };
+      expect(result.pendingToken).toMatch(/^[0-9a-f]{48}$/);
+
+      await expect(consumePendingOAuth(result.pendingToken)).resolves.toMatchObject({ email: 'new@example.com', provider: 'google' });
+      await expect(consumePendingOAuth(result.pendingToken)).resolves.toBeNull();
+      await expect(service.completeOAuthRegistration({ pendingToken: result.pendingToken, accountType: 'individual' } as never))
+        .rejects.toMatchObject({ statusCode: 400, errors: [{ code: 'OAUTH_PENDING_INVALID' }] });
+    });
+
+    it('an unknown pending token is OAUTH_PENDING_INVALID', async () => {
+      await expect(service.completeOAuthRegistration({ pendingToken: 'f'.repeat(48), accountType: 'individual' } as never))
+        .rejects.toMatchObject({ errors: [{ code: 'OAUTH_PENDING_INVALID' }] });
     });
   });
 
   describe('logout', () => {
     it('blacklists the access JTI and deactivates the session', async () => {
-      await service.logout({ refreshToken: 'token-to-revoke' }, 'access-jti');
+      await service.logout('token-to-revoke', 'access-jti');
 
       expect(revocationService.blacklist).toHaveBeenCalledWith('access-jti', expect.any(Number));
       expect(sessions.deactivateByRefreshToken).toHaveBeenCalledWith('test-jti');

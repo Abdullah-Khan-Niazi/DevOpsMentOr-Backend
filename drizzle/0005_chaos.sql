@@ -12,7 +12,7 @@ CREATE TABLE `class_assignments` (
 --> statement-breakpoint
 ALTER TABLE `announcement_reads` DROP FOREIGN KEY `announcement_reads_announcement_id_fk`;
 --> statement-breakpoint
-ALTER TABLE `quiz_questions` MODIFY COLUMN `question_type` enum('multiple_choice','true_false','fill_blank','multiple_select','bucket_sort','ordering') NOT NULL DEFAULT 'multiple_choice';--> statement-breakpoint
+ALTER TABLE `quiz_questions` MODIFY COLUMN `question_type` enum('multiple_choice','true_false','fill_blank','multiple_select','bucket_sort','ordering','terminal') NOT NULL DEFAULT 'multiple_choice';--> statement-breakpoint
 ALTER TABLE `lessons` ADD `slug` varchar(160);--> statement-breakpoint
 ALTER TABLE `quiz_questions` ADD `config` json;--> statement-breakpoint
 ALTER TABLE `lessons` ADD CONSTRAINT `lessons_slug_key` UNIQUE(`slug`);--> statement-breakpoint
@@ -22,6 +22,7 @@ ALTER TABLE `class_assignments` ADD CONSTRAINT `class_assignments_assigned_by_us
 CREATE INDEX `idx_assignment_course` ON `class_assignments` (`course_id`);--> statement-breakpoint
 CREATE INDEX `idx_assignment_due` ON `class_assignments` (`due_date`);--> statement-breakpoint
 ALTER TABLE `announcement_reads` ADD CONSTRAINT `announcement_reads_announcement_id_fk` FOREIGN KEY (`announcement_id`) REFERENCES `announcements`(`announcement_id`) ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
 -- ─────────────────────────────────────────────────────────────────────────────
 -- CHAOS WAVE 2 (merged into this migration on purpose).
 -- Tenancy + hardening DDL that shipped after the first chaos cutdown:
@@ -71,9 +72,11 @@ CREATE INDEX `idx_om_user_status` ON `organization_memberships` (`user_id`,`stat
 CREATE INDEX `idx_om_org_role` ON `organization_memberships` (`organization_id`,`status`,`role`);
 --> statement-breakpoint
 ALTER TABLE `audit_logs` ADD CONSTRAINT `audit_logs_admin_user_id_users_user_id_fk` FOREIGN KEY (`admin_user_id`) REFERENCES `users`(`user_id`) ON DELETE set null ON UPDATE no action;
+--> statement-breakpoint
 
 -- CHAOS WAVE 3: OTP codes stored as HMAC digests (column widened to 64).
 ALTER TABLE `otp_codes` MODIFY COLUMN `code` varchar(64) NOT NULL;
+--> statement-breakpoint
 
 -- CHAOS WAVE 4: legacy enum taxonomy retired (skills, lab types, team roles,
 -- track/season content, points sources, payment methods).
@@ -90,6 +93,7 @@ ALTER TABLE `skills` MODIFY COLUMN `category` enum('cloud','containers','automat
 ALTER TABLE `team_members` MODIFY COLUMN `role` enum('member','captain','co_captain') NOT NULL DEFAULT 'member';
 --> statement-breakpoint
 ALTER TABLE `track_content` MODIFY COLUMN `content_type` enum('lab','course') NOT NULL;
+--> statement-breakpoint
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- CHAOS DATA BACKFILL: migrate legacy single-org scope pointers and class
@@ -123,3 +127,13 @@ SELECT t.organization_id, tm.user_id,
    AND t.organization_id IS NOT NULL
    AND t.slug <> '__org_invites__'
  GROUP BY t.organization_id, tm.user_id, tm.role;
+--> statement-breakpoint
+
+-- CHAOS WAVE 5: module item spine (lab/quiz items) + terminal quiz questions.
+ALTER TABLE `lessons` MODIFY COLUMN `content_type` enum('text','video','interactive','lab','quiz') NOT NULL DEFAULT 'text';--> statement-breakpoint
+ALTER TABLE `lessons` ADD `lab_id` int;--> statement-breakpoint
+ALTER TABLE `lessons` ADD `quiz_id` int;--> statement-breakpoint
+ALTER TABLE `lessons` ADD CONSTRAINT `lessons_lab_id_labs_lab_id_fk` FOREIGN KEY (`lab_id`) REFERENCES `labs`(`lab_id`) ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE `lessons` ADD CONSTRAINT `lessons_quiz_id_quizzes_quiz_id_fk` FOREIGN KEY (`quiz_id`) REFERENCES `quizzes`(`quiz_id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX `idx_lessons_lab` ON `lessons` (`lab_id`);--> statement-breakpoint
+CREATE INDEX `idx_lessons_quiz` ON `lessons` (`quiz_id`);

@@ -3,26 +3,24 @@ import type { GamificationRepository } from '../repositories/gamification.reposi
 import { gamificationRepository } from '../repositories/gamification.repository';
 import type { PointsService } from './points.service';
 import { pointsService } from './points.service';
+import type { LeaderboardService } from './leaderboard.service';
+import { leaderboardService } from './leaderboard.service';
 
 export interface AdminPointsServiceDeps {
-  repo: Pick<
-    GamificationRepository,
-    | 'findUser'
-    | 'sumPointsForUser'
-    | 'countCourseCompletionsForUser'
-    | 'upsertLeaderboard'
-  >;
+  repo: Pick<GamificationRepository, 'findUser'>;
   points: Pick<PointsService, 'credit'>;
+  leaderboard: Pick<LeaderboardService, 'refreshUserTotals'>;
 }
 
 function defaultDeps(): AdminPointsServiceDeps {
-  return { repo: gamificationRepository, points: pointsService };
+  return { repo: gamificationRepository, points: pointsService, leaderboard: leaderboardService };
 }
 
 /**
- * GAM-21: platform-admin manual point adjustment. Writes a new
- * `admin_adjustment` ledger row (never mutates existing rows) and refreshes
- * the user's `leaderboards` row; ranks are recomputed by the scheduled job.
+ * GAM-21: platform-admin manual point adjustment. Writes a keyed
+ * `admin_adjustment` ledger row (never mutates existing rows) through
+ * `pointsService.credit`, then refreshes the user's `leaderboards` totals;
+ * ranks are recomputed by the scheduled job.
  */
 export class AdminPointsService {
   constructor(private readonly deps: AdminPointsServiceDeps = defaultDeps()) {}
@@ -31,7 +29,7 @@ export class AdminPointsService {
     targetUserId: number,
     pointsChange: number,
     description: string,
-  ): Promise<{ historyId: number; newBalance: number }> {
+  ): Promise<{ historyId: number | null; newBalance: number }> {
     const user = await this.deps.repo.findUser(targetUserId);
     if (!user) {
       throw new NotFoundError('Target user not found.');
@@ -43,11 +41,7 @@ export class AdminPointsService {
       null,
       description,
     );
-    const [totalPoints, courseCompletionsCount] = await Promise.all([
-      this.deps.repo.sumPointsForUser(targetUserId),
-      this.deps.repo.countCourseCompletionsForUser(targetUserId),
-    ]);
-    await this.deps.repo.upsertLeaderboard(targetUserId, totalPoints, courseCompletionsCount);
+    await this.deps.leaderboard.refreshUserTotals(targetUserId);
     return { historyId, newBalance };
   }
 }

@@ -6,19 +6,19 @@ import {
   type IAssignmentRepository,
 } from '../repositories/assignment.repository';
 import {
-  orgScopeRepository,
-  type IOrgScopeRepository,
-} from '../repositories/org.repository';
+  membershipRepository,
+  type IMembershipRepository,
+} from '../repositories/membership.repository';
 
 export interface CourseAccessServiceDeps {
   assignments: IAssignmentRepository;
-  scopes: IOrgScopeRepository;
+  memberships: IMembershipRepository;
 }
 
 function defaultDeps(): CourseAccessServiceDeps {
   return {
     assignments: assignmentRepository,
-    scopes: orgScopeRepository,
+    memberships: membershipRepository,
   };
 }
 
@@ -86,8 +86,14 @@ export class CourseAccessService {
       };
     }
 
-    const orgId = await this.deps.scopes.getOrgId(actor.userId);
-    if (orgId !== null && (await this.deps.assignments.hasActiveOrgSubscription(orgId))) {
+    // Multi-org: any active membership's organization may hold the subscription.
+    const memberships = await this.deps.memberships.listActiveForUser(actor.userId);
+    const subscribed = await Promise.all(
+      memberships.map((membership) =>
+        this.deps.assignments.hasActiveOrgSubscription(membership.organizationId),
+      ),
+    );
+    if (subscribed.some(Boolean)) {
       return {
         courseId: course.courseId,
         courseTitle: course.title,

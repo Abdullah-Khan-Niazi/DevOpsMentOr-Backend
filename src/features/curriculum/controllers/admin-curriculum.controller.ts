@@ -3,6 +3,7 @@ import { HTTP_STATUS } from '../../../shared/constants';
 import { sendSuccess } from '../../../shared/utils';
 import type { CurriculumActor } from '../dto/curriculum.dto';
 import { adminCurriculumService } from '../services/AdminCurriculumService';
+import { moduleItemService } from '../services/ModuleItemService';
 import { quizService } from '../services/QuizService';
 
 function actorFrom(req: Request): CurriculumActor {
@@ -13,24 +14,13 @@ function actorFrom(req: Request): CurriculumActor {
   };
 }
 
-/** F4 Platform Admin write path: CRUD, publish/archive, reorder (§08). */
+/** F4 Platform Admin write path: CRUD, publish/archive, reorder (§08, contracts 6.1). */
 export class AdminCurriculumController {
-  /** F4-API-07 */
-  async getCourse(_req: Request, res: Response): Promise<Response> {
-    const course = await adminCurriculumService.getCourse();
-    return sendSuccess(res, course, 'Course retrieved successfully.');
-  }
+  /* ── Reference data ─────────────────────────────────────────────────── */
 
-  /** SCR-F4-03: lesson tag vocabulary for the editor form. */
   async getTags(_req: Request, res: Response): Promise<Response> {
-    const tags = await adminCurriculumService.getTags();
+    const tags = await adminCurriculumService.listTags();
     return sendSuccess(res, tags, 'Tags retrieved successfully.');
-  }
-
-  /** F4-API-08 */
-  async createCourse(req: Request, res: Response): Promise<Response> {
-    const course = await adminCurriculumService.createCourse(actorFrom(req), req.body);
-    return sendSuccess(res, course, 'Course created successfully.', HTTP_STATUS.CREATED);
   }
 
   async listDifficulties(_req: Request, res: Response): Promise<Response> {
@@ -43,124 +33,196 @@ export class AdminCurriculumController {
     return sendSuccess(res, categories, 'Categories retrieved successfully.');
   }
 
+  /* ── Courses ────────────────────────────────────────────────────────── */
+
+  async listCourses(req: Request, res: Response): Promise<Response> {
+    const query = req.query as unknown as { search?: string; status?: 'all' | 'published' | 'draft' };
+    const courses = await adminCurriculumService.listCourses({ search: query.search, status: query.status });
+    return sendSuccess(res, courses, 'Courses retrieved successfully.');
+  }
+
+  async createCourse(req: Request, res: Response): Promise<Response> {
+    const course = await adminCurriculumService.createCourse(actorFrom(req), req.body);
+    return sendSuccess(res, course, 'Course created successfully.', HTTP_STATUS.CREATED);
+  }
+
+  async getCourse(req: Request, res: Response): Promise<Response> {
+    const courseId = Number(req.params.courseId);
+    const [course, modules] = await Promise.all([
+      adminCurriculumService.getCourse(courseId),
+      adminCurriculumService.listCourseModules(courseId, {}),
+    ]);
+    return sendSuccess(res, { course, modules }, 'Course retrieved successfully.');
+  }
+
   async updateCourse(req: Request, res: Response): Promise<Response> {
-    const course = await adminCurriculumService.updateCourse(actorFrom(req), req.body);
+    const course = await adminCurriculumService.updateCourse(
+      actorFrom(req),
+      Number(req.params.courseId),
+      req.body,
+    );
     return sendSuccess(res, course, 'Course updated successfully.');
   }
 
-  /** F4-API-09 + SCR-F4-02/03/04 editor payload when a module id is given. */
-  async getModules(req: Request, res: Response): Promise<Response> {
+  async archiveCourse(req: Request, res: Response): Promise<Response> {
+    const course = await adminCurriculumService.archiveCourse(actorFrom(req), Number(req.params.courseId));
+    return sendSuccess(res, course, 'Course archived successfully.');
+  }
+
+  async deleteCourse(req: Request, res: Response): Promise<Response> {
+    await adminCurriculumService.deleteCourse(actorFrom(req), Number(req.params.courseId));
+    return sendSuccess(res, null, 'Course deleted.');
+  }
+
+  /* ── Modules ────────────────────────────────────────────────────────── */
+
+  /** D17: course scoped module list. */
+  async listCourseModules(req: Request, res: Response): Promise<Response> {
     const query = req.query as unknown as { search?: string; isPublished?: boolean };
-    const modules = await adminCurriculumService.getAllModules(query.search, query.isPublished);
+    const modules = await adminCurriculumService.listCourseModules(Number(req.params.courseId), {
+      search: query.search,
+      isPublished: query.isPublished,
+    });
     return sendSuccess(res, modules, 'Modules retrieved successfully.');
   }
 
-  /** SCR-F4-02/03/04: module editor payload (module + lessons + quizzes). */
-  async getModuleEditorData(req: Request, res: Response): Promise<Response> {
-    const data = await adminCurriculumService.getModuleEditorData(Number(req.params.moduleId));
-    return sendSuccess(res, data, 'Module editor data retrieved successfully.');
-  }
-
-  /** F4-API-10 */
   async createModule(req: Request, res: Response): Promise<Response> {
-    const module = await adminCurriculumService.createModule(actorFrom(req), req.body);
+    const module = await adminCurriculumService.createModule(
+      actorFrom(req),
+      Number(req.params.courseId),
+      req.body,
+    );
     return sendSuccess(res, module, 'Module created successfully.', HTTP_STATUS.CREATED);
   }
 
-  /** F4-API-11 */
+  async reorderModules(req: Request, res: Response): Promise<Response> {
+    const modules = await adminCurriculumService.reorderModules(
+      actorFrom(req),
+      Number(req.params.courseId),
+      req.body.moduleIds,
+    );
+    return sendSuccess(res, modules, 'Module order updated successfully.');
+  }
+
+  /** Module editor payload: `{ module, items }`. */
+  async getModule(req: Request, res: Response): Promise<Response> {
+    const data = await adminCurriculumService.getModule(Number(req.params.moduleId));
+    return sendSuccess(res, data, 'Module retrieved successfully.');
+  }
+
   async updateModule(req: Request, res: Response): Promise<Response> {
     const module = await adminCurriculumService.updateModule(actorFrom(req), Number(req.params.moduleId), req.body);
     return sendSuccess(res, module, 'Module updated successfully.');
   }
 
-  /** F4-API-12 */
   async publishModule(req: Request, res: Response): Promise<Response> {
     const module = await adminCurriculumService.publishModule(actorFrom(req), Number(req.params.moduleId));
     return sendSuccess(res, module, 'Module published successfully.');
   }
 
-  /** F4-API-13 */
   async archiveModule(req: Request, res: Response): Promise<Response> {
     const module = await adminCurriculumService.archiveModule(actorFrom(req), Number(req.params.moduleId));
     return sendSuccess(res, module, 'Module archived successfully.');
   }
 
-  /** F4-API-14 */
-  async reorderModules(req: Request, res: Response): Promise<Response> {
-    await adminCurriculumService.reorderModules(actorFrom(req), req.body.orders);
-    return sendSuccess(res, null, 'Module order updated successfully.');
+  async deleteModule(req: Request, res: Response): Promise<Response> {
+    await adminCurriculumService.deleteModule(actorFrom(req), Number(req.params.moduleId));
+    return sendSuccess(res, null, 'Module deleted.');
   }
 
-  /** F4-API-15 */
-  async createLesson(req: Request, res: Response): Promise<Response> {
-    const lesson = await adminCurriculumService.createLesson(
-      actorFrom(req),
-      Number(req.params.moduleId),
-      req.body,
-    );
-    return sendSuccess(res, lesson, 'Lesson created successfully.', HTTP_STATUS.CREATED);
+  /* ── Items ──────────────────────────────────────────────────────────── */
+
+  async createItem(req: Request, res: Response): Promise<Response> {
+    const item = await moduleItemService.createItem(actorFrom(req), Number(req.params.moduleId), req.body);
+    return sendSuccess(res, item, 'Item created successfully.', HTTP_STATUS.CREATED);
   }
 
-  /** F4-API-16 */
+  async reorderItems(req: Request, res: Response): Promise<Response> {
+    const items = await moduleItemService.reorderItems(actorFrom(req), Number(req.params.moduleId), req.body.itemIds);
+    return sendSuccess(res, items, 'Item order updated successfully.');
+  }
+
+  async updateItemTitle(req: Request, res: Response): Promise<Response> {
+    const item = await moduleItemService.updateItemTitle(actorFrom(req), Number(req.params.itemId), req.body.title);
+    return sendSuccess(res, item, 'Item updated successfully.');
+  }
+
+  async publishItem(req: Request, res: Response): Promise<Response> {
+    const item = await moduleItemService.publishItem(actorFrom(req), Number(req.params.itemId), req.body.isPublished);
+    return sendSuccess(res, item, req.body.isPublished ? 'Item published successfully.' : 'Item unpublished successfully.');
+  }
+
+  async deleteItem(req: Request, res: Response): Promise<Response> {
+    await moduleItemService.deleteItem(actorFrom(req), Number(req.params.itemId));
+    return sendSuccess(res, null, 'Item deleted.');
+  }
+
+  /* ── Lessons ────────────────────────────────────────────────────────── */
+
+  async getLesson(req: Request, res: Response): Promise<Response> {
+    const lesson = await adminCurriculumService.getLesson(Number(req.params.lessonId));
+    return sendSuccess(res, lesson, 'Lesson retrieved successfully.');
+  }
+
   async updateLesson(req: Request, res: Response): Promise<Response> {
     const lesson = await adminCurriculumService.updateLesson(actorFrom(req), Number(req.params.lessonId), req.body);
     return sendSuccess(res, lesson, 'Lesson updated successfully.');
   }
 
-  /** F4-API-17 */
+  /** Alias of the item publish route with `isPublished: true`. */
   async publishLesson(req: Request, res: Response): Promise<Response> {
-    const lesson = await adminCurriculumService.publishLesson(actorFrom(req), Number(req.params.lessonId));
-    return sendSuccess(res, lesson, 'Lesson published successfully.');
+    const item = await moduleItemService.publishItem(actorFrom(req), Number(req.params.lessonId), true);
+    return sendSuccess(res, item, 'Lesson published successfully.');
   }
 
-  /** F4-API-18 */
-  async reorderLessons(req: Request, res: Response): Promise<Response> {
-    await adminCurriculumService.reorderLessons(
-      actorFrom(req),
-      Number(req.params.moduleId),
-      req.body.orders,
-    );
-    return sendSuccess(res, null, 'Lesson order updated successfully.');
+  /* ── Quizzes and questions ──────────────────────────────────────────── */
+
+  async getQuiz(req: Request, res: Response): Promise<Response> {
+    const quiz = await quizService.getQuiz(Number(req.params.quizId));
+    return sendSuccess(res, quiz, 'Quiz retrieved successfully.');
   }
 
-  /** SCR-F4-03: single lesson for the editor form. */
-  async getLessonEditorData(req: Request, res: Response): Promise<Response> {
-    const lesson = await adminCurriculumService.getLessonEditorData(Number(req.params.lessonId));
-    return sendSuccess(res, lesson, 'Lesson retrieved successfully.');
-  }
-
-  /** F4-API-19 */
-  async createQuiz(req: Request, res: Response): Promise<Response> {
-    const quiz = await quizService.createQuiz(actorFrom(req), Number(req.params.moduleId), req.body);
-    return sendSuccess(res, quiz, 'Quiz created successfully.', HTTP_STATUS.CREATED);
-  }
-
-  /** F4-API-20 */
   async updateQuiz(req: Request, res: Response): Promise<Response> {
     const quiz = await quizService.updateQuiz(actorFrom(req), Number(req.params.quizId), req.body);
     return sendSuccess(res, quiz, 'Quiz updated successfully.');
   }
 
-  /** SCR-F4-04: single quiz with questions for the builder form. */
-  async getQuizEditorData(req: Request, res: Response): Promise<Response> {
-    const quiz = await quizService.getQuizAdminDetail(Number(req.params.quizId));
-    return sendSuccess(res, quiz, 'Quiz retrieved successfully.');
+  async deleteQuiz(req: Request, res: Response): Promise<Response> {
+    await quizService.deleteQuiz(actorFrom(req), Number(req.params.quizId));
+    return sendSuccess(res, null, 'Quiz deleted.');
   }
 
-  /** F4-API-21 */
   async createQuestion(req: Request, res: Response): Promise<Response> {
-    const question = await quizService.createQuestion(actorFrom(req), Number(req.params.quizId), req.body);
-    return sendSuccess(res, question, 'Question created successfully.', HTTP_STATUS.CREATED);
+    const { question, warnings } = await quizService.createQuestion(
+      actorFrom(req),
+      Number(req.params.quizId),
+      req.body,
+    );
+    // `QuestionDto` plus the non-blocking authoring warnings.
+    return sendSuccess(res, { ...question, warnings }, 'Question created successfully.', HTTP_STATUS.CREATED);
   }
 
-  /** F4-API-22 */
+  async reorderQuestions(req: Request, res: Response): Promise<Response> {
+    const questions = await quizService.reorderQuestions(
+      actorFrom(req),
+      Number(req.params.quizId),
+      req.body.questionIds,
+    );
+    return sendSuccess(res, questions, 'Question order updated successfully.');
+  }
+
   async updateQuestion(req: Request, res: Response): Promise<Response> {
-    const question = await quizService.updateQuestion(
+    const { question, warnings } = await quizService.updateQuestion(
       actorFrom(req),
       Number(req.params.questionId),
       req.body,
     );
-    return sendSuccess(res, question, 'Question updated successfully.');
+    return sendSuccess(res, { ...question, warnings }, 'Question updated successfully.');
+  }
+
+  async deleteQuestion(req: Request, res: Response): Promise<Response> {
+    await quizService.deleteQuestion(actorFrom(req), Number(req.params.questionId));
+    return sendSuccess(res, null, 'Question deleted.');
   }
 }
 

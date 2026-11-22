@@ -13,6 +13,12 @@ export class GamificationController {
     return sendSuccess(res, profile, 'Gamification profile retrieved successfully.');
   }
 
+  /** GAM-01 top-bar summary */
+  async getMeSummary(req: Request, res: Response): Promise<Response> {
+    const summary = await gamificationService.getMeSummary(Number(req.user?.sub));
+    return sendSuccess(res, summary, 'Gamification summary retrieved successfully.');
+  }
+
   /** GAM-02 */
   async listBadges(_req: Request, res: Response): Promise<Response> {
     const badges = await badgeService.listBadges();

@@ -3,7 +3,7 @@ import { redisClient } from '../../../app/cache/redis';
 import type { OAuthProvider } from '../dto/auth.dto';
 
 const PENDING_PREFIX = 'oauth_pending:';
-const PENDING_TTL_SECONDS = 15 * 60;
+const PENDING_TTL_SECONDS = 10 * 60;
 
 export interface PendingOAuth {
   email: string;
@@ -27,15 +27,17 @@ export async function createPendingOAuth(profile: PendingOAuth): Promise<string>
   return token;
 }
 
+/**
+ * Atomically reads and deletes the pending record (GETDEL), so a token can be
+ * redeemed exactly once even under concurrent requests. Returns null when the
+ * token is unknown, expired or already used.
+ */
 export async function consumePendingOAuth(token: string): Promise<PendingOAuth | null> {
-  const key = `${PENDING_PREFIX}${token}`;
-  const raw = await redisClient.get(key);
+  const raw = await redisClient.getdel(`${PENDING_PREFIX}${token}`);
 
   if (!raw) {
     return null;
   }
-
-  await redisClient.del(key);
 
   try {
     return JSON.parse(raw) as PendingOAuth;

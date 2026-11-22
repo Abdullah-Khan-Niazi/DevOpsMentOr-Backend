@@ -94,19 +94,24 @@ export const setPasswordSchema = z
   })
   .strip();
 
-export const refreshTokenSchema = z
-  .object({
-    refreshToken: z.string().min(1, 'Refresh token is required.'),
-  })
-  .strip();
+// The refresh token travels only in the httpOnly `dm_rt` cookie: the body of
+// refresh and logout must be empty.
+export const refreshTokenSchema = z.object({}).strict();
 
-export const logoutSchema = refreshTokenSchema;
+export const logoutSchema = z.object({}).strict();
 
+export const logoutAllSchema = z.object({}).strict();
+
+// PKCE (RFC 7636) verifier: 43-128 unreserved characters. The redirect URI is
+// checked against the exact OAUTH_REDIRECT_URIS allowlist in OAuthService.
 export const oAuthLoginSchema = z
   .object({
     provider: z.enum(['google', 'github']),
     code: z.string().min(1, 'Authorization code is required.'),
-    redirectUri: z.string().url('Invalid redirect URI.'),
+    redirectUri: z.string().url('Invalid redirect URI.').max(2048),
+    codeVerifier: z
+      .string({ required_error: 'PKCE code verifier is required.' })
+      .regex(/^[A-Za-z0-9._~-]{43,128}$/, 'Invalid PKCE code verifier.'),
   })
   .strip();
 

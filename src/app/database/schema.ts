@@ -962,10 +962,16 @@ export const modules = mysqlTable(
 );
 
 /**
- * `lessons` — Module lessons (F4 §05). `content_type` drives rendering
- * (text | video | interactive | lab; lab links to F6 definitions).
- * `lesson_order` is unique within the module (invariant 3). Lessons are
- * never hard-deleted; removal unpublishes and re-orders (invariant 10).
+ * `lessons` — Module item spine (F4 §05). Every ordered module item is a row
+ * here; `content_type` drives rendering:
+ *   - `text` | `video` | `interactive`: a lesson whose body lives in `content`
+ *     / `video_url`;
+ *   - `lab`: a lab item, `lab_id` points at the `labs` definition (steps live in
+ *     `pro_labs.flag_values` v2); `content` is NULL;
+ *   - `quiz`: a quiz item, `quiz_id` points at the `quizzes` row (which keeps
+ *     its own `module_id`); deleting the quiz deletes its spine row.
+ * `lesson_order` is the single ordering column for all item kinds and is
+ * unique within the module (invariant 3).
  */
 export const lessons = mysqlTable(
   'lessons',
@@ -982,9 +988,13 @@ export const lessons = mysqlTable(
      */
     slug: varchar('slug', { length: 160 }),
     content: longtext('content'),
-    contentType: mysqlEnum('content_type', ['text', 'video', 'interactive', 'lab'])
+    contentType: mysqlEnum('content_type', ['text', 'video', 'interactive', 'lab', 'quiz'])
       .notNull()
       .default('text'),
+    /** Lab item: FK to the lab definition. NULL for non-lab items (and after the lab is deleted). */
+    labId: int('lab_id').references((): AnyMySqlColumn => labs.labId, { onDelete: 'set null' }),
+    /** Quiz item: FK to the quiz. Deleting the quiz deletes its spine row. */
+    quizId: int('quiz_id').references((): AnyMySqlColumn => quizzes.quizId, { onDelete: 'cascade' }),
     videoUrl: varchar('video_url', { length: 255 }),
     videoDurationSeconds: int('video_duration_seconds'),
     lessonOrder: int('lesson_order').notNull(),
@@ -995,6 +1005,8 @@ export const lessons = mysqlTable(
   (table) => [
     index('idx_module_order').on(table.moduleId, table.lessonOrder),
     uniqueIndex('lessons_slug_key').on(table.slug),
+    index('idx_lessons_lab').on(table.labId),
+    index('idx_lessons_quiz').on(table.quizId),
   ],
 );
 
@@ -1067,6 +1079,7 @@ export const quizQuestions = mysqlTable(
       'multiple_select',
       'bucket_sort',
       'ordering',
+      'terminal',
     ])
       .notNull()
       .default('multiple_choice'),
@@ -1300,9 +1313,12 @@ export const labs = mysqlTable(
 
 /**
  * `pro_labs` — Infrastructure lab extension (F6 §06 adaptation).
- * `required_root_count` is adapted as the required completed assertion count;
- * `flag_values` JSON is adapted as `{ "checkpointId": "assertionGroupId" }`
- * checkpoint identifiers consumed server-side by the assertion engine.
+ * `flag_values` JSON holds the lab step spec v2 (`LabSpecV2`:
+ * `{ version: 2, mode, scenario, steps[] }` with ordered steps, their
+ * instructions, hints, server-only checks/setup/answers). It is read only
+ * through `parseLabSpec()`; rows still holding the legacy
+ * `{ "checkpointId": "assertionGroupId" }` map parse as `legacy` (not ready).
+ * `required_root_count` = number of steps; `total_machines` = 1.
  */
 export const proLabs = mysqlTable(
   'pro_labs',
@@ -1314,7 +1330,7 @@ export const proLabs = mysqlTable(
     networkIpRange: varchar('network_ip_range', { length: 50 }),
     totalMachines: int('total_machines').notNull().default(0),
     requiredRootCount: int('required_root_count').notNull().default(0),
-    flagValues: json('flag_values').$type<Record<string, string> | null>(),
+    flagValues: json('flag_values').$type<Record<string, unknown> | null>(),
     activeUsersCount: int('active_users_count').notNull().default(0),
   },
   (table) => [uniqueIndex('pro_labs_lab_id_key').on(table.labId)],

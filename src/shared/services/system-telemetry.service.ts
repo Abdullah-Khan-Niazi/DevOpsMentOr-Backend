@@ -1,3 +1,4 @@
+import http from 'http';
 import os from 'os';
 import { sql } from 'drizzle-orm';
 import { db } from '../../app/database';
@@ -20,6 +21,47 @@ interface TelemetrySample {
   cpuLoad: number;
   memoryMb: number;
   memoryPercent: number;
+  consumedRamMb: number;
+  consumedRamGb: number;
+  consumedCpuCores: number;
+  consumedCpuPercent: number;
+}
+
+interface DockerContainerListItem {
+  Id: string;
+  Names?: string[];
+}
+
+interface DockerContainerStats {
+  memory_stats?: {
+    usage?: number;
+    stats?: {
+      inactive_file?: number;
+      cache?: number;
+    };
+  };
+  cpu_stats?: {
+    cpu_usage?: {
+      total_usage?: number;
+      percpu_usage?: number[];
+    };
+    system_cpu_usage?: number;
+    online_cpus?: number;
+  };
+  precpu_stats?: {
+    cpu_usage?: {
+      total_usage?: number;
+    };
+    system_cpu_usage?: number;
+  };
+}
+
+export interface LabConsumptionSnapshot {
+  activeDockerContainers: number;
+  consumedRamMb: number;
+  consumedRamGb: number;
+  consumedCpuCores: number;
+  consumedCpuPercent: number;
 }
 
 class SystemTelemetryService {
@@ -27,10 +69,22 @@ class SystemTelemetryService {
   private totalRequestsCount = 0;
   private samples: TelemetrySample[] = [];
   private readonly maxSamples = 60; // Up to 60 historical samples
+  private lastContainerStatsAt = 0;
+  private lastContainerSnapshot: LabConsumptionSnapshot = {
+    activeDockerContainers: 0,
+    consumedRamMb: 0,
+    consumedRamGb: 0,
+    consumedCpuCores: 0,
+    consumedCpuPercent: 0,
+  };
   private cachedCompute: AllocatedComputeDto = {
-    activeContainers: 2,
-    allocatedRamGb: 4,
-    allocatedCpuCores: 2,
+    activeContainers: 0,
+    allocatedRamGb: 0,
+    allocatedCpuCores: 0,
+    consumedRamMb: 0,
+    consumedRamGb: 0,
+    consumedCpuCores: 0,
+    consumedCpuPercent: 0,
     pendingPods: 0,
     errorPods: 0,
     stoppedPods: 0,
@@ -47,6 +101,253 @@ class SystemTelemetryService {
       this.collectSample();
     }, 15000);
     timer.unref();
+  }
+
+  private queryDockerSocketJson<T>(path: string, timeoutMs = 2000): Promise<T | null> {
+    return new Promise((resolve) => {
+      const req = http.request(
+        {
+          socketPath: '/var/run/docker.sock',
+          path,
+          method: 'GET',
+          timeout: timeoutMs,
+        },
+        (res) => {
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+            res.resume();
+            resolve(null);
+            return;
+          }
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => {
+            try {
+              const raw = Buffer.concat(chunks).toString('utf-8');
+              resolve(JSON.parse(raw) as T);
+            } catch {
+              resolve(null);
+            }
+          });
+        },
+      );
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(null);
+      });
+      req.end();
+    });
+  }
+
+  public async measureLabContainersConsumption(
+    activeDbContainers?: number,
+  ): Promise<LabConsumptionSnapshot> {
+    const now = Date.now();
+    const activeCountChanged =
+      activeDbContainers !== undefined && activeDbContainers !== this.cachedCompute.activeContainers;
+    if (!activeCountChanged && now - this.lastContainerStatsAt < 2000) {
+      return this.lastContainerSnapshot;
+    }
+
+    const filterParam = encodeURIComponent(
+      JSON.stringify({ name: ['devopsmentor-lab-'], status: ['running'] }),
+    );
+    const containers = await this.queryDockerSocketJson<DockerContainerListItem[]>(
+      `/containers/json?filters=${filterParam}`,
+    );
+
+    const activeContainersCount = activeDbContainers ?? this.cachedCompute.activeContainers ?? 0;
+
+    if (containers && containers.length > 0) {
+      const statsList = await Promise.all(
+        containers.map((c) =>
+          this.queryDockerSocketJson<DockerContainerStats>(`/containers/${c.Id}/stats?stream=false`),
+        ),
+      );
+
+      let totalRamBytes = 0;
+      let totalCpuCores = 0;
+
+      for (const stats of statsList) {
+        if (!stats) continue;
+        const usage = stats.memory_stats?.usage ?? 0;
+        const cache = stats.memory_stats?.stats?.inactive_file ?? stats.memory_stats?.stats?.cache ?? 0;
+        const netRamBytes = Math.max(0, usage - cache);
+        totalRamBytes += usage > 0 ? Math.max(netRamBytes, 16 * 1024 * 1024) : 0;
+
+        const cpuDelta =
+          (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) -
+          (stats.precpu_stats?.cpu_usage?.total_usage ?? 0);
+        const sysDelta =
+          (stats.cpu_stats?.system_cpu_usage ?? 0) -
+          (stats.precpu_stats?.system_cpu_usage ?? 0);
+        const onlineCpus =
+          stats.cpu_stats?.online_cpus ||
+          stats.cpu_stats?.cpu_usage?.percpu_usage?.length ||
+          os.cpus().length ||
+          1;
+        const rawCores = sysDelta > 0 && cpuDelta > 0 ? (cpuDelta / sysDelta) * onlineCpus : 0.04;
+        const cores = Math.max(rawCores, 0.04);
+        totalCpuCores += cores;
+      }
+
+      const consumedRamMb = Number((totalRamBytes / (1024 * 1024)).toFixed(1));
+      const consumedRamGb = Number((consumedRamMb / 1024).toFixed(2));
+      const consumedCpuCores = Number(totalCpuCores.toFixed(2));
+      const allocatedCores = this.cachedCompute.allocatedCpuCores;
+      const consumedCpuPercent =
+        allocatedCores > 0
+          ? Math.min(
+              100,
+              totalCpuCores > 0
+                ? Math.max(0.1, Number(((totalCpuCores / allocatedCores) * 100).toFixed(1)))
+                : 0,
+            )
+          : Number((totalCpuCores * 100).toFixed(1));
+
+      this.lastContainerSnapshot = {
+        activeDockerContainers: containers.length,
+        consumedRamMb,
+        consumedRamGb,
+        consumedCpuCores,
+        consumedCpuPercent,
+      };
+    } else if (activeContainersCount > 0) {
+      const consumedRamMb = Number((64 * activeContainersCount).toFixed(1));
+      const consumedRamGb = Number((consumedRamMb / 1024).toFixed(2));
+      const totalCpuCores = 0.04 * activeContainersCount;
+      const consumedCpuCores = Number(totalCpuCores.toFixed(2));
+      const allocatedCores = this.cachedCompute.allocatedCpuCores;
+      const consumedCpuPercent =
+        allocatedCores > 0
+          ? Math.min(
+              100,
+              Math.max(0.1, Number(((totalCpuCores / allocatedCores) * 100).toFixed(1))),
+            )
+          : Number((totalCpuCores * 100).toFixed(1));
+
+      this.lastContainerSnapshot = {
+        activeDockerContainers: 0,
+        consumedRamMb,
+        consumedRamGb,
+        consumedCpuCores,
+        consumedCpuPercent,
+      };
+    } else {
+      this.lastContainerSnapshot = {
+        activeDockerContainers: 0,
+        consumedRamMb: 0,
+        consumedRamGb: 0,
+        consumedCpuCores: 0,
+        consumedCpuPercent: 0,
+      };
+    }
+
+    this.lastContainerStatsAt = now;
+    this.cachedCompute = {
+      ...this.cachedCompute,
+      consumedRamMb: this.lastContainerSnapshot.consumedRamMb,
+      consumedRamGb: this.lastContainerSnapshot.consumedRamGb,
+      consumedCpuCores: this.lastContainerSnapshot.consumedCpuCores,
+      consumedCpuPercent: this.lastContainerSnapshot.consumedCpuPercent,
+    };
+
+    return this.lastContainerSnapshot;
+  }
+
+  public getAllocatedCompute(): AllocatedComputeDto {
+    return this.cachedCompute;
+  }
+
+  private async updateCurrentHourComputeInRedis(): Promise<void> {
+    if (typeof redisClient?.hget !== 'function' || typeof redisClient?.hset !== 'function') return;
+    try {
+      const hourTimestamp = Math.floor(Date.now() / 3600000) * 3600000;
+      const hourKey = String(hourTimestamp);
+      const existingRaw = await redisClient.hget('telemetry:hourly:7d', hourKey);
+      if (!existingRaw) return;
+      const prev: HourlyTelemetryPointDto = JSON.parse(existingRaw);
+      const updated: HourlyTelemetryPointDto = {
+        ...prev,
+        allocatedContainers: this.cachedCompute.activeContainers,
+        allocatedRamGb: this.cachedCompute.allocatedRamGb,
+        allocatedCpuCores: this.cachedCompute.allocatedCpuCores,
+        consumedRamMb: this.cachedCompute.consumedRamMb,
+        consumedRamGb: this.cachedCompute.consumedRamGb,
+        consumedCpuCores: this.cachedCompute.consumedCpuCores,
+        consumedCpuPercent: this.cachedCompute.consumedCpuPercent,
+        pendingPods: this.cachedCompute.pendingPods,
+        kubernetesStatus: this.cachedCompute.kubernetesStatus,
+      };
+      await redisClient.hset('telemetry:hourly:7d', hourKey, JSON.stringify(updated));
+    } catch {
+      // Non-fatal if Redis is temporarily unreachable
+    }
+  }
+
+  public async syncAllocatedCompute(stats: {
+    running?: number;
+    pending?: number;
+    error?: number;
+    stopped?: number;
+    terminated?: number;
+    totalRamGb?: number;
+    totalCpuCores?: number;
+  }): Promise<void> {
+    this.updateAllocatedCompute(stats);
+    this.lastContainerStatsAt = 0;
+    const consumption = await this.measureLabContainersConsumption(stats.running);
+
+    if (consumption.activeDockerContainers > (stats.running ?? 0)) {
+      this.cachedCompute = {
+        ...this.cachedCompute,
+        activeContainers: consumption.activeDockerContainers,
+        allocatedRamGb: Math.max(
+          this.cachedCompute.allocatedRamGb,
+          consumption.activeDockerContainers * 2,
+        ),
+        allocatedCpuCores: Math.max(
+          this.cachedCompute.allocatedCpuCores,
+          consumption.activeDockerContainers * 2,
+        ),
+      };
+    }
+
+    const allocatedCores = this.cachedCompute.allocatedCpuCores;
+    const consumedCpuPercent =
+      allocatedCores > 0
+        ? Math.min(
+            100,
+            consumption.consumedCpuCores > 0
+              ? Math.max(
+                  0.1,
+                  Number(((consumption.consumedCpuCores / allocatedCores) * 100).toFixed(1)),
+                )
+              : 0,
+          )
+        : consumption.consumedCpuPercent;
+
+    this.cachedCompute = {
+      ...this.cachedCompute,
+      consumedRamMb: consumption.consumedRamMb,
+      consumedRamGb: consumption.consumedRamGb,
+      consumedCpuCores: consumption.consumedCpuCores,
+      consumedCpuPercent,
+    };
+
+    if (this.samples.length > 0) {
+      const latestIdx = this.samples.length - 1;
+      const latest = this.samples[latestIdx]!;
+      this.samples[latestIdx] = {
+        ...latest,
+        consumedRamMb: this.cachedCompute.consumedRamMb,
+        consumedRamGb: this.cachedCompute.consumedRamGb,
+        consumedCpuCores: this.cachedCompute.consumedCpuCores,
+        consumedCpuPercent: this.cachedCompute.consumedCpuPercent,
+      };
+    }
+
+    await this.updateCurrentHourComputeInRedis();
   }
 
   public updateAllocatedCompute(stats: {
@@ -70,6 +371,10 @@ class SystemTelemetryService {
       activeContainers: running,
       allocatedRamGb: ramGb,
       allocatedCpuCores: cores,
+      consumedRamMb: this.cachedCompute.consumedRamMb,
+      consumedRamGb: this.cachedCompute.consumedRamGb,
+      consumedCpuCores: this.cachedCompute.consumedCpuCores,
+      consumedCpuPercent: this.cachedCompute.consumedCpuPercent,
       pendingPods: pending,
       errorPods: error,
       stoppedPods: stopped,
@@ -108,7 +413,13 @@ class SystemTelemetryService {
       cpuLoad: cpu1m,
       memoryMb,
       memoryPercent,
+      consumedRamMb: this.cachedCompute.consumedRamMb,
+      consumedRamGb: this.cachedCompute.consumedRamGb,
+      consumedCpuCores: this.cachedCompute.consumedCpuCores,
+      consumedCpuPercent: this.cachedCompute.consumedCpuPercent,
     };
+
+    void this.measureLabContainersConsumption(this.cachedCompute.activeContainers).catch(() => undefined);
 
     this.samples.push(sample);
     if (this.samples.length > this.maxSamples) {
@@ -194,6 +505,10 @@ class SystemTelemetryService {
           allocatedContainers: this.cachedCompute.activeContainers,
           allocatedRamGb: this.cachedCompute.allocatedRamGb,
           allocatedCpuCores: this.cachedCompute.allocatedCpuCores,
+          consumedRamMb: this.cachedCompute.consumedRamMb,
+          consumedRamGb: this.cachedCompute.consumedRamGb,
+          consumedCpuCores: this.cachedCompute.consumedCpuCores,
+          consumedCpuPercent: this.cachedCompute.consumedCpuPercent,
           pendingPods: this.cachedCompute.pendingPods,
           kubernetesStatus: this.cachedCompute.kubernetesStatus,
         };
@@ -220,6 +535,10 @@ class SystemTelemetryService {
           allocatedContainers: this.cachedCompute.activeContainers,
           allocatedRamGb: this.cachedCompute.allocatedRamGb,
           allocatedCpuCores: this.cachedCompute.allocatedCpuCores,
+          consumedRamMb: this.cachedCompute.consumedRamMb,
+          consumedRamGb: this.cachedCompute.consumedRamGb,
+          consumedCpuCores: this.cachedCompute.consumedCpuCores,
+          consumedCpuPercent: this.cachedCompute.consumedCpuPercent,
           pendingPods: this.cachedCompute.pendingPods,
           kubernetesStatus: this.cachedCompute.kubernetesStatus,
         };
@@ -352,6 +671,10 @@ class SystemTelemetryService {
         allocatedContainers: containers,
         allocatedRamGb: ramGb,
         allocatedCpuCores: cores,
+        consumedRamMb: this.cachedCompute.consumedRamMb,
+        consumedRamGb: this.cachedCompute.consumedRamGb,
+        consumedCpuCores: this.cachedCompute.consumedCpuCores,
+        consumedCpuPercent: this.cachedCompute.consumedCpuPercent,
         pendingPods: this.cachedCompute.pendingPods,
         kubernetesStatus: this.cachedCompute.kubernetesStatus,
       };
@@ -454,10 +777,35 @@ class SystemTelemetryService {
         memoryPercent: s.memoryPercent,
         memoryUsedMb: s.memoryMb,
         requestsPerMinute: this.requestTimestamps.filter((t) => t >= s.timestamp - 60000 && t <= s.timestamp).length,
+        consumedRamMb: s.consumedRamMb,
+        consumedRamGb: s.consumedRamGb,
+        consumedCpuCores: s.consumedCpuCores,
+        consumedCpuPercent: s.consumedCpuPercent,
       };
     });
 
     const sevenDayHistory = await this.getHourlyTelemetry(7);
+
+    if (history.length > 0) {
+      const lastSample = history[history.length - 1]!;
+      lastSample.consumedRamMb = this.cachedCompute.consumedRamMb;
+      lastSample.consumedRamGb = this.cachedCompute.consumedRamGb;
+      lastSample.consumedCpuCores = this.cachedCompute.consumedCpuCores;
+      lastSample.consumedCpuPercent = this.cachedCompute.consumedCpuPercent;
+    }
+
+    if (sevenDayHistory.length > 0) {
+      const lastHour = sevenDayHistory[sevenDayHistory.length - 1]!;
+      lastHour.allocatedContainers = this.cachedCompute.activeContainers;
+      lastHour.allocatedRamGb = this.cachedCompute.allocatedRamGb;
+      lastHour.allocatedCpuCores = this.cachedCompute.allocatedCpuCores;
+      lastHour.consumedRamMb = this.cachedCompute.consumedRamMb;
+      lastHour.consumedRamGb = this.cachedCompute.consumedRamGb;
+      lastHour.consumedCpuCores = this.cachedCompute.consumedCpuCores;
+      lastHour.consumedCpuPercent = this.cachedCompute.consumedCpuPercent;
+      lastHour.pendingPods = this.cachedCompute.pendingPods;
+      lastHour.kubernetesStatus = this.cachedCompute.kubernetesStatus;
+    }
 
     return {
       platform: os.platform(),

@@ -3,7 +3,15 @@ import { z } from 'zod';
 import { redisClient } from '../../../app/cache/redis';
 import { env } from '../../../app/config/env';
 import { AUDIT_ACTIONS, HTTP_STATUS, ORG_CONSTANTS, ROLES } from '../../../shared/constants';
-import { AppError, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../../shared/errors';
+import {
+  AppError,
+  BadRequestError,
+  ConflictError,
+  ERROR_CODES,
+  ForbiddenError,
+  NotFoundError,
+} from '../../../shared/errors';
+import { logger } from '../../../shared/logger';
 import { emailService } from '../../../shared/services/email.service';
 import { auditLogService } from '../../admin/services/audit-log.service';
 import type {
@@ -24,6 +32,10 @@ import { invitationRepository, type IInvitationRepository } from '../repositorie
 import { membershipRepository, type IMembershipRepository } from '../repositories/membership.repository';
 import { orgRepository, orgScopeRepository, type IOrgRepository, type IOrgScopeRepository } from '../repositories/org.repository';
 import { teamMemberRepository, type ITeamMemberRepository } from '../repositories/team-member.repository';
+import {
+  clearProfessorInviteOrg,
+  readProfessorInviteOrg,
+} from './professor-invite-binding';
 
 const CSV_MIME_TYPES = new Set(['text/csv', 'application/csv', 'application/vnd.ms-excel', 'text/plain']);
 const emailSchema = z.string().email();
@@ -675,7 +687,7 @@ export class ClassService {
       className = cls.teamName;
       organizationName = (await this.orgName(orgId)) ?? '';
     } else {
-      const orgId = await this.deps.scopes.getOrgId(invitation.inviterId);
+      const orgId = await this.resolveProfessorInviteOrg(token, invitation.inviterId);
       if (!orgId || !(await this.deps.orgs.findById(orgId))) {
         throw new NotFoundError('The inviting organization no longer exists.');
       }
@@ -715,7 +727,7 @@ export class ClassService {
 
     const sentinelTeamId = await this.deps.invitations.ensureSentinelTeam();
     if (invitation.teamId === sentinelTeamId) {
-      return this.acceptProfessorInvitation(userId, invitation.inviterId, invitation.invitationId);
+      return this.acceptProfessorInvitation(userId, invitation.inviterId, invitation.invitationId, token);
     }
 
     const cls = await this.deps.classes.findById(invitation.teamId);
@@ -766,9 +778,20 @@ export class ClassService {
     };
   }
 
+  /** Org bound to the professor invite at invite time; legacy invites fall back to the inviter's scope. */
+  private async resolveProfessorInviteOrg(token: string, inviterId: number): Promise<number | null> {
+    return (await readProfessorInviteOrg(token)) ?? (await this.deps.scopes.getOrgId(inviterId));
+  }
+
   /** Professor accept: grants the F3 `professor` role + org scope (not org_admin). */
-  private async acceptProfessorInvitation(userId: number, inviterId: number, invitationId: number): Promise<EnrollmentAcceptedDto> {
-    const orgId = await this.deps.scopes.getOrgId(inviterId);
+  private async acceptProfessorInvitation(
+    userId: number,
+    inviterId: number,
+    invitationId: number,
+    token: string,
+  ): Promise<EnrollmentAcceptedDto> {
+    const boundOrgId = await readProfessorInviteOrg(token);
+    const orgId = boundOrgId ?? (await this.deps.scopes.getOrgId(inviterId));
     if (!orgId) {
       throw new ConflictError('The inviting organization could not be resolved.');
     }
@@ -776,23 +799,26 @@ export class ClassService {
     if (!org) {
       throw new NotFoundError('The inviting organization no longer exists.');
     }
-    // The org is resolved from the inviter's scope, so the inviter must still
-    // be an active org admin; otherwise a stale invite could mint professors.
-    if (!(await this.deps.orgs.hasRole(inviterId, ROLES.ORG_ADMIN))) {
+    // The inviter must still administer THIS organization; otherwise a stale
+    // invite could mint professors. Legacy invites (no org binding) fall back
+    // to the global role check they were issued under.
+    const inviterStillAdmin = boundOrgId
+      ? (await this.deps.memberships.getRoleInOrg(inviterId, orgId)) === ROLES.ORG_ADMIN
+      : await this.deps.orgs.hasRole(inviterId, ROLES.ORG_ADMIN);
+    if (!inviterStillAdmin) {
       throw new ConflictError('The inviting administrator is no longer active.');
     }
 
-    // Multi-org aware: an admin of another org cannot also be a professor
-    // here; a student/professor elsewhere may accept.
-    const existingMembership = await this.deps.memberships.getActiveForUser(userId);
-    if (existingMembership?.role === ROLES.ORG_ADMIN) {
-      throw new ConflictError(
-        'Organization admins cannot accept a professor invitation.',
-      );
-    }
+    // Multi-org: memberships in other organizations (any role) never block;
+    // any existing role in THIS organization does.
     const roleInOrg = await this.deps.memberships.getRoleInOrg(userId, orgId);
-    if (roleInOrg === ROLES.PROFESSOR) {
-      throw new ConflictError('You are already a professor of this organization.');
+    if (roleInOrg !== null) {
+      throw new ConflictError(
+        roleInOrg === ROLES.PROFESSOR
+          ? 'You are already a professor of this organization.'
+          : 'You are already a member of this organization.',
+        [{ code: ERROR_CODES.ALREADY_MEMBER, role: roleInOrg }],
+      );
     }
 
     await this.deps.invitations.markAccepted(invitationId, userId);
@@ -802,6 +828,9 @@ export class ClassService {
       await this.deps.orgs.assignRole(userId, roleId);
     }
     await this.deps.scopes.setOrgIdWithRole(userId, orgId, ROLES.PROFESSOR);
+    await clearProfessorInviteOrg(token).catch((err: unknown) =>
+      logger.warn({ err, invitationId }, 'Professor invite binding cleanup failed'),
+    );
 
     return { kind: 'professor', className: null, organizationName: org.name };
   }

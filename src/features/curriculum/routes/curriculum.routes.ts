@@ -4,50 +4,50 @@ import { authenticate, authorizePermissions, validateRequest } from '../../../sh
 import { asyncHandler } from '../../../shared/utils';
 import { curriculumController } from '../controllers/curriculum.controller';
 import {
+  courseIdParamSchema,
   lessonIdParamSchema,
   moduleIdParamSchema,
 } from '../validators/curriculum.validator';
 
-/** F4 §07 learner read routes: published content only (§08 flow). */
+/**
+ * F4 §07 learner read routes (contracts 4.2): published content only. Outline
+ * reads return 200 for any published course; content reads enforce course access.
+ */
 const curriculumRoutes = Router();
 
 curriculumRoutes.use(authenticate, authorizePermissions(PERMISSIONS.CURRICULUM_READ));
 
-/** F4-API-01 */
-curriculumRoutes.get('/course', asyncHandler((req, res) => curriculumController.getCourse(req, res)));
-
-/** Multi-course catalog (chaos sprint) — every published course. */
+/** Published course catalog. */
 curriculumRoutes.get('/courses', asyncHandler((req, res) => curriculumController.listCourses(req, res)));
 
-/** F4-API-02 */
-curriculumRoutes.get('/modules', asyncHandler((req, res) => curriculumController.getModules(req, res)));
+curriculumRoutes.get(
+  '/courses/:courseId',
+  validateRequest(courseIdParamSchema, 'params'),
+  asyncHandler((req, res) => curriculumController.getCourseDetail(req, res)),
+);
 
-/** F4-API-03 */
+curriculumRoutes.get(
+  '/courses/:courseId/modules',
+  validateRequest(courseIdParamSchema, 'params'),
+  asyncHandler((req, res) => curriculumController.listCourseModules(req, res)),
+);
+
 curriculumRoutes.get(
   '/modules/:moduleId',
   validateRequest(moduleIdParamSchema, 'params'),
   asyncHandler((req, res) => curriculumController.getModuleById(req, res)),
 );
 
-/** F4-API-04 */
 curriculumRoutes.get(
-  '/modules/:moduleId/lessons',
+  '/modules/:moduleId/items',
   validateRequest(moduleIdParamSchema, 'params'),
-  asyncHandler((req, res) => curriculumController.getModuleLessons(req, res)),
+  asyncHandler((req, res) => curriculumController.listModuleItems(req, res)),
 );
 
-/** F4-API-05 */
 curriculumRoutes.get(
   '/lessons/:lessonId',
   validateRequest(lessonIdParamSchema, 'params'),
   asyncHandler((req, res) => curriculumController.getLesson(req, res)),
-);
-
-/** F4-API-06 */
-curriculumRoutes.get(
-  '/modules/:moduleId/quizzes',
-  validateRequest(moduleIdParamSchema, 'params'),
-  asyncHandler((req, res) => curriculumController.getModuleQuizzes(req, res)),
 );
 
 export { curriculumRoutes };

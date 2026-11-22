@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import request from 'supertest';
-import { ConflictError, ForbiddenError } from '../../../src/shared/errors';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../../src/shared/errors';
 import { progressRouter } from '../../../src/features/progress/routes/progressRouter';
 import { adminProgressRouter } from '../../../src/features/progress/routes/adminProgressRouter';
 
@@ -39,9 +39,11 @@ vi.mock('../../../src/features/progress/services/ProgressService', () => ({
   progressService: {
     startLesson: vi.fn(),
     completeLesson: vi.fn(),
+    listCoursesProgress: vi.fn(),
     getCourseProgress: vi.fn(),
-    getModulesProgress: vi.fn(),
-    getContinueLearningPointer: vi.fn(),
+    getCourseModulesProgress: vi.fn(),
+    getModuleItemsProgress: vi.fn(),
+    getContinueLearning: vi.fn(),
     getActivityHistory: vi.fn(),
     getClassStudentsProgress: vi.fn(),
     getStudentDetailProgress: vi.fn(),
@@ -52,10 +54,14 @@ vi.mock('../../../src/features/progress/services/ProgressService', () => ({
 
 vi.mock('../../../src/features/progress/services/QuizAttemptService', () => ({
   quizAttemptService: {
-    getQuizMeta: vi.fn(),
-    submitAttempt: vi.fn(),
+    getStatus: vi.fn(),
+    start: vi.fn(),
+    getAttempt: vi.fn(),
+    stageTerminal: vi.fn(),
+    submitAnswer: vi.fn(),
+    complete: vi.fn(),
+    getReview: vi.fn(),
     getAttemptHistory: vi.fn(),
-    getQuizQuestions: vi.fn(),
   },
 }));
 
@@ -105,14 +111,14 @@ describe(' HTTP integration + security matrix', () => {
         .set('Authorization', 'Bearer test')
         .send({ userId: 999 });
       expect(res.status).toBe(200);
-      expect(progressServiceMock.startLesson).toHaveBeenCalledWith(42, 5);
-      expect(progressServiceMock.startLesson).not.toHaveBeenCalledWith(999, expect.anything());
+      expect(progressServiceMock.startLesson).toHaveBeenCalledWith(42, 5, []);
+      expect(progressServiceMock.startLesson).not.toHaveBeenCalledWith(999, expect.anything(), expect.anything());
     });
 
     it('calls the service with the session sub, never a client-supplied id', async () => {
       asUser({ sub: 42, permissions: SELF_RW });
       await request(app).post('/progress/lessons/5/start').set('Authorization', 'Bearer test');
-      expect(progressServiceMock.startLesson).toHaveBeenCalledWith(42, 5);
+      expect(progressServiceMock.startLesson).toHaveBeenCalledWith(42, 5, []);
     });
 
     it('403s at the middleware when progress.self.write is missing', async () => {
@@ -175,7 +181,7 @@ describe(' HTTP integration + security matrix', () => {
       const res = await request(app)
         .patch('/progress/lessons/5/complete')
         .set('Authorization', 'Bearer test')
-        .send({ timeSpentSeconds: 7200 });
+        .send({ timeSpentSeconds: 86401 });
       expect(res.status).toBe(422);
       expect(progressServiceMock.completeLesson).not.toHaveBeenCalled();
     });
@@ -192,55 +198,213 @@ describe(' HTTP integration + security matrix', () => {
     });
   });
 
-  describe('-API-07: POST quiz attempt returns the §07 payload', () => {
-    it('201 with attemptId, score, isPassed, attemptNumber, counts and breakdown', async () => {
-      quizAttemptServiceMock.submitAttempt.mockResolvedValueOnce({
-        attemptId: 41,
-        score: 100,
-        isPassed: true,
-        attemptNumber: 1,
-        correctCount: 1,
-        totalQuestions: 1,
-        breakdown: [{ questionId: 30, isCorrect: true, pointsEarned: 10, explanation: 'Good.' }],
-      });
-      const res = await request(app)
-        .post('/progress/quizzes/30/attempts')
-        .set('Authorization', 'Bearer test')
-        .send({ answers: [{ questionId: 30, answerId: 11 }], timeTakenSeconds: 300 });
-      expect(res.status).toBe(201);
-      expect(res.body.data).toEqual(
-        expect.objectContaining({
-          attemptId: 41,
-          score: 100,
-          isPassed: true,
-          attemptNumber: 1,
-          correctCount: 1,
-          totalQuestions: 1,
-          breakdown: expect.arrayContaining([expect.objectContaining({ questionId: 30 })]),
-        }),
-      );
-      expect(quizAttemptServiceMock.submitAttempt).toHaveBeenCalledWith(
-        7,
-        30,
-        expect.objectContaining({ answers: [{ questionId: 30, answerId: 11 }] }),
-      );
+  describe('quiz attempts (server-created, one question at a time)', () => {
+    const attemptDto = { attemptId: 41, quizId: 30, status: 'in_progress', questions: [] };
+
+    it('201 for a new attempt and 200 when resumed; the session user is the only identity', async () => {
+      quizAttemptServiceMock.start.mockResolvedValueOnce({ attempt: attemptDto, resumed: false } as never);
+      const created = await request(app).post('/progress/quizzes/30/attempts/start').send({});
+      expect(created.status).toBe(201);
+      expect(quizAttemptServiceMock.start).toHaveBeenCalledWith(7, 30, []);
+
+      quizAttemptServiceMock.start.mockResolvedValueOnce({ attempt: attemptDto, resumed: true } as never);
+      const resumed = await request(app).post('/progress/quizzes/30/attempts/start').send({});
+      expect(resumed.status).toBe(200);
     });
 
-    it('422s for an empty answers array', async () => {
-      const res = await request(app)
-        .post('/progress/quizzes/30/attempts')
-        .set('Authorization', 'Bearer test')
-        .send({ answers: [], timeTakenSeconds: 300 });
-      expect(res.status).toBe(422);
-      expect(quizAttemptServiceMock.submitAttempt).not.toHaveBeenCalled();
+    it('422s a non-empty start body (strict) and a non-numeric id', async () => {
+      expect((await request(app).post('/progress/quizzes/30/attempts/start').send({ userId: 1 })).status).toBe(422);
+      expect((await request(app).post('/progress/quizzes/abc/attempts/start').send({})).status).toBe(422);
+      expect(quizAttemptServiceMock.start).not.toHaveBeenCalled();
     });
 
-    it('422s for a strict-body violation (unknown key)', async () => {
+    it('409 cooldown / cap and 404 map from the service', async () => {
+      quizAttemptServiceMock.start.mockRejectedValueOnce(new ConflictError('cooldown', [{ code: 'QUIZ_COOLDOWN', retryAfterSeconds: 30 }]));
+      const cooldown = await request(app).post('/progress/quizzes/30/attempts/start').send({});
+      expect(cooldown.status).toBe(409);
+      expect(JSON.stringify(cooldown.body)).toContain('retryAfterSeconds');
+      quizAttemptServiceMock.start.mockRejectedValueOnce(new NotFoundError('Quiz not found.'));
+      expect((await request(app).post('/progress/quizzes/99/attempts/start').send({})).status).toBe(404);
+    });
+
+    it('403 without progress.self.write on start and without the self permissions on reads', async () => {
+      asUser({ sub: 7, permissions: ['progress.self.read'] });
+      expect((await request(app).post('/progress/quizzes/30/attempts/start').send({})).status).toBe(403);
+      asUser({ sub: 7, permissions: [] });
+      expect((await request(app).get('/progress/quizzes/30')).status).toBe(403);
+    });
+
+    it('submits one answer per request and 422s malformed responses', async () => {
+      quizAttemptServiceMock.submitAnswer.mockResolvedValueOnce({ questionId: 30, isCorrect: true } as never);
+      const ok = await request(app)
+        .post('/progress/quiz-attempts/41/answers')
+        .send({ questionId: 30, response: { type: 'choice', answerId: 11 } });
+      expect(ok.status).toBe(200);
+      expect(quizAttemptServiceMock.submitAnswer).toHaveBeenCalledWith(
+        7, 41, { questionId: 30, response: { type: 'choice', answerId: 11 } }, [],
+      );
+      const bodies = [
+        { questionId: 30 },
+        { questionId: 30, response: { type: 'choice' } },
+        { questionId: 30, response: { type: 'text', text: '' } },
+        { questionId: 30, response: { type: 'multi', answerIds: [] } },
+        { questionId: 30, response: { type: 'bogus' } },
+        { questionId: 30, response: { type: 'choice', answerId: 1 }, userId: 9 },
+      ];
+      for (const body of bodies) {
+        expect((await request(app).post('/progress/quiz-attempts/41/answers').send(body)).status).toBe(422);
+      }
+      expect(quizAttemptServiceMock.submitAnswer).toHaveBeenCalledTimes(1);
+    });
+
+    it('answer 409 on a double submit', async () => {
+      quizAttemptServiceMock.submitAnswer.mockRejectedValueOnce(new ConflictError('already answered'));
       const res = await request(app)
-        .post('/progress/quizzes/30/attempts')
-        .set('Authorization', 'Bearer test')
-        .send({ answers: [{ questionId: 30, answerId: 11 }], timeTakenSeconds: 300, quizId: 999 });
-      expect(res.status).toBe(422);
+        .post('/progress/quiz-attempts/41/answers')
+        .send({ questionId: 30, response: { type: 'choice', answerId: 11 } });
+      expect(res.status).toBe(409);
+    });
+
+    it('completes an attempt and gates the review with 409 QUIZ_NOT_PASSED', async () => {
+      quizAttemptServiceMock.complete.mockResolvedValueOnce({ attemptId: 41, isPassed: true } as never);
+      const done = await request(app).post('/progress/quiz-attempts/41/complete').send({});
+      expect(done.status).toBe(200);
+      expect(quizAttemptServiceMock.complete).toHaveBeenCalledWith(7, 41, []);
+
+      quizAttemptServiceMock.getReview.mockRejectedValueOnce(new ConflictError('not passed', [{ code: 'QUIZ_NOT_PASSED' }]));
+      const review = await request(app).get('/progress/quiz-attempts/41/review');
+      expect(review.status).toBe(409);
+      expect(JSON.stringify(review.body)).toContain('QUIZ_NOT_PASSED');
+    });
+
+    it('terminal stage needs the labs create permission and a valid region', async () => {
+      quizAttemptServiceMock.stageTerminal.mockResolvedValueOnce({ staged: true } as never);
+      asUser({ sub: 7, permissions: [...SELF_RW, 'labs:instance:create'] });
+      const ok = await request(app).post('/progress/quiz-attempts/41/questions/30/stage').send({ region: 'EU' });
+      expect(ok.status).toBe(200);
+      expect(quizAttemptServiceMock.stageTerminal).toHaveBeenCalledWith(7, 41, 30, 'EU', []);
+      expect((await request(app).post('/progress/quiz-attempts/41/questions/30/stage').send({ region: 'MARS' })).status).toBe(422);
+
+      asUser({ sub: 7, permissions: SELF_RW });
+      expect((await request(app).post('/progress/quiz-attempts/41/questions/30/stage').send({})).status).toBe(403);
+    });
+
+    it('the learner attempt payload passes through exactly as the service built it', async () => {
+      quizAttemptServiceMock.getAttempt.mockResolvedValueOnce({ attempt: attemptDto } as never);
+      const res = await request(app).get('/progress/quiz-attempts/41');
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(res.body)).not.toContain('isCorrect');
+    });
+
+    it('lists attempt history for the session user', async () => {
+      quizAttemptServiceMock.getAttemptHistory.mockResolvedValueOnce([] as never);
+      expect((await request(app).get('/progress/quizzes/30/attempts')).status).toBe(200);
+      expect(quizAttemptServiceMock.getAttemptHistory).toHaveBeenCalledWith(7, 30);
+    });
+  });
+
+  describe('course-scoped learner reads', () => {
+    it('200 for courses, one course, its modules, module items and continue', async () => {
+      progressServiceMock.listCoursesProgress.mockResolvedValue([] as never);
+      progressServiceMock.getCourseProgress.mockResolvedValue({ courseId: 1 } as never);
+      progressServiceMock.getCourseModulesProgress.mockResolvedValue([] as never);
+      progressServiceMock.getModuleItemsProgress.mockResolvedValue([] as never);
+      progressServiceMock.getContinueLearning.mockResolvedValue(null as never);
+      for (const path of ['/progress/courses', '/progress/courses/1', '/progress/courses/1/modules', '/progress/modules/2/items', '/progress/continue']) {
+        expect((await request(app).get(path)).status).toBe(200);
+      }
+      expect(progressServiceMock.getCourseProgress).toHaveBeenCalledWith(7, 1);
+      expect(progressServiceMock.getCourseModulesProgress).toHaveBeenCalledWith(7, 1);
+      expect(progressServiceMock.getModuleItemsProgress).toHaveBeenCalledWith(7, 2);
+    });
+
+    it('404 for an unpublished course and 422 for a bad id', async () => {
+      progressServiceMock.getCourseProgress.mockRejectedValueOnce(new NotFoundError('Course not found.'));
+      expect((await request(app).get('/progress/courses/99')).status).toBe(404);
+      expect((await request(app).get('/progress/courses/abc')).status).toBe(422);
+      expect((await request(app).get('/progress/courses/0/modules')).status).toBe(422);
+    });
+
+    it('401 without a session and 403 without self read', async () => {
+      session.user = null;
+      expect((await request(app).get('/progress/courses')).status).toBe(401);
+      asUser({ sub: 7, permissions: [] });
+      expect((await request(app).get('/progress/courses/1')).status).toBe(403);
+    });
+
+    it('lesson complete maps LAB_NOT_COMPLETED / QUIZ_NOT_PASSED / LESSON_NOT_STARTED to 409', async () => {
+      for (const code of ['LAB_NOT_COMPLETED', 'QUIZ_NOT_PASSED', 'LESSON_NOT_STARTED']) {
+        progressServiceMock.completeLesson.mockRejectedValueOnce(new ConflictError('blocked', [{ code }]));
+        const res = await request(app).patch('/progress/lessons/5/complete').send({ timeSpentSeconds: 0 });
+        expect(res.status).toBe(409);
+        expect(JSON.stringify(res.body)).toContain(code);
+      }
+    });
+
+    it('activity limit is validated (422 above 100)', async () => {
+      progressServiceMock.getActivityHistory.mockResolvedValue([] as never);
+      expect((await request(app).get('/progress/activity?limit=500')).status).toBe(422);
+      expect((await request(app).get('/progress/activity?limit=10')).status).toBe(200);
+      expect(progressServiceMock.getActivityHistory).toHaveBeenCalledWith(7, 10);
+    });
+  });
+
+  describe('removed routes', () => {
+    it.each([
+      ['get', '/progress/course'],
+      ['get', '/progress/modules'],
+      ['get', '/progress/modules/2'],
+      ['get', '/progress/quizzes/30/questions'],
+      ['post', '/progress/quizzes/30/attempts'],
+    ] as const)('%s %s is 404', async (method, path) => {
+      const res = await request(app)[method](path).send({});
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('staff ?courseId validation', () => {
+    const staffRoutes = [
+      '/progress/class/99/students',
+      '/progress/class/99/students/8',
+      '/progress/org/5/students',
+    ];
+
+    beforeEach(() => {
+      progressServiceMock.getClassStudentsProgress.mockResolvedValue({ students: [] } as never);
+      progressServiceMock.getStudentDetailProgress.mockResolvedValue({} as never);
+      progressServiceMock.getOrgStudentsProgress.mockResolvedValue({ students: [] } as never);
+      progressServiceMock.getAdminUserProgress.mockResolvedValue({} as never);
+      asUser({ sub: 7, permissions: ORG_READ });
+    });
+
+    it.each(staffRoutes)('%s 422s a non-positive or non-numeric courseId', async (path) => {
+      expect((await request(app).get(`${path}?courseId=abc`)).status).toBe(422);
+      expect((await request(app).get(`${path}?courseId=0`)).status).toBe(422);
+      expect((await request(app).get(`${path}?courseId=-3`)).status).toBe(422);
+    });
+
+    it('passes a valid courseId to the service and leaves it undefined when absent', async () => {
+      await request(app).get('/progress/class/99/students?courseId=4');
+      expect(progressServiceMock.getClassStudentsProgress).toHaveBeenCalledWith(99, expect.objectContaining({ userId: 7 }), 4);
+      await request(app).get('/progress/class/99/students');
+      expect(progressServiceMock.getClassStudentsProgress).toHaveBeenLastCalledWith(99, expect.objectContaining({ userId: 7 }), undefined);
+      await request(app).get('/progress/org/5/students?courseId=4');
+      expect(progressServiceMock.getOrgStudentsProgress).toHaveBeenCalledWith(5, expect.objectContaining({ userId: 7 }), 4);
+      await request(app).get('/progress/class/99/students/8?courseId=4');
+      expect(progressServiceMock.getStudentDetailProgress).toHaveBeenCalledWith(99, 8, expect.objectContaining({ userId: 7 }), 4);
+    });
+
+    it('404 COURSE_NOT_FOUND from the service for a course outside the class', async () => {
+      progressServiceMock.getClassStudentsProgress.mockRejectedValueOnce(new NotFoundError('Course not found.'));
+      expect((await request(app).get('/progress/class/99/students?courseId=77')).status).toBe(404);
+    });
+
+    it('admin user progress validates courseId and the user id', async () => {
+      asUser({ sub: 1, permissions: PLATFORM_READ });
+      expect((await request(app).get('/admin/users/9/progress?courseId=abc')).status).toBe(422);
+      expect((await request(app).get('/admin/users/abc/progress')).status).toBe(422);
+      expect((await request(app).get('/admin/users/9/progress?courseId=3')).status).toBe(200);
+      expect(progressServiceMock.getAdminUserProgress).toHaveBeenCalledWith(9, 3);
     });
   });
 
@@ -265,6 +429,7 @@ describe(' HTTP integration + security matrix', () => {
       expect(progressServiceMock.getClassStudentsProgress).toHaveBeenCalledWith(
         99,
         expect.objectContaining({ userId: 7 }),
+        undefined,
       );
     });
 
@@ -318,6 +483,7 @@ describe(' HTTP integration + security matrix', () => {
       expect(progressServiceMock.getOrgStudentsProgress).toHaveBeenCalledWith(
         5,
         expect.objectContaining({ userId: 7 }),
+        undefined,
       );
     });
 
@@ -334,7 +500,7 @@ describe(' HTTP integration + security matrix', () => {
     it('403s at the middleware without platform.progress.read', async () => {
       asUser({ sub: 1, permissions: CLASS_READ });
       const res = await request(app)
-        .get('/admin/progress/9')
+        .get('/admin/users/9/progress')
         .set('Authorization', 'Bearer test');
       expect(res.status).toBe(HTTP_STATUS.FORBIDDEN);
     });
@@ -349,11 +515,11 @@ describe(' HTTP integration + security matrix', () => {
         activity: [],
       });
       const res = await request(app)
-        .get('/admin/progress/9')
+        .get('/admin/users/9/progress')
         .set('Authorization', 'Bearer test');
       expect(res.status).toBe(200);
       expect(res.body.data.user.userId).toBe(9);
-      expect(progressServiceMock.getAdminUserProgress).toHaveBeenCalledWith(9);
+      expect(progressServiceMock.getAdminUserProgress).toHaveBeenCalledWith(9, undefined);
     });
   });
 });

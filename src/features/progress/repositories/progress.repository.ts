@@ -1,22 +1,32 @@
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, max, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, max, or, sql } from 'drizzle-orm';
 import { db } from '../../../app/database';
 import {
+  academyCourses,
   activityLogs,
+  classAssignments,
+  labs,
   lessons,
   modules,
+  proLabs,
   quizAnswers,
   quizAttempts,
   quizQuestions,
   quizzes,
   teamMembers,
   teams,
+  trackContent,
+  tracks,
   userProgress,
   userQuizAnswers,
   users,
-  userSettings,
 } from '../../../app/database/schema';
-import { ORG_CONSTANTS } from '../../../shared/constants';
-import type { LearningActivityType } from '../dto/progress.dto';
+import type { LearningActivityType, ModuleItemKind } from '../dto/progress.dto';
+
+/** Transaction handle (same alias as the gamification repositories). */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Query-capable handle: the global `db` or the transaction that holds the user lock. */
+export type ProgressExecutor = typeof db | Tx;
 
 /** Lesson-grain user_progress row (plus course/module context). */
 export interface LessonProgressRow {
@@ -32,22 +42,53 @@ export interface LessonProgressRow {
   timeSpentSeconds: number;
 }
 
-/** Continue-learning row joined to lesson/module titles. */
-export interface ContinueLearningRow {
-  lessonId: number;
+/** Grain identity of a user_progress row (`lessonId` null = module or course grain). */
+export interface ProgressGrain {
+  courseId: number;
+  moduleId: number | null;
+  lessonId: number | null;
+}
+
+/** A published module item (lesson, lab or quiz) of the spine, with its module/course context. */
+export interface PublishedItemRow {
+  itemId: number;
   moduleId: number;
   courseId: number;
-  lessonTitle: string;
+  title: string;
+  kind: ModuleItemKind;
+  position: number;
+  labId: number | null;
+  quizId: number | null;
   moduleTitle: string;
+  moduleOrder: number;
+  courseTitle: string;
+}
+
+/** Continue-learning row: last-accessed lesson-grain row of a visible item. */
+export interface ContinueLearningRow extends PublishedItemRow {
   lastAccessedAt: Date;
 }
 
-/** Module with published lesson count (for progress aggregation). */
+/** Published module with its visible item count (for progress aggregation). */
 export interface PublishedModuleRow {
   moduleId: number;
   title: string;
   moduleOrder: number;
-  lessonCount: number;
+  itemCount: number;
+}
+
+/** Course option for staff views and quiz/lab lookups. */
+export interface CourseOptionRow {
+  courseId: number;
+  title: string;
+  lastAccessedAt: Date | null;
+}
+
+/** Quiz attempt aggregates of one learner (module item progress). */
+export interface QuizAttemptStatsRow {
+  isPassed: boolean;
+  bestScore: number | null;
+  attemptsUsedToday: number;
 }
 
 /** Class student row (team_members join users). */
@@ -95,21 +136,250 @@ export interface AttemptInsertInput {
 }
 
 const PROFESSOR_ROLES = ['captain', 'co_captain'] as const;
-
-/** Query-capable handle shared by `db` and transaction clients. */
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+const LAST_24_HOURS_SQL = sql`DATE_SUB(NOW(), INTERVAL 24 HOUR)`;
 
 /**
- * F5 data access layer. All learner isolation filters (`user_id = :userId`)
- * are applied at the SQL level, never in JS. Class and org scopes are resolved
- * from `team_members` / `teams` / `user_settings` on the backend; the client
- * never supplies them.
+ * Visibility rule of a module item (contracts 4.2): a published spine row whose
+ * module and course are published; lab items also need an active lab with a
+ * lab_id; quiz items need a published quiz. Every item count, list and
+ * completion rollup goes through this predicate, so unpublished or orphaned
+ * rows never count (D16).
+ */
+function visibleItemCondition() {
+  return and(
+    eq(lessons.isPublished, true),
+    eq(modules.isPublished, true),
+    eq(academyCourses.isPublished, true),
+    or(
+      inArray(lessons.contentType, ['text', 'video', 'interactive']),
+      and(eq(lessons.contentType, 'lab'), isNotNull(lessons.labId), eq(labs.isActive, true)),
+      and(eq(lessons.contentType, 'quiz'), isNotNull(lessons.quizId), eq(quizzes.isPublished, true)),
+    ),
+  );
+}
+
+const itemColumns = {
+  itemId: lessons.lessonId,
+  moduleId: lessons.moduleId,
+  courseId: modules.courseId,
+  title: lessons.title,
+  contentType: lessons.contentType,
+  position: lessons.lessonOrder,
+  labId: lessons.labId,
+  quizId: lessons.quizId,
+  moduleTitle: modules.title,
+  moduleOrder: modules.moduleOrder,
+  courseTitle: academyCourses.title,
+} as const;
+
+type ItemSelectRow = {
+  itemId: number;
+  moduleId: number;
+  courseId: number;
+  title: string;
+  contentType: 'text' | 'video' | 'interactive' | 'lab' | 'quiz';
+  position: number;
+  labId: number | null;
+  quizId: number | null;
+  moduleTitle: string;
+  moduleOrder: number;
+  courseTitle: string;
+};
+
+function kindOf(contentType: ItemSelectRow['contentType']): ModuleItemKind {
+  if (contentType === 'lab') return 'lab';
+  if (contentType === 'quiz') return 'quiz';
+  return 'lesson';
+}
+
+function toItem(row: ItemSelectRow): PublishedItemRow {
+  return {
+    itemId: row.itemId,
+    moduleId: row.moduleId,
+    courseId: row.courseId,
+    title: row.title,
+    kind: kindOf(row.contentType),
+    position: row.position,
+    labId: row.labId,
+    quizId: row.quizId,
+    moduleTitle: row.moduleTitle,
+    moduleOrder: row.moduleOrder,
+    courseTitle: row.courseTitle,
+  };
+}
+
+/**
+ * F5 data access layer for progress. Learner isolation filters (`user_id = :userId`)
+ * are applied in SQL. Writers take an optional `tx`: while `awardService.withUserLock`
+ * holds the user row, every write MUST go through that tx (contracts 0.3).
+ * Class and org scopes come from `team_members` / `teams` / `class_assignments`;
+ * org membership is resolved by `membershipRepository` in the service layer (D15).
  */
 export class ProgressRepository {
-  /* ── Lesson / module / course progress ──────────────────────────────── */
+  /* ── Published item spine ───────────────────────────────────────────── */
 
-  async findLessonProgress(userId: number, lessonId: number): Promise<LessonProgressRow | null> {
+  /** One visible module item by lesson id (null when unpublished, orphaned or unknown). */
+  async findPublishedItem(lessonId: number, executor: ProgressExecutor = db): Promise<PublishedItemRow | null> {
+    const rows = await executor
+      .select(itemColumns)
+      .from(lessons)
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(eq(lessons.lessonId, lessonId), visibleItemCondition()))
+      .limit(1);
+    return rows[0] ? toItem(rows[0]) : null;
+  }
+
+  /** Visible items of one module, in spine order. */
+  async listPublishedItemsByModule(moduleId: number, executor: ProgressExecutor = db): Promise<PublishedItemRow[]> {
+    const rows = await executor
+      .select(itemColumns)
+      .from(lessons)
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(eq(lessons.moduleId, moduleId), visibleItemCondition()))
+      .orderBy(asc(lessons.lessonOrder));
+    return rows.map(toItem);
+  }
+
+  /** Visible lesson-spine rows that point at a lab (lab completion rollup). */
+  async listPublishedItemsByLab(labId: number, executor: ProgressExecutor = db): Promise<PublishedItemRow[]> {
+    const rows = await executor
+      .select(itemColumns)
+      .from(lessons)
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(eq(lessons.labId, labId), visibleItemCondition()))
+      .orderBy(asc(lessons.lessonId));
+    return rows.map(toItem);
+  }
+
+  /** Visible lesson-spine rows that point at a quiz (quiz pass rollup). */
+  async listPublishedItemsByQuiz(quizId: number, executor: ProgressExecutor = db): Promise<PublishedItemRow[]> {
+    const rows = await executor
+      .select(itemColumns)
+      .from(lessons)
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(eq(lessons.quizId, quizId), visibleItemCondition()))
+      .orderBy(asc(lessons.lessonId));
+    return rows.map(toItem);
+  }
+
+  /** Visible item count of one course (all kinds). */
+  async countPublishedItemsByCourse(courseId: number, executor: ProgressExecutor = db): Promise<number> {
+    const rows = await executor
+      .select({ value: count() })
+      .from(lessons)
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(eq(modules.courseId, courseId), visibleItemCondition()));
+    return rows[0]?.value ?? 0;
+  }
+
+  /** Visible item count of one module (all kinds). */
+  async countPublishedItemsByModule(moduleId: number, executor: ProgressExecutor = db): Promise<number> {
+    const rows = await executor
+      .select({ value: count() })
+      .from(lessons)
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(eq(lessons.moduleId, moduleId), visibleItemCondition()));
+    return rows[0]?.value ?? 0;
+  }
+
+  /** Published module of a published course (null otherwise). */
+  async findPublishedModule(
+    moduleId: number,
+  ): Promise<{ moduleId: number; courseId: number; title: string; moduleOrder: number; courseTitle: string } | null> {
     const rows = await db
+      .select({
+        moduleId: modules.moduleId,
+        courseId: modules.courseId,
+        title: modules.title,
+        moduleOrder: modules.moduleOrder,
+        courseTitle: academyCourses.title,
+      })
+      .from(modules)
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .where(and(eq(modules.moduleId, moduleId), eq(modules.isPublished, true), eq(academyCourses.isPublished, true)))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /** Published course id/title (null when unpublished or unknown). */
+  async findPublishedCourse(
+    courseId: number,
+    executor: ProgressExecutor = db,
+  ): Promise<{ courseId: number; title: string } | null> {
+    const rows = await executor
+      .select({ courseId: academyCourses.courseId, title: academyCourses.title })
+      .from(academyCourses)
+      .where(and(eq(academyCourses.courseId, courseId), eq(academyCourses.isPublished, true)))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /** Published modules of a course with their visible item counts, in module order. */
+  async listPublishedModulesByCourse(courseId: number, executor: ProgressExecutor = db): Promise<PublishedModuleRow[]> {
+    const [moduleRows, countRows] = await Promise.all([
+      executor
+        .select({ moduleId: modules.moduleId, title: modules.title, moduleOrder: modules.moduleOrder })
+        .from(modules)
+        .where(and(eq(modules.courseId, courseId), eq(modules.isPublished, true)))
+        .orderBy(asc(modules.moduleOrder)),
+      executor
+        .select({ moduleId: lessons.moduleId, value: count() })
+        .from(lessons)
+        .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+        .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+        .leftJoin(labs, eq(labs.labId, lessons.labId))
+        .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+        .where(and(eq(modules.courseId, courseId), visibleItemCondition()))
+        .groupBy(lessons.moduleId),
+    ]);
+    const counts = new Map(countRows.map((row) => [row.moduleId, row.value]));
+    return moduleRows.map((row) => ({
+      moduleId: row.moduleId,
+      title: row.title,
+      moduleOrder: row.moduleOrder,
+      itemCount: counts.get(row.moduleId) ?? 0,
+    }));
+  }
+
+  /** Distinct course ids of the given lesson-spine rows (post-commit cache invalidation). */
+  async listCourseIdsOfLessons(lessonIds: number[]): Promise<number[]> {
+    if (lessonIds.length === 0) {
+      return [];
+    }
+    const rows = await db
+      .select({ courseId: modules.courseId })
+      .from(lessons)
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .where(inArray(lessons.lessonId, lessonIds));
+    return [...new Set(rows.map((row) => row.courseId))];
+  }
+
+  /* ── Learner progress rows ──────────────────────────────────────────── */
+
+  async findLessonProgress(
+    userId: number,
+    lessonId: number,
+    executor: ProgressExecutor = db,
+  ): Promise<LessonProgressRow | null> {
+    const rows = await executor
       .select()
       .from(userProgress)
       .where(and(eq(userProgress.userId, userId), eq(userProgress.lessonId, lessonId)))
@@ -117,178 +387,157 @@ export class ProgressRepository {
     return rows[0] ?? null;
   }
 
-  /** Idempotent lesson start: insert an IN_PROGRESS row or touch the existing
-   * one. `last_accessed_at` is refreshed on every call (invariant 1). */
-  async touchLessonProgress(
+  /** Lesson-grain rows of a user for a set of lesson ids, keyed by lesson id. */
+  async listLessonProgressByLessonIds(
     userId: number,
-    input: { courseId: number; moduleId: number; lessonId: number },
-  ): Promise<{ row: LessonProgressRow; created: boolean }> {
-    return db.transaction(async (tx) => {
-      const existing = await tx
-        .select()
-        .from(userProgress)
-        .where(and(eq(userProgress.userId, userId), eq(userProgress.lessonId, input.lessonId)))
-        .limit(1)
-        .for('update');
-      if (existing[0]) {
-        const updatedAt = new Date();
-        await tx
-          .update(userProgress)
-          .set({ lastAccessedAt: updatedAt })
-          .where(eq(userProgress.progressId, existing[0].progressId));
-        return { row: { ...existing[0], lastAccessedAt: updatedAt }, created: false };
-      }
-      const inserted = await tx.insert(userProgress).values({
-        userId,
-        courseId: input.courseId,
-        moduleId: input.moduleId,
-        lessonId: input.lessonId,
-        progressPercentage: '0',
-        isCompleted: false,
-      });
-      const rows = await tx
-        .select()
-        .from(userProgress)
-        .where(eq(userProgress.progressId, inserted[0].insertId))
-        .limit(1);
-      return { row: rows[0], created: true };
-    });
+    lessonIds: number[],
+    executor: ProgressExecutor = db,
+  ): Promise<Map<number, LessonProgressRow>> {
+    if (lessonIds.length === 0) {
+      return new Map();
+    }
+    const rows = await executor
+      .select()
+      .from(userProgress)
+      .where(and(eq(userProgress.userId, userId), inArray(userProgress.lessonId, lessonIds)));
+    return new Map(rows.map((row) => [row.lessonId as number, row]));
   }
 
   /**
-   * Transactional lesson completion + module/course rollup cascade (§05
-   * invariants 3 and 4). The lesson row is marked complete with accumulated
-   * time; when ALL published lessons of the module are done the module-grain
-   * row is upserted, and likewise the course-grain row when every published
-   * lesson of the course is done.
+   * Idempotent lesson start under the user lock: refresh `last_accessed_at` of
+   * the existing row (created = false) or insert an IN_PROGRESS row. The caller
+   * MUST hold the user lock (tx from withUserLock).
    */
-  async completeLessonWithRollups(
-    input: { userId: number; courseId: number; moduleId: number; lessonId: number; timeSpentSeconds: number },
-  ): Promise<{ lesson: LessonProgressRow; moduleCompleted: boolean; courseCompleted: boolean }> {
-    return db.transaction(async (tx) => {
-      const now = new Date();
-      const existing = await tx
-        .select()
-        .from(userProgress)
-        .where(and(eq(userProgress.userId, input.userId), eq(userProgress.lessonId, input.lessonId)))
-        .limit(1)
-        .for('update');
+  async touchLessonProgress(
+    tx: ProgressExecutor,
+    userId: number,
+    input: { courseId: number; moduleId: number; lessonId: number },
+  ): Promise<{ row: LessonProgressRow; created: boolean }> {
+    const existing = await tx
+      .select()
+      .from(userProgress)
+      .where(and(eq(userProgress.userId, userId), eq(userProgress.lessonId, input.lessonId)))
+      .limit(1)
+      .for('update');
+    if (existing[0]) {
+      const updatedAt = new Date();
+      await tx
+        .update(userProgress)
+        .set({ lastAccessedAt: updatedAt })
+        .where(eq(userProgress.progressId, existing[0].progressId));
+      return { row: { ...existing[0], lastAccessedAt: updatedAt }, created: false };
+    }
+    const inserted = await tx.insert(userProgress).values({
+      userId,
+      courseId: input.courseId,
+      moduleId: input.moduleId,
+      lessonId: input.lessonId,
+      progressPercentage: '0',
+      isCompleted: false,
+    });
+    const rows = await tx
+      .select()
+      .from(userProgress)
+      .where(eq(userProgress.progressId, inserted[0].insertId))
+      .limit(1);
+    return { row: rows[0], created: true };
+  }
 
-      let lessonRow: LessonProgressRow;
-      const timeSpentSeconds = (existing[0]?.timeSpentSeconds ?? 0) + input.timeSpentSeconds;
-      if (existing[0]) {
-        const completedAt = existing[0].completedAt ?? now;
-        await tx
-          .update(userProgress)
-          .set({
-            progressPercentage: '100',
-            isCompleted: true,
-            completedAt,
-            lastAccessedAt: now,
-            timeSpentSeconds,
-          })
-          .where(eq(userProgress.progressId, existing[0].progressId));
-        lessonRow = {
+  /**
+   * Marks the lesson-grain row complete (inserting it when missing) and adds
+   * the time spent. `wasCompleted` reports the state before this call. The
+   * caller MUST hold the user lock.
+   */
+  async markLessonCompleted(
+    tx: ProgressExecutor,
+    userId: number,
+    input: { courseId: number; moduleId: number; lessonId: number; timeSpentSeconds: number },
+  ): Promise<{ row: LessonProgressRow; wasCompleted: boolean }> {
+    const now = new Date();
+    const existing = await tx
+      .select()
+      .from(userProgress)
+      .where(and(eq(userProgress.userId, userId), eq(userProgress.lessonId, input.lessonId)))
+      .limit(1)
+      .for('update');
+    if (existing[0]) {
+      const completedAt = existing[0].completedAt ?? now;
+      const timeSpentSeconds = existing[0].timeSpentSeconds + input.timeSpentSeconds;
+      await tx
+        .update(userProgress)
+        .set({
+          progressPercentage: '100',
+          isCompleted: true,
+          completedAt,
+          lastAccessedAt: now,
+          timeSpentSeconds,
+        })
+        .where(eq(userProgress.progressId, existing[0].progressId));
+      return {
+        row: {
           ...existing[0],
           progressPercentage: '100',
           isCompleted: true,
           completedAt,
           lastAccessedAt: now,
           timeSpentSeconds,
-        };
-      } else {
-        const inserted = await tx.insert(userProgress).values({
-          userId: input.userId,
-          courseId: input.courseId,
-          moduleId: input.moduleId,
-          lessonId: input.lessonId,
-          progressPercentage: '100',
-          isCompleted: true,
-          completedAt: now,
-          lastAccessedAt: now,
-          timeSpentSeconds,
-        });
-        const rows = await tx
-          .select()
-          .from(userProgress)
-          .where(eq(userProgress.progressId, inserted[0].insertId))
-          .limit(1);
-        lessonRow = rows[0];
-      }
-
-      const moduleTotal = await tx
-        .select({ value: count() })
-        .from(lessons)
-        .where(and(eq(lessons.moduleId, input.moduleId), eq(lessons.isPublished, true)));
-      const moduleDone = await tx
-        .select({ value: count() })
-        .from(userProgress)
-        .where(and(
-          eq(userProgress.userId, input.userId),
-          eq(userProgress.moduleId, input.moduleId),
-          isNotNull(userProgress.lessonId),
-          eq(userProgress.isCompleted, true),
-        ));
-
-      let moduleCompleted = false;
-      if ((moduleTotal[0]?.value ?? 0) > 0 && moduleDone[0]?.value === moduleTotal[0]?.value) {
-        moduleCompleted = true;
-        await this.upsertGrainRow(tx, input.userId, {
-          courseId: input.courseId,
-          moduleId: input.moduleId,
-          lessonId: null,
-        });
-      }
-
-      const courseTotal = await tx
-        .select({ value: count() })
-        .from(lessons)
-        .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
-        .where(and(eq(modules.courseId, input.courseId), eq(lessons.isPublished, true)));
-      const courseDone = await tx
-        .select({ value: count() })
-        .from(userProgress)
-        .where(and(
-          eq(userProgress.userId, input.userId),
-          eq(userProgress.courseId, input.courseId),
-          isNotNull(userProgress.lessonId),
-          eq(userProgress.isCompleted, true),
-        ));
-
-      let courseCompleted = false;
-      if ((courseTotal[0]?.value ?? 0) > 0 && courseDone[0]?.value === courseTotal[0]?.value) {
-        courseCompleted = true;
-        await this.upsertGrainRow(tx, input.userId, {
-          courseId: input.courseId,
-          moduleId: null,
-          lessonId: null,
-        });
-      }
-
-      return { lesson: lessonRow, moduleCompleted, courseCompleted };
+        },
+        wasCompleted: existing[0].isCompleted,
+      };
+    }
+    const inserted = await tx.insert(userProgress).values({
+      userId,
+      courseId: input.courseId,
+      moduleId: input.moduleId,
+      lessonId: input.lessonId,
+      progressPercentage: '100',
+      isCompleted: true,
+      completedAt: now,
+      lastAccessedAt: now,
+      timeSpentSeconds: input.timeSpentSeconds,
     });
+    const rows = await tx
+      .select()
+      .from(userProgress)
+      .where(eq(userProgress.progressId, inserted[0].insertId))
+      .limit(1);
+    return { row: rows[0], wasCompleted: false };
   }
 
-  private async upsertGrainRow(
-    tx: Tx,
+  /** Grain row (course, module or lesson grain) of a user. */
+  async findGrainRow(
     userId: number,
-    grain: { courseId: number; moduleId: number | null; lessonId: number | null },
-  ): Promise<void> {
-    const conditions = [
-      eq(userProgress.userId, userId),
-      eq(userProgress.courseId, grain.courseId),
-      grain.lessonId === null ? isNull(userProgress.lessonId) : eq(userProgress.lessonId, grain.lessonId!),
-      grain.moduleId === null
-        ? isNull(userProgress.moduleId)
-        : eq(userProgress.moduleId, grain.moduleId),
-    ];
-    const existing = await tx.select().from(userProgress).where(and(...conditions)).limit(1).for('update');
+    grain: ProgressGrain,
+    executor: ProgressExecutor = db,
+  ): Promise<LessonProgressRow | null> {
+    const rows = await executor
+      .select()
+      .from(userProgress)
+      .where(and(eq(userProgress.userId, userId), grainCondition(grain)))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Marks a module or course grain row complete (check-then-insert under the
+   * user lock). Returns true when the grain was not completed before this call.
+   */
+  async markGrainCompleted(tx: ProgressExecutor, userId: number, grain: ProgressGrain): Promise<boolean> {
+    const existing = await tx
+      .select()
+      .from(userProgress)
+      .where(and(eq(userProgress.userId, userId), grainCondition(grain)))
+      .limit(1)
+      .for('update');
     if (existing[0]) {
+      if (existing[0].isCompleted) {
+        return false;
+      }
       await tx
         .update(userProgress)
-        .set({ isCompleted: true, progressPercentage: '100', completedAt: existing[0].completedAt ?? new Date() })
+        .set({ isCompleted: true, progressPercentage: '100', completedAt: new Date() })
         .where(eq(userProgress.progressId, existing[0].progressId));
-      return;
+      return true;
     }
     await tx.insert(userProgress).values({
       userId,
@@ -299,86 +548,159 @@ export class ProgressRepository {
       isCompleted: true,
       completedAt: new Date(),
     });
+    return true;
   }
 
-  async findGrainRow(
+  /**
+   * Active tracks that list `courseId` as a required course, whose every required
+   * course the user has completed (course-grain row), and for which no
+   * TRACK_COMPLETED event exists yet. Runs inside the caller's transaction (user lock held).
+   */
+  async listNewlyCompletedTracksForCourse(
+    tx: ProgressExecutor,
     userId: number,
-    grain: { courseId: number; moduleId: number | null; lessonId: number | null },
-  ): Promise<LessonProgressRow | null> {
-    const conditions = [
-      eq(userProgress.userId, userId),
-      eq(userProgress.courseId, grain.courseId),
-      grain.lessonId === null ? isNull(userProgress.lessonId) : eq(userProgress.lessonId, grain.lessonId!),
-      grain.moduleId === null
-        ? isNull(userProgress.moduleId)
-        : eq(userProgress.moduleId, grain.moduleId),
-    ];
-    const rows = await db.select().from(userProgress).where(and(...conditions)).limit(1);
-    return rows[0] ?? null;
+    courseId: number,
+  ): Promise<Array<{ trackId: number; trackName: string }>> {
+    const candidates = await tx
+      .select({ trackId: tracks.trackId, trackName: tracks.trackName })
+      .from(trackContent)
+      .innerJoin(tracks, eq(tracks.trackId, trackContent.trackId))
+      .where(
+        and(
+          eq(trackContent.contentType, 'course'),
+          eq(trackContent.contentId, courseId),
+          eq(trackContent.required, true),
+          eq(tracks.isActive, true),
+        ),
+      );
+    const completedTracks: Array<{ trackId: number; trackName: string }> = [];
+    for (const track of candidates) {
+      const required = await tx
+        .select({ courseId: trackContent.contentId })
+        .from(trackContent)
+        .where(
+          and(
+            eq(trackContent.trackId, track.trackId),
+            eq(trackContent.contentType, 'course'),
+            eq(trackContent.required, true),
+          ),
+        );
+      const requiredIds = required.map((row) => row.courseId);
+      const done = await tx
+        .select({ courseId: userProgress.courseId })
+        .from(userProgress)
+        .where(
+          and(
+            eq(userProgress.userId, userId),
+            inArray(userProgress.courseId, requiredIds),
+            isNull(userProgress.moduleId),
+            isNull(userProgress.lessonId),
+            eq(userProgress.isCompleted, true),
+          ),
+        );
+      if (new Set(done.map((row) => row.courseId)).size < new Set(requiredIds).size) {
+        continue;
+      }
+      const existing = await tx
+        .select({ id: activityLogs.logId })
+        .from(activityLogs)
+        .where(
+          and(
+            eq(activityLogs.userId, userId),
+            eq(activityLogs.activityType, 'TRACK_COMPLETED'),
+            sql`json_extract(${activityLogs.details}, '$.trackId') = ${track.trackId}`,
+          ),
+        )
+        .limit(1);
+      if (existing.length === 0) {
+        completedTracks.push(track);
+      }
+    }
+    return completedTracks;
   }
 
-  /* ── Published content reference counts (F5 §06 virtual entities) ───── */
-
-  async countPublishedLessonsByCourse(courseId: number): Promise<number> {
-    const rows = await db
-      .select({ value: count() })
-      .from(lessons)
-      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
-      .where(and(eq(modules.courseId, courseId), eq(lessons.isPublished, true)));
-    return rows[0]?.value ?? 0;
-  }
-
-  async listPublishedModulesByCourse(courseId: number): Promise<PublishedModuleRow[]> {
-    return db
-      .select({
-        moduleId: modules.moduleId,
-        title: modules.title,
-        moduleOrder: modules.moduleOrder,
-        lessonCount: count(lessons.lessonId),
-      })
-      .from(modules)
-      .leftJoin(lessons, and(eq(lessons.moduleId, modules.moduleId), eq(lessons.isPublished, true)))
-      .where(and(eq(modules.courseId, courseId), eq(modules.isPublished, true)))
-      .groupBy(modules.moduleId)
-      .orderBy(asc(modules.moduleOrder));
-  }
-
-  async countCompletedLessons(userId: number, courseId: number): Promise<number> {
-    const rows = await db
+  /** Completed visible items of one course for one user (all kinds). */
+  async countCompletedItemsByCourse(
+    userId: number,
+    courseId: number,
+    executor: ProgressExecutor = db,
+  ): Promise<number> {
+    const rows = await executor
       .select({ value: count() })
       .from(userProgress)
+      .innerJoin(lessons, eq(lessons.lessonId, userProgress.lessonId))
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
       .where(and(
         eq(userProgress.userId, userId),
-        eq(userProgress.courseId, courseId),
-        isNotNull(userProgress.lessonId),
+        eq(modules.courseId, courseId),
         eq(userProgress.isCompleted, true),
+        visibleItemCondition(),
       ));
     return rows[0]?.value ?? 0;
   }
 
-  /** Completed lesson counts grouped per module (learner's own view). */
-  async countCompletedLessonsByModule(userId: number, courseId: number): Promise<Map<number, number>> {
-    const rows = await db
-      .select({ moduleId: userProgress.moduleId, value: count() })
+  /** Completed visible items per module for one user, keyed by module id. */
+  async countCompletedItemsByModule(
+    userId: number,
+    courseId: number,
+    executor: ProgressExecutor = db,
+  ): Promise<Map<number, number>> {
+    const rows = await executor
+      .select({ moduleId: lessons.moduleId, value: count() })
       .from(userProgress)
+      .innerJoin(lessons, eq(lessons.lessonId, userProgress.lessonId))
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
       .where(and(
         eq(userProgress.userId, userId),
-        eq(userProgress.courseId, courseId),
-        isNotNull(userProgress.moduleId),
-        isNotNull(userProgress.lessonId),
+        eq(modules.courseId, courseId),
         eq(userProgress.isCompleted, true),
+        visibleItemCondition(),
       ))
-      .groupBy(userProgress.moduleId);
-    return new Map(rows.map((row) => [row.moduleId as number, row.value]));
+      .groupBy(lessons.moduleId);
+    return new Map(rows.map((row) => [row.moduleId, row.value]));
   }
 
-  async countCompletedModules(userId: number, courseId: number): Promise<number> {
+  /** Completed visible items per module across many users (class averages). */
+  async countCompletedItemsByModuleForUsers(userIds: number[], courseId: number): Promise<Map<number, number>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
     const rows = await db
+      .select({ moduleId: lessons.moduleId, value: count() })
+      .from(userProgress)
+      .innerJoin(lessons, eq(lessons.lessonId, userProgress.lessonId))
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(
+        inArray(userProgress.userId, userIds),
+        eq(modules.courseId, courseId),
+        eq(userProgress.isCompleted, true),
+        visibleItemCondition(),
+      ))
+      .groupBy(lessons.moduleId);
+    return new Map(rows.map((row) => [row.moduleId, row.value]));
+  }
+
+  /** Completed module-grain rows of published modules of a course for one user. */
+  async countCompletedModules(userId: number, courseId: number, executor: ProgressExecutor = db): Promise<number> {
+    const rows = await executor
       .select({ value: count() })
       .from(userProgress)
+      .innerJoin(modules, eq(modules.moduleId, userProgress.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
       .where(and(
         eq(userProgress.userId, userId),
-        eq(userProgress.courseId, courseId),
+        eq(modules.courseId, courseId),
+        eq(modules.isPublished, true),
+        eq(academyCourses.isPublished, true),
         isNull(userProgress.lessonId),
         isNotNull(userProgress.moduleId),
         eq(userProgress.isCompleted, true),
@@ -386,66 +708,121 @@ export class ProgressRepository {
     return rows[0]?.value ?? 0;
   }
 
-  /** Completed lesson rows per module across many users (class averages). */
-  async countCompletedLessonsByModuleForUsers(
-    userIds: number[],
-    courseId: number,
-  ): Promise<Map<number, number>> {
+  /** Completed module-grain rows per user across many users (class/org tables). */
+  async countCompletedModulesForUsers(userIds: number[], courseId: number): Promise<Map<number, number>> {
     if (userIds.length === 0) {
       return new Map();
     }
     const rows = await db
-      .select({ moduleId: userProgress.moduleId, value: count() })
+      .select({ userId: userProgress.userId, value: count() })
       .from(userProgress)
+      .innerJoin(modules, eq(modules.moduleId, userProgress.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
       .where(and(
         inArray(userProgress.userId, userIds),
-        eq(userProgress.courseId, courseId),
+        eq(modules.courseId, courseId),
+        eq(modules.isPublished, true),
+        eq(academyCourses.isPublished, true),
+        isNull(userProgress.lessonId),
         isNotNull(userProgress.moduleId),
-        isNotNull(userProgress.lessonId),
         eq(userProgress.isCompleted, true),
       ))
-      .groupBy(userProgress.moduleId);
-    return new Map(rows.map((row) => [row.moduleId as number, row.value]));
+      .groupBy(userProgress.userId);
+    return new Map(rows.map((row) => [row.userId, row.value]));
   }
 
-  /* ── Continue-learning + activity ───────────────────────────────────── */
-
-  async getContinueLearningRow(userId: number): Promise<ContinueLearningRow | null> {
+  /** Completed visible items per user across many users (class/org tables). */
+  async countCompletedItemsForUsers(userIds: number[], courseId: number): Promise<Map<number, number>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
     const rows = await db
+      .select({ userId: userProgress.userId, value: count() })
+      .from(userProgress)
+      .innerJoin(lessons, eq(lessons.lessonId, userProgress.lessonId))
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(
+        inArray(userProgress.userId, userIds),
+        eq(modules.courseId, courseId),
+        eq(userProgress.isCompleted, true),
+        visibleItemCondition(),
+      ))
+      .groupBy(userProgress.userId);
+    return new Map(rows.map((row) => [row.userId, row.value]));
+  }
+
+  /** Last access per user across many users (class/org tables). */
+  async lastAccessForUsers(userIds: number[]): Promise<Map<number, Date>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+    const rows = await db
+      .select({ userId: userProgress.userId, value: max(userProgress.lastAccessedAt) })
+      .from(userProgress)
+      .where(inArray(userProgress.userId, userIds))
+      .groupBy(userProgress.userId);
+    const lastActive = new Map<number, Date>();
+    for (const row of rows) {
+      if (row.value) {
+        lastActive.set(row.userId, row.value);
+      }
+    }
+    return lastActive;
+  }
+
+  /** Courses a user has started (any progress row), published only, most recent first. */
+  async listStartedCourses(userId: number, executor: ProgressExecutor = db): Promise<CourseOptionRow[]> {
+    const rows = await executor
       .select({
-        lessonId: userProgress.lessonId,
-        moduleId: userProgress.moduleId,
-        courseId: userProgress.courseId,
+        courseId: academyCourses.courseId,
+        title: academyCourses.title,
+        lastAccessedAt: max(userProgress.lastAccessedAt),
+      })
+      .from(userProgress)
+      .innerJoin(academyCourses, eq(academyCourses.courseId, userProgress.courseId))
+      .where(and(eq(userProgress.userId, userId), eq(academyCourses.isPublished, true)))
+      .groupBy(academyCourses.courseId, academyCourses.title)
+      .orderBy(desc(max(userProgress.lastAccessedAt)));
+    return rows.map((row) => ({ courseId: row.courseId, title: row.title, lastAccessedAt: row.lastAccessedAt ?? null }));
+  }
+
+  /* ── Continue-learning ──────────────────────────────────────────────── */
+
+  /** Most recently accessed lesson-grain row of a visible item. */
+  async getContinueLearningRow(userId: number, executor: ProgressExecutor = db): Promise<ContinueLearningRow | null> {
+    const rows = await executor
+      .select({
+        ...itemColumns,
         lastAccessedAt: userProgress.lastAccessedAt,
-        lessonTitle: lessons.title,
-        moduleTitle: modules.title,
       })
       .from(userProgress)
       .innerJoin(lessons, eq(lessons.lessonId, userProgress.lessonId))
-      .innerJoin(modules, eq(modules.moduleId, userProgress.moduleId))
-      .where(and(eq(userProgress.userId, userId), isNotNull(userProgress.lessonId)))
+      .innerJoin(modules, eq(modules.moduleId, lessons.moduleId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, modules.courseId))
+      .leftJoin(labs, eq(labs.labId, lessons.labId))
+      .leftJoin(quizzes, eq(quizzes.quizId, lessons.quizId))
+      .where(and(eq(userProgress.userId, userId), isNotNull(userProgress.lessonId), visibleItemCondition()))
       .orderBy(desc(userProgress.lastAccessedAt))
       .limit(1);
     const row = rows[0];
     if (!row) {
       return null;
     }
-    return {
-      lessonId: row.lessonId as number,
-      moduleId: row.moduleId as number,
-      courseId: row.courseId as number,
-      lessonTitle: row.lessonTitle,
-      moduleTitle: row.moduleTitle,
-      lastAccessedAt: row.lastAccessedAt,
-    };
+    return { ...toItem(row), lastAccessedAt: row.lastAccessedAt };
   }
+
+  /* ── Activity ───────────────────────────────────────────────────────── */
 
   async recordActivity(
     userId: number,
     activityType: LearningActivityType,
     details: Record<string, unknown> | null,
+    executor: ProgressExecutor = db,
   ): Promise<void> {
-    await db.insert(activityLogs).values({ userId, activityType, details });
+    await executor.insert(activityLogs).values({ userId, activityType, details });
   }
 
   async listActivity(userId: number, limit: number): Promise<Array<{
@@ -518,6 +895,41 @@ export class ProgressRepository {
     return rows[0]?.value ?? 0;
   }
 
+  /** True when the learner has a LAB_COMPLETED event for this lab (lab completion gate). */
+  async hasLabCompletedEvent(userId: number, labId: number, executor: ProgressExecutor = db): Promise<boolean> {
+    const rows = await executor
+      .select({ logId: activityLogs.logId })
+      .from(activityLogs)
+      .where(and(
+        eq(activityLogs.userId, userId),
+        eq(activityLogs.activityType, 'LAB_COMPLETED'),
+        sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${activityLogs.details}, '$.labId')) AS SIGNED) = ${labId}`,
+      ))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  /** Distinct passed steps per lab for one learner (LAB_STEP_PASSED events). */
+  async countPassedLabSteps(userId: number, labIds: number[]): Promise<Map<number, number>> {
+    if (labIds.length === 0) {
+      return new Map();
+    }
+    const labIdExpr = sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${activityLogs.details}, '$.labId')) AS SIGNED)`;
+    const rows = await db
+      .select({
+        labId: sql<number>`${labIdExpr}`,
+        value: sql<number>`COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(${activityLogs.details}, '$.stepId')))`,
+      })
+      .from(activityLogs)
+      .where(and(
+        eq(activityLogs.userId, userId),
+        eq(activityLogs.activityType, 'LAB_STEP_PASSED'),
+        sql`${labIdExpr} IN (${sql.join(labIds.map((id) => sql`${id}`), sql`, `)})`,
+      ))
+      .groupBy(sql`${labIdExpr}`);
+    return new Map(rows.map((row) => [Number(row.labId), Number(row.value)]));
+  }
+
   async lastActivityDate(userId: number): Promise<Date | null> {
     const rows = await db
       .select({ value: max(activityLogs.createdAt) })
@@ -544,11 +956,68 @@ export class ProgressRepository {
     return rows[0]?.value ?? 0;
   }
 
-  /** Atomic attempt + answer persistence (invariant 5 runs before this). */
-  async insertAttemptWithAnswers(input: AttemptInsertInput): Promise<number> {
-    return db.transaction(async (tx) => {
+  /** Pass state, best completed score and attempts started in the last 24 h, per quiz. */
+  async quizAttemptStats(
+    userId: number,
+    quizIds: number[],
+    executor: ProgressExecutor = db,
+  ): Promise<Map<number, QuizAttemptStatsRow>> {
+    if (quizIds.length === 0) {
+      return new Map();
+    }
+    const rows = await executor
+      .select({
+        quizId: quizAttempts.quizId,
+        passed: sql<number>`CAST(MAX(${quizAttempts.isPassed}) AS SIGNED)`,
+        bestScore: sql<number | null>`MAX(CASE WHEN ${quizAttempts.completedAt} IS NOT NULL THEN ${quizAttempts.score} END)`,
+        attemptsUsedToday: sql<number>`CAST(SUM(CASE WHEN ${quizAttempts.startedAt} >= ${LAST_24_HOURS_SQL} THEN 1 ELSE 0 END) AS SIGNED)`,
+      })
+      .from(quizAttempts)
+      .where(and(eq(quizAttempts.userId, userId), inArray(quizAttempts.quizId, quizIds)))
+      .groupBy(quizAttempts.quizId);
+    return new Map(rows.map((row) => [row.quizId, {
+      isPassed: Number(row.passed) === 1,
+      bestScore: row.bestScore === null || row.bestScore === undefined ? null : Number(row.bestScore),
+      attemptsUsedToday: Number(row.attemptsUsedToday),
+    }]));
+  }
+
+  /** Attempts of this learner on this quiz started in the last 24 h (daily cap). */
+  async countAttemptsStartedSince(
+    userId: number,
+    quizId: number,
+    executor: ProgressExecutor = db,
+  ): Promise<number> {
+    const rows = await executor
+      .select({ value: count() })
+      .from(quizAttempts)
+      .where(and(
+        eq(quizAttempts.userId, userId),
+        eq(quizAttempts.quizId, quizId),
+        sql`${quizAttempts.startedAt} >= ${LAST_24_HOURS_SQL}`,
+      ));
+    return rows[0]?.value ?? 0;
+  }
+
+  /** True when the learner has a passed attempt for this quiz. */
+  async hasPassedQuizAttempt(userId: number, quizId: number, executor: ProgressExecutor = db): Promise<boolean> {
+    const rows = await executor
+      .select({ attemptId: quizAttempts.attemptId })
+      .from(quizAttempts)
+      .where(and(
+        eq(quizAttempts.userId, userId),
+        eq(quizAttempts.quizId, quizId),
+        eq(quizAttempts.isPassed, true),
+      ))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  /** Atomic attempt + answer persistence. Runs in `tx` when given (caller holds the user lock), else in its own transaction. */
+  async insertAttemptWithAnswers(input: AttemptInsertInput, tx?: ProgressExecutor): Promise<number> {
+    const run = async (handle: ProgressExecutor): Promise<number> => {
       const now = new Date();
-      const inserted = await tx.insert(quizAttempts).values({
+      const inserted = await handle.insert(quizAttempts).values({
         userId: input.userId,
         quizId: input.quizId,
         score: input.score,
@@ -560,7 +1029,7 @@ export class ProgressRepository {
       });
       const attemptId = inserted[0].insertId;
       if (input.answers.length > 0) {
-        await tx.insert(userQuizAnswers).values(
+        await handle.insert(userQuizAnswers).values(
           input.answers.map((answer) => ({
             attemptId,
             questionId: answer.questionId,
@@ -572,7 +1041,8 @@ export class ProgressRepository {
         );
       }
       return attemptId;
-    });
+    };
+    return tx ? run(tx) : db.transaction(run);
   }
 
   async listQuizAttemptsByQuiz(userId: number, quizId: number): Promise<Array<{
@@ -680,6 +1150,18 @@ export class ProgressRepository {
     return rows;
   }
 
+  /** Raw `pro_labs.flag_values` per lab (the service parses the v2 spec for step counts). */
+  async listLabSpecValues(labIds: number[]): Promise<Map<number, unknown>> {
+    if (labIds.length === 0) {
+      return new Map();
+    }
+    const rows = await db
+      .select({ labId: proLabs.labId, flagValues: proLabs.flagValues })
+      .from(proLabs)
+      .where(inArray(proLabs.labId, labIds));
+    return new Map(rows.map((row) => [row.labId, row.flagValues]));
+  }
+
   /* ── Class / org / admin scoping ────────────────────────────────────── */
 
   async isProfessorOfClass(classId: number, userId: number): Promise<boolean> {
@@ -748,18 +1230,28 @@ export class ProgressRepository {
       .orderBy(asc(users.fullName));
   }
 
-  async getOrgId(userId: number): Promise<number | null> {
+  /** Published courses assigned to a class, in assignment order (staff course selector). */
+  async listClassAssignedCourses(classId: number): Promise<CourseOptionRow[]> {
     const rows = await db
-      .select({ settingValue: userSettings.settingValue })
-      .from(userSettings)
-      .where(and(
-        eq(userSettings.userId, userId),
-        eq(userSettings.settingKey, ORG_CONSTANTS.ORG_ID_SETTING_KEY),
-      ))
+      .select({ courseId: academyCourses.courseId, title: academyCourses.title })
+      .from(classAssignments)
+      .innerJoin(academyCourses, eq(academyCourses.courseId, classAssignments.courseId))
+      .where(and(eq(classAssignments.teamId, classId), eq(academyCourses.isPublished, true)))
+      .orderBy(asc(classAssignments.assignmentId));
+    return rows.map((row) => ({ courseId: row.courseId, title: row.title, lastAccessedAt: null }));
+  }
+
+  /** First published course assigned to any class of an organization (org default course). */
+  async findFirstAssignedCourseForOrg(orgId: number): Promise<number | null> {
+    const rows = await db
+      .select({ courseId: classAssignments.courseId })
+      .from(classAssignments)
+      .innerJoin(teams, eq(teams.teamId, classAssignments.teamId))
+      .innerJoin(academyCourses, eq(academyCourses.courseId, classAssignments.courseId))
+      .where(and(eq(teams.organizationId, orgId), eq(academyCourses.isPublished, true)))
+      .orderBy(asc(classAssignments.assignmentId))
       .limit(1);
-    const raw = rows[0]?.settingValue;
-    const parsed = raw == null ? NaN : Number(raw);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    return rows[0]?.courseId ?? null;
   }
 
   async findUser(userId: number): Promise<{
@@ -775,57 +1267,15 @@ export class ProgressRepository {
       .limit(1);
     return rows[0] ?? null;
   }
+}
 
-  /** Per-student aggregate raw data for class/org tables. */
-  async getStudentsAggregates(userIds: number[], courseId: number): Promise<{
-    completedLessons: Map<number, number>;
-    completedModules: Map<number, number>;
-    lastActive: Map<number, Date>;
-  }> {
-    const empty = { completedLessons: new Map<number, number>(), completedModules: new Map<number, number>(), lastActive: new Map<number, Date>() };
-    if (userIds.length === 0) {
-      return empty;
-    }
-    const [lessonRows, moduleRows, activeRows] = await Promise.all([
-      db
-        .select({ userId: userProgress.userId, value: count() })
-        .from(userProgress)
-        .where(and(
-          inArray(userProgress.userId, userIds),
-          eq(userProgress.courseId, courseId),
-          isNotNull(userProgress.lessonId),
-          eq(userProgress.isCompleted, true),
-        ))
-        .groupBy(userProgress.userId),
-      db
-        .select({ userId: userProgress.userId, value: count() })
-        .from(userProgress)
-        .where(and(
-          inArray(userProgress.userId, userIds),
-          eq(userProgress.courseId, courseId),
-          isNull(userProgress.lessonId),
-          isNotNull(userProgress.moduleId),
-          eq(userProgress.isCompleted, true),
-        ))
-        .groupBy(userProgress.userId),
-      db
-        .select({ userId: userProgress.userId, value: max(userProgress.lastAccessedAt) })
-        .from(userProgress)
-        .where(inArray(userProgress.userId, userIds))
-        .groupBy(userProgress.userId),
-    ]);
-    const lastActive = new Map<number, Date>();
-    for (const row of activeRows) {
-      if (row.value) {
-        lastActive.set(row.userId, row.value);
-      }
-    }
-    return {
-      completedLessons: new Map(lessonRows.map((row) => [row.userId, row.value])),
-      completedModules: new Map(moduleRows.map((row) => [row.userId, row.value])),
-      lastActive,
-    };
-  }
+/** Grain predicate: course grain = module and lesson null, module grain = lesson null, lesson grain = lesson set. */
+function grainCondition(grain: ProgressGrain) {
+  return and(
+    eq(userProgress.courseId, grain.courseId),
+    grain.lessonId === null ? isNull(userProgress.lessonId) : eq(userProgress.lessonId, grain.lessonId),
+    grain.moduleId === null ? isNull(userProgress.moduleId) : eq(userProgress.moduleId, grain.moduleId),
+  );
 }
 
 export const progressRepository = new ProgressRepository();

@@ -1,3 +1,4 @@
+import { ERROR_CODES, ForbiddenError } from '../../../shared/errors';
 import { planService } from '../../billing/services/plan.service';
 import { entitlementService as billingEntitlementService } from '../../billing/services/entitlement.service';
 import type { LabsRepository } from '../repositories/labs.repository';
@@ -38,7 +39,15 @@ export class EntitlementService {
     if (!lab.isPremium) {
       return;
     }
-    await billingEntitlementService.assertLabAccess(userId, labId);
+    try {
+      await billingEntitlementService.assertLabAccess(userId, labId);
+    } catch (error) {
+      // Contract 0.1: every refusal carries LAB_ACCESS_DENIED as errors[0].code.
+      if (error instanceof ForbiddenError) {
+        throw new ForbiddenError(error.message, [{ code: ERROR_CODES.LAB_ACCESS_DENIED }]);
+      }
+      throw error;
+    }
   }
 
   /**

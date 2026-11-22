@@ -3,7 +3,16 @@ import type { AchievementDto } from '../dto/gamification.dto';
 import type { AchievementRow, GamificationRepository } from '../repositories/gamification.repository';
 import { gamificationRepository } from '../repositories/gamification.repository';
 
-export type AchievementTriggerType = 'lab_completions' | 'course_completions' | 'streak_days' | 'points_balance';
+export type AchievementTriggerType =
+  | 'lab_completions'
+  | 'course_completions'
+  | 'streak_days'
+  | 'points_balance'
+  | 'quiz_passes'
+  | 'module_complete'
+  | 'course_complete'
+  | 'lab_complete_count'
+  | 'quiz_pass_count';
 
 export interface CreateAchievementInput {
   name: string;

@@ -1,6 +1,6 @@
 import https from 'https';
 import { env } from '../../../app/config/env';
-import { BadRequestError } from '../../../shared/errors';
+import { BadRequestError, ERROR_CODES } from '../../../shared/errors';
 import type { OAuthProvider, OAuthUserInfo } from '../dto/auth.dto';
 
 interface TokenResponse {
@@ -31,9 +31,21 @@ interface GitHubEmail {
   verified: boolean;
 }
 
+/** Error body shapes the providers return (`error` is a string for GitHub/token endpoints, an object for Google). */
+interface ProviderErrorBody {
+  error_description?: string;
+  error?: string | { message?: string };
+  message?: string;
+}
+
 interface HttpResponse {
   status: number;
-  data: any;
+  data: ProviderErrorBody | unknown;
+}
+
+/** Reads the provider error body defensively: the response may be any JSON value or raw text. */
+function errorBody(data: unknown): ProviderErrorBody {
+  return typeof data === 'object' && data !== null ? (data as ProviderErrorBody) : {};
 }
 
 /**
@@ -59,7 +71,7 @@ function requestJson(
         method: options.method,
         family: 4,
         headers,
-        timeout: 15_000,
+        timeout: 10_000,
       },
       (res) => {
         let raw = '';
@@ -67,7 +79,7 @@ function requestJson(
           raw += chunk;
         });
         res.on('end', () => {
-          let data: any = raw;
+          let data: unknown = raw;
           try {
             data = JSON.parse(raw);
           } catch {
@@ -99,6 +111,7 @@ export class OAuthService {
     provider: OAuthProvider,
     code: string,
     redirectUri: string,
+    codeVerifier: string,
   ): Promise<string> {
     const configs: Record<
       OAuthProvider,
@@ -126,6 +139,7 @@ export class OAuthService {
       client_id: config.clientId,
       client_secret: config.clientSecret,
       redirect_uri: redirectUri,
+      code_verifier: codeVerifier,
       grant_type: 'authorization_code',
     });
 
@@ -140,9 +154,9 @@ export class OAuthService {
 
     if (response.status < 200 || response.status >= 300) {
       const errorMsg =
-        response.data?.error_description ||
-        response.data?.error ||
-        response.data?.message ||
+        errorBody(response.data).error_description ||
+        (typeof errorBody(response.data).error === 'string' ? (errorBody(response.data).error as string) : '') ||
+        errorBody(response.data).message ||
         `Failed to exchange code with ${provider}.`;
       throw new BadRequestError(`OAuth error from ${provider}: ${errorMsg}`);
     }
@@ -166,8 +180,10 @@ export class OAuthService {
 
     if (response.status !== 200) {
       const errorMsg =
-        response.data?.error?.message ||
-        response.data?.message ||
+        (typeof errorBody(response.data).error === 'object'
+          ? (errorBody(response.data).error as { message?: string }).message
+          : undefined) ||
+        errorBody(response.data).message ||
         'Failed to fetch Google user info.';
       throw new BadRequestError(errorMsg);
     }
@@ -239,8 +255,16 @@ export class OAuthService {
     provider: OAuthProvider,
     code: string,
     redirectUri: string,
+    codeVerifier: string,
   ): Promise<OAuthUserInfo> {
-    const accessToken = await this.exchangeCode(provider, code, redirectUri);
+    if (!env.OAUTH_REDIRECT_URIS.includes(redirectUri)) {
+      throw new BadRequestError('Redirect URI is not allowed.', [
+        { code: ERROR_CODES.OAUTH_REDIRECT_NOT_ALLOWED },
+      ]);
+    }
+
+    // The access token stays local to this call: it is never returned or logged.
+    const accessToken = await this.exchangeCode(provider, code, redirectUri, codeVerifier);
 
     switch (provider) {
       case 'google':

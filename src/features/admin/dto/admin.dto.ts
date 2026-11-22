@@ -128,6 +128,10 @@ export interface PwnboxTelemetryDto {
   terminatedPods: number;
   totalActiveRamGb: number;
   totalActiveCpuCores: number;
+  consumedRamMb: number;
+  consumedRamGb: number;
+  consumedCpuCores: number;
+  consumedCpuPercent: number;
   avgDurationMinutes: number;
   maxSimultaneousPods: number;
 }
@@ -145,6 +149,10 @@ export interface TelemetryHistoryPointDto {
   memoryPercent: number;
   memoryUsedMb: number;
   requestsPerMinute: number;
+  consumedRamMb?: number;
+  consumedRamGb?: number;
+  consumedCpuCores?: number;
+  consumedCpuPercent?: number;
 }
 
 export interface HostTelemetryDto {
@@ -177,6 +185,10 @@ export interface AllocatedComputeDto {
   activeContainers: number;
   allocatedRamGb: number;
   allocatedCpuCores: number;
+  consumedRamMb: number;
+  consumedRamGb: number;
+  consumedCpuCores: number;
+  consumedCpuPercent: number;
   pendingPods: number;
   errorPods: number;
   stoppedPods: number;
@@ -207,6 +219,10 @@ export interface HourlyTelemetryPointDto {
   allocatedContainers: number;
   allocatedRamGb: number;
   allocatedCpuCores: number;
+  consumedRamMb?: number;
+  consumedRamGb?: number;
+  consumedCpuCores?: number;
+  consumedCpuPercent?: number;
   pendingPods: number;
   kubernetesStatus: 'OPERATIONAL' | 'DEGRADED' | 'OUTAGE';
 }

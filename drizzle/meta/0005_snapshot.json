@@ -3008,11 +3008,25 @@
         },
         "content_type": {
           "name": "content_type",
-          "type": "enum('text','video','interactive','lab')",
+          "type": "enum('text','video','interactive','lab','quiz')",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
           "default": "'text'"
+        },
+        "lab_id": {
+          "name": "lab_id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "quiz_id": {
+          "name": "quiz_id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         },
         "video_url": {
           "name": "video_url",
@@ -3076,6 +3090,20 @@
             "slug"
           ],
           "isUnique": true
+        },
+        "idx_lessons_lab": {
+          "name": "idx_lessons_lab",
+          "columns": [
+            "lab_id"
+          ],
+          "isUnique": false
+        },
+        "idx_lessons_quiz": {
+          "name": "idx_lessons_quiz",
+          "columns": [
+            "quiz_id"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -3088,6 +3116,32 @@
           ],
           "columnsTo": [
             "module_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "lessons_lab_id_labs_lab_id_fk": {
+          "name": "lessons_lab_id_labs_lab_id_fk",
+          "tableFrom": "lessons",
+          "tableTo": "labs",
+          "columnsFrom": [
+            "lab_id"
+          ],
+          "columnsTo": [
+            "lab_id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "lessons_quiz_id_quizzes_quiz_id_fk": {
+          "name": "lessons_quiz_id_quizzes_quiz_id_fk",
+          "tableFrom": "lessons",
+          "tableTo": "quizzes",
+          "columnsFrom": [
+            "quiz_id"
+          ],
+          "columnsTo": [
+            "quiz_id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
@@ -5073,7 +5127,7 @@
         },
         "question_type": {
           "name": "question_type",
-          "type": "enum('multiple_choice','true_false','fill_blank','multiple_select','bucket_sort','ordering')",
+          "type": "enum('multiple_choice','true_false','fill_blank','multiple_select','bucket_sort','ordering','terminal')",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,

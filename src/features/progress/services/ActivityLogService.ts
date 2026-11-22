@@ -1,5 +1,5 @@
 import type { LearningActivityType, ActivityLogDto } from '../dto/progress.dto';
-import type { ProgressRepository } from '../repositories/progress.repository';
+import type { ProgressExecutor, ProgressRepository } from '../repositories/progress.repository';
 import { progressRepository } from '../repositories/progress.repository';
 
 export interface ActivityLogServiceDeps {
@@ -19,13 +19,18 @@ function defaultDeps(): ActivityLogServiceDeps {
 export class ActivityLogService {
   constructor(private readonly deps: ActivityLogServiceDeps = defaultDeps()) {}
 
-  /** Public hook consumed by F5 services and F6 lab engine. */
+  /**
+   * Public hook consumed by F5 services and F6 lab engine. Pass `tx` when the
+   * caller holds the user lock (awardService.withUserLock): the FK check of
+   * activity_logs would otherwise wait on that same lock.
+   */
   async recordEvent(
     userId: number,
     eventType: LearningActivityType,
     details?: Record<string, unknown>,
+    tx?: ProgressExecutor,
   ): Promise<void> {
-    await this.deps.repo.recordActivity(userId, eventType, details ?? null);
+    await this.deps.repo.recordActivity(userId, eventType, details ?? null, tx);
   }
 
   /** F5-API-06: recent activity for the learner dashboard feed. */

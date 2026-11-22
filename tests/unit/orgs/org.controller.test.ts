@@ -22,6 +22,7 @@ const { sendSuccessMock, classServiceMock, orgServiceMock } = vi.hoisted(() => (
     inviteProfessor: vi.fn(),
     listProfessors: vi.fn(),
     getMyClass: vi.fn(),
+    acceptOrgAdmin: vi.fn(),
   },
 }));
 
@@ -115,6 +116,30 @@ describe('controller status codes (per §07 traceability matrix)', () => {
     classServiceMock.acceptInvitation.mockResolvedValue({ kind: 'class', className: 'DevOps 101' });
     await new EnrollmentController().acceptInvitation(makeReq({ body: { token: 't' } }), makeRes());
     expect(statusArg()).toBeUndefined();
+  });
+
+  it('B6 acceptOrgAdmin reads the token from the body only and ignores a query-string token', async () => {
+    orgServiceMock.acceptOrgAdmin.mockResolvedValue({ organizationId: 1 });
+    await new OrgController().acceptOrgAdmin(
+      makeReq({
+        body: { token: 'body-token-0123456789' },
+        query: { token: 'query-token-0123456789' },
+      }),
+      makeRes(),
+    );
+    expect(orgServiceMock.acceptOrgAdmin).toHaveBeenCalledWith(9, 'body-token-0123456789');
+    expect(statusArg()).toBeUndefined();
+  });
+
+  it('B6 acceptOrgAdmin never falls back to a query-string token when the body has none', async () => {
+    orgServiceMock.acceptOrgAdmin.mockRejectedValue(new Error('INVITE_TOKEN_INVALID'));
+    await expect(
+      new OrgController().acceptOrgAdmin(
+        makeReq({ body: {}, query: { token: 'query-token-0123456789' } }),
+        makeRes(),
+      ),
+    ).rejects.toThrow('INVITE_TOKEN_INVALID');
+    expect(orgServiceMock.acceptOrgAdmin.mock.calls[0][1]).toBeUndefined();
   });
 
   it('ENR-03 myClass returns 200', async () => {

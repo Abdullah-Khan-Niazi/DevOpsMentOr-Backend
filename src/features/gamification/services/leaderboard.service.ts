@@ -1,8 +1,12 @@
 import { ForbiddenError, NotFoundError } from '../../../shared/errors';
-import { ROLES } from '../../../shared/constants';
+import { PERMISSIONS, ROLES } from '../../../shared/constants';
+import type { MembershipRepository } from '../../orgs/repositories/membership.repository';
+import { membershipRepository } from '../../orgs/repositories/membership.repository';
 import type { GamificationSummary, LeaderboardEntryDto } from '../dto/gamification.dto';
 import type { GamificationRepository, LeaderboardEntryLike, SeasonLeaderboardRow } from '../repositories/gamification.repository';
 import { gamificationRepository } from '../repositories/gamification.repository';
+import type { AwardService } from './award.service';
+import { awardService } from './award.service';
 
 /** Session-derived actor (never client-supplied identifiers). */
 export interface GamificationActor {
@@ -31,7 +35,7 @@ export interface LeaderboardServiceDeps {
     | 'getLeaderboardForUsers'
     | 'findClass'
     | 'isProfessorOfClass'
-    | 'getOrgId'
+    | 'organizationExists'
     | 'listClassStudentIds'
     | 'listOrgMemberIds'
     | 'findLeaderboardForUser'
@@ -39,11 +43,25 @@ export interface LeaderboardServiceDeps {
     | 'countUserBadges'
     | 'countUserAchievements'
     | 'countUserCertificates'
+    | 'sumPointsForUser'
+    | 'countCourseCompletionsForUser'
+    | 'listLeaderboardIdsForUser'
+    | 'updateLeaderboardTotals'
+    | 'insertLeaderboard'
+    | 'deleteOtherLeaderboardRows'
   >;
+  memberships: Pick<MembershipRepository, 'getRoleInOrg'>;
+  award: Pick<AwardService, 'withUserLock'>;
 }
 
 function defaultDeps(): LeaderboardServiceDeps {
-  return { repo: gamificationRepository };
+  return { repo: gamificationRepository, memberships: membershipRepository, award: awardService };
+}
+
+/** Totals written by `refreshUserTotals` (ranks follow on the next job run). */
+export interface LeaderboardTotals {
+  totalPoints: number;
+  courseCompletionsCount: number;
 }
 
 function toEntry(row: LeaderboardEntryLike): LeaderboardEntryDto {
@@ -77,12 +95,12 @@ function toSeasonEntry(row: SeasonLeaderboardRow): {
   };
 }
 
+/** Platform scope: the platform-admin role or the gamification manage permission the routes accept. */
 function isPlatformAdmin(actor: GamificationActor): boolean {
-  return actor.roles.includes(ROLES.PLATFORM_ADMIN);
-}
-
-function isOrgAdmin(actor: GamificationActor): boolean {
-  return actor.roles.includes(ROLES.ORG_ADMIN);
+  return (
+    actor.roles.includes(ROLES.PLATFORM_ADMIN) ||
+    actor.permissions.includes(PERMISSIONS.PLATFORM_GAMIFICATION_MANAGE)
+  );
 }
 
 /**
@@ -150,31 +168,67 @@ export class LeaderboardService {
     if (!cls) {
       throw new NotFoundError('Class not found.');
     }
-    const orgId = await this.deps.repo.getOrgId(actor.userId);
-    const isProfessor = await this.deps.repo.isProfessorOfClass(classId, actor.userId);
-    const orgScoped = isOrgAdmin(actor) && orgId !== null && cls.organizationId !== null && orgId === cls.organizationId;
-    if (!isPlatformAdmin(actor) && !isProfessor && !orgScoped) {
-      throw new ForbiddenError('You do not have access to this class.');
+    if (!isPlatformAdmin(actor)) {
+      // Multi-org (D15): the actor's role is read from the membership in the
+      // class's own organization, never from a single legacy org setting.
+      const isProfessor = await this.deps.repo.isProfessorOfClass(classId, actor.userId);
+      const isClassOrgAdmin =
+        !isProfessor &&
+        cls.organizationId !== null &&
+        (await this.deps.memberships.getRoleInOrg(actor.userId, cls.organizationId)) === ROLES.ORG_ADMIN;
+      if (!isProfessor && !isClassOrgAdmin) {
+        throw new ForbiddenError('You do not have access to this class.');
+      }
     }
     const userIds = await this.deps.repo.listClassStudentIds(classId);
     const rows = await this.deps.repo.getLeaderboardForUsers(userIds);
     return { className: cls.className, items: rows.map(toEntry), total: rows.length };
   }
 
-  /** GAM-10: org-scoped leaderboard for the org admin / platform admin. */
+  /** GAM-10: org-scoped leaderboard for an admin of that org / platform admin. */
   async getOrg(
     orgId: number,
     actor: GamificationActor,
   ): Promise<{ items: LeaderboardEntryDto[]; total: number }> {
-    if (!isPlatformAdmin(actor)) {
-      const callerOrgId = await this.deps.repo.getOrgId(actor.userId);
-      if (!isOrgAdmin(actor) || callerOrgId !== orgId) {
-        throw new ForbiddenError('You do not have access to this organization.');
+    if (isPlatformAdmin(actor)) {
+      if (!(await this.deps.repo.organizationExists(orgId))) {
+        throw new NotFoundError('Organization not found.');
       }
+    } else if ((await this.deps.memberships.getRoleInOrg(actor.userId, orgId)) !== ROLES.ORG_ADMIN) {
+      throw new ForbiddenError('You do not have access to this organization.');
     }
     const userIds = await this.deps.repo.listOrgMemberIds(orgId);
     const rows = await this.deps.repo.getLeaderboardForUsers(userIds);
     return { items: rows.map(toEntry), total: rows.length };
+  }
+
+  /**
+   * Writes the user's `leaderboards` totals immediately (contracts §5.3):
+   * `total_points` = SUM of every ledger delta (penalties included) and the
+   * distinct completed courses. Ranks are assigned by the next job run.
+   * `leaderboards` has no unique key on `user_id`, so the "upsert" is a
+   * select-then-update/insert under the user lock; legacy duplicate rows of
+   * the user are removed on the way. Never call it while holding a lock.
+   */
+  async refreshUserTotals(userId: number): Promise<LeaderboardTotals> {
+    const { repo } = this.deps;
+    return this.deps.award.withUserLock(userId, async (tx) => {
+      // Sequential: one transaction is one connection.
+      const totalPoints = await repo.sumPointsForUser(userId, tx);
+      const courseCompletionsCount = await repo.countCourseCompletionsForUser(userId, tx);
+      const leaderboardIds = await repo.listLeaderboardIdsForUser(userId, tx);
+      const totals = { totalPoints, courseCompletionsCount };
+      const [keepId, ...duplicates] = leaderboardIds;
+      if (keepId === undefined) {
+        await repo.insertLeaderboard(userId, totals, tx);
+        return totals;
+      }
+      await repo.updateLeaderboardTotals(keepId, totals, tx);
+      if (duplicates.length > 0) {
+        await repo.deleteOtherLeaderboardRows(userId, keepId, tx);
+      }
+      return totals;
+    });
   }
 
   /** §02 forward hook: aggregate summary for F2 profile / F8 analytics. */

@@ -4,10 +4,17 @@
  * consumable snapshot shapes (§02).
  */
 
+import type { LabStepCheck } from '../../labs/dto/lab-spec.dto';
+import type { CourseAccessDto } from '../../orgs/dto/org.dto';
 import type { questionTypes } from '../validators/curriculum.validator';
 
-export type ContentType = 'text' | 'video' | 'interactive' | 'lab';
+export type { CourseAccessDto } from '../../orgs/dto/org.dto';
+
+export type ContentType = 'text' | 'video' | 'interactive' | 'lab' | 'quiz';
 export type QuestionType = (typeof questionTypes)[number];
+
+/** Kind of a module item: a lesson body, a lab, or a quiz. */
+export type ModuleItemKind = 'lesson' | 'lab' | 'quiz';
 
 /** Actor identity for audit writes (same shape as F3 OrgActor). */
 export interface CurriculumActor {
@@ -38,10 +45,18 @@ export interface CourseDto {
   totalLessons: number;
   totalQuizzes: number;
   isPublished: boolean;
+  isPremium: boolean;
   prerequisites: string[] | null;
   learningObjectives: string[] | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Admin course list row (`GET /admin/curriculum/courses`). */
+export interface AdminCourseListItemDto extends CourseDto {
+  moduleCount: number;
+  itemCount: number;
+  trackIds: number[];
 }
 
 export interface ModuleDto {
@@ -50,19 +65,83 @@ export interface ModuleDto {
   title: string;
   description: string | null;
   moduleOrder: number;
+  /** Derived `CxxMxx` (C§11.1); null when the parent course slug is not `Cxx`. */
+  slug: string | null;
   estimatedMinutes: number;
   lessonCount: number;
   isPublished: boolean;
+  /** Module slide deck URL (C§11.2); null when slides are disabled. */
+  slidesUrl: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Lab summary carried by a lab item. */
+export interface ModuleItemLabDto {
+  labId: number;
+  slug: string;
+  labName: string;
+  difficultyName: string | null;
+  estimatedHours: number;
+  stepCount: number;
+  isPremium: boolean;
+}
+
+/** Quiz summary carried by a quiz item. */
+export interface ModuleItemQuizDto {
+  quizId: number;
+  questionCount: number;
+  passingScore: number;
+  timeLimitMinutes: number | null;
+  isRequired: boolean;
+}
+
+/** One ordered item of a module (lesson, lab or quiz). Learner-safe. */
+export interface ModuleItemDto {
+  itemId: number;                      // lessons.lesson_id
+  moduleId: number;
+  position: number;                    // lessons.lesson_order
+  kind: ModuleItemKind;
+  title: string;
+  /** `CxxMxxLxx`, server assigned for every kind (C§11.1); null when not derivable. */
+  slug: string | null;
+  contentType: ContentType;
+  videoDurationSeconds: number | null;
+  lab: ModuleItemLabDto | null;
+  quiz: ModuleItemQuizDto | null;
+}
+
+/** Admin view of a module item, with publish state and learner-data flag. */
+export interface AdminModuleItemDto extends ModuleItemDto {
+  isPublished: boolean;
+  lab: (ModuleItemDto['lab'] & {
+    isActive: boolean;
+    specStatus: 'v2' | 'legacy' | 'missing' | 'invalid';
+  }) | null;
+  quiz: (ModuleItemDto['quiz'] & {
+    isPublished: boolean;
+    activeQuestionCount: number;
+  }) | null;
+  hasLearnerData: boolean;
 }
 
 export interface LessonDto {
   lessonId: number;
   moduleId: number;
+  /** Course that owns the lesson's module (C§4.2). */
+  courseId: number;
   title: string;
-  /** Stable slug used for deep links and GitOps slide/walkthrough asset matching. */
+  /** Item slug `CxxMxxLxx` (server assigned, C§11.1). */
   slug: string | null;
+  /** Module slug `CxxMxx` of the module the item belongs to. */
+  moduleSlug: string | null;
+  /** Module slide deck URL for the item's module (C§11.2). */
+  slidesUrl: string | null;
+  kind: ModuleItemKind;
+  /** Lab item: the lab definition. Null for lesson and quiz items. */
+  labId: number | null;
+  /** Quiz item: the quiz. Null for lesson and lab items. */
+  quizId: number | null;
   content: string | null;
   contentType: ContentType;
   videoUrl: string | null;
@@ -95,13 +174,37 @@ export interface AnswerDto {
   answerOrder: number;
 }
 
+/**
+ * Terminal question config (C§4.4). `check` and `setup` are server-only and
+ * appear only in admin payloads; learner shaping strips them (B3).
+ */
+export interface TerminalQuestionConfigDto {
+  labId: number;
+  mode: 'answer' | 'check';
+  answerFormat: 'choice' | 'text' | null;
+  setup: string[];
+  check?: LabStepCheck;
+}
+
+/** Typed `quiz_questions.config`. Penalties are per question (C3). */
+export interface QuestionConfigDto {
+  instructions?: string;
+  /** bucket_sort: bucket labels. */
+  buckets?: string[];
+  /** Penalty for a wrong answer (points). Absent on legacy rows: treated as 0. */
+  wrongPenalty?: number;
+  /** Penalty for a guessed terminal answer (points). Absent on legacy rows: treated as 0. */
+  guessPenalty?: number;
+  terminal?: TerminalQuestionConfigDto;
+}
+
 export interface QuestionDto {
   questionId: number;
   quizId: number;
   questionText: string;
   questionType: QuestionType;
-  /** Rich presentation payload for bucket_sort/ordering (never holds correctness). */
-  config: Record<string, unknown> | null;
+  /** Presentation payload and penalties (never holds correctness). Null for legacy rows. */
+  config: QuestionConfigDto | null;
   points: number;
   explanation: string | null;
   questionOrder: number;
@@ -124,9 +227,13 @@ export interface QuizDetailDto extends QuizDto {
   questions: QuestionDto[];
 }
 
-export interface CourseOverviewDto {
+/** Learner course detail (`GET /curriculum/courses/:courseId`). The outline is
+ * readable for any published course; `access` tells the client whether content
+ * is unlocked (C§4.2). */
+export interface LearnerCourseDetailDto {
   course: CourseDto;
   modules: ModuleDto[];
+  access: CourseAccessDto;
 }
 
 /** ── §02 consumable snapshots (emitted for F5/F6/F7/F9) ────────────── */

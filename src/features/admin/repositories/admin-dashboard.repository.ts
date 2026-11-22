@@ -279,8 +279,8 @@ export class AdminDashboardRepository implements IAdminDashboardRepository {
     const paidUsers = paidSubscriptionsRow[0]?.value ?? 0;
     const freeUsers = Math.max(0, totalUsers - paidUsers);
 
-    // Synchronize live allocated compute with system telemetry
-    systemTelemetryService.updateAllocatedCompute({
+    // Synchronize live allocated & actual consumed compute with system telemetry
+    await systemTelemetryService.syncAllocatedCompute({
       running: pwnboxCounts.running,
       pending: pwnboxCounts.pending,
       error: pwnboxCounts.error,
@@ -289,6 +289,7 @@ export class AdminDashboardRepository implements IAdminDashboardRepository {
       totalRamGb: Number(pwnboxResources[0]?.totalRamGb ?? 0),
       totalCpuCores: Number(pwnboxResources[0]?.totalCpuCores ?? 0),
     });
+    const liveCompute = systemTelemetryService.getAllocatedCompute();
 
     // Host Server, Cache, DB, AI & Session Telemetry
     const [hostTelemetry, cacheTelemetry, dbTelemetry, aiTelemetry, sessionTelemetry] = await Promise.all([
@@ -404,15 +405,19 @@ export class AdminDashboardRepository implements IAdminDashboardRepository {
       activeLearners: activeRow[0]?.value ?? 0,
       labsCompleted: pwnboxCounts.terminated > 0 ? pwnboxCounts.terminated : null,
       pwnbox: {
-        activePods: pwnboxCounts.running,
+        activePods: liveCompute.activeContainers,
         pendingPods: pwnboxCounts.pending,
         stoppedPods: pwnboxCounts.stopped,
         errorPods: pwnboxCounts.error,
         terminatedPods: pwnboxCounts.terminated,
-        totalActiveRamGb: Number(pwnboxResources[0]?.totalRamGb ?? 0),
-        totalActiveCpuCores: Number(pwnboxResources[0]?.totalCpuCores ?? 0),
+        totalActiveRamGb: liveCompute.allocatedRamGb,
+        totalActiveCpuCores: liveCompute.allocatedCpuCores,
+        consumedRamMb: liveCompute.consumedRamMb,
+        consumedRamGb: liveCompute.consumedRamGb,
+        consumedCpuCores: liveCompute.consumedCpuCores,
+        consumedCpuPercent: liveCompute.consumedCpuPercent,
         avgDurationMinutes: Math.round(Number(pwnboxDuration[0]?.avgDuration ?? 0)),
-        maxSimultaneousPods: pwnboxCounts.running + pwnboxCounts.pending,
+        maxSimultaneousPods: liveCompute.activeContainers + pwnboxCounts.pending,
       },
       telemetry: {
         status: pwnboxCounts.error > 5 ? 'DEGRADED' : 'OPERATIONAL',

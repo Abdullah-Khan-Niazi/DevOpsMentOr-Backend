@@ -81,10 +81,12 @@ function makeRepo(): Mocked<LabServiceDeps['repo']> {
     findAnyActiveInstanceForUser: vi.fn(async () => null),
     findInstanceForUser: vi.fn(async () => instanceRow()),
     insertInstance: vi.fn(async () => 42),
+    insertActivity: vi.fn(async () => undefined),
     updateInstanceStatus: vi.fn(async () => undefined),
     updateInstanceExpiry: vi.fn(async () => undefined),
     updateInstanceEndpoint: vi.fn(async () => undefined),
     hasLabCompletionEvent: vi.fn(async () => false),
+    getPointsMultiplier: vi.fn(async () => 1),
   };
 }
 
@@ -127,15 +129,24 @@ function makeService(overrides: Partial<Record<keyof LabServiceDeps, unknown>> =
     })),
     releaseAssignmentForUser: vi.fn(async () => undefined),
   }) as Mocked<LabServiceDeps['vpn']>;
+  const tx = { tag: 'tx' };
+  const award = (overrides.award ?? {
+    withUserLock: vi.fn(async (_userId: number, fn: (handle: unknown) => Promise<unknown>) => fn(tx)),
+  }) as Mocked<LabServiceDeps['award']>;
+  const check = (overrides.check ?? {
+    runSetup: vi.fn(async () => undefined),
+  }) as Mocked<LabServiceDeps['check']>;
   const service = new LabService({
     repo,
     orchestration,
     entitlement,
     vpn,
+    award,
+    check,
     maxExtensions: 3,
     extendMinutes: 60,
   });
-  return { service, repo, orchestration, entitlement, vpn };
+  return { service, repo, orchestration, entitlement, vpn, award, check, tx };
 }
 
 describe('LabService', () => {
@@ -143,52 +154,183 @@ describe('LabService', () => {
     vi.clearAllMocks();
   });
 
+  describe('getLabDetail (D21 allowlist)', () => {
+    const spec = {
+      version: 2,
+      mode: 'guided',
+      scenario: { intro: 'Fix the box.', setup: ['echo secret-setup'] },
+      completionBonus: 50,
+      steps: [
+        {
+          id: 's1', title: 'Find it', instructions: 'Look around.', kind: 'task', setup: [],
+          check: { type: 'command', command: 'echo secret-check', expect: { mode: 'exitCode', value: 0 }, timeoutMs: 15000 },
+          hints: [{ id: 'h1', text: 'secret-hint' }], points: 25, hintCost: 5, wrongPenalty: 0, guessPenalty: 0,
+        },
+        {
+          id: 's2', title: 'Name it', instructions: 'Which one?', kind: 'question', setup: [],
+          answer: { accepted: ['secret-answer'], normalize: 'trim_lower' },
+          hints: [], points: 10, hintCost: 5, wrongPenalty: 2, guessPenalty: 5,
+        },
+      ],
+    };
+
+    it('returns only the step summary with scaled points and never the stored spec', async () => {
+      const repo = makeRepo();
+      repo.findProLabByLabId.mockResolvedValue({ proLabId: 1, labId: 1, flagValues: spec } as never);
+      repo.getPointsMultiplier.mockResolvedValue(1.5);
+      repo.hasLabCompletionEvent.mockResolvedValue(true);
+      const { service } = makeService({ repo });
+
+      const detail = await service.getLabDetail(1, 7);
+
+      expect(detail).toMatchObject({
+        mode: 'guided',
+        scenarioIntro: 'Fix the box.',
+        stepCount: 2,
+        isCompleted: true,
+        // round(25*1.5)=38, round(10*1.5)=15, round(50*1.5)=75
+        pointsAvailable: 38 + 15 + 75,
+        steps: [
+          { stepId: 's1', position: 1, title: 'Find it', kind: 'task', points: 38 },
+          { stepId: 's2', position: 2, title: 'Name it', kind: 'question', points: 15 },
+        ],
+      });
+      expect(detail).not.toHaveProperty('proLab');
+      expect(JSON.stringify(detail)).not.toMatch(/secret-/);
+    });
+
+    it('exposes no steps for an anonymous viewer of a lab without a v2 spec', async () => {
+      const repo = makeRepo();
+      repo.findProLabByLabId.mockResolvedValue({ proLabId: 1, labId: 1, flagValues: { cp1: 'group-1' } } as never);
+      const { service } = makeService({ repo });
+
+      const detail = await service.getLabDetail(1, null);
+
+      expect(detail).toMatchObject({ mode: null, stepCount: 0, pointsAvailable: 0, steps: [], isStarted: false, isCompleted: false });
+      expect(repo.hasLabCompletionEvent).not.toHaveBeenCalled();
+      expect(JSON.stringify(detail)).not.toContain('group-1');
+    });
+  });
+
   describe('provisionInstance', () => {
-    it('provisions a running instance, returns rootPassword, writes LAB_STARTED', async () => {
-      const { service, repo, orchestration, vpn } = makeService();
+    const readySpec = {
+      version: 2,
+      mode: 'guided',
+      scenario: { intro: '', setup: ['echo scenario-setup'] },
+      completionBonus: 50,
+      steps: [
+        {
+          id: 's1', title: 'Find it', instructions: 'Look around.', kind: 'task', setup: [],
+          check: { type: 'command', command: 'true', expect: { mode: 'exitCode', value: 0 }, timeoutMs: 15000 },
+          hints: [], points: 25, hintCost: 5, wrongPenalty: 0, guessPenalty: 0,
+        },
+      ],
+    };
+    function readyRepo() {
+      const repo = makeRepo();
+      repo.findProLabByLabId.mockResolvedValue({ proLabId: 1, labId: 1, flagValues: readySpec } as never);
+      return repo;
+    }
+
+    it('runs the user lock around the instance insert and takes the VPN assignment before it', async () => {
+      const { service, repo, vpn, award, tx } = makeService({ repo: readyRepo() });
+      await service.provisionInstance(7, 1, 'US');
+
+      expect(award.withUserLock).toHaveBeenCalledTimes(1);
+      expect(award.withUserLock).toHaveBeenCalledWith(7, expect.any(Function));
+      expect(repo.insertInstance.mock.calls[0][1]).toBe(tx);
+      const vpnOrder = vpn.ensureAssignmentForProvision.mock.invocationCallOrder[0];
+      const lockOrder = award.withUserLock.mock.invocationCallOrder[0];
+      expect(vpnOrder).toBeLessThan(lockOrder);
+    });
+
+    it('does not insert or write LAB_STARTED when the active-instance check under the lock finds a live instance', async () => {
+      const repo = readyRepo();
+      repo.findAnyActiveInstanceForUser.mockResolvedValue(instanceRow({ status: 'stopped' }) as never);
+      const { service, orchestration } = makeService({ repo });
+
+      await expect(service.provisionInstance(7, 1, null)).rejects.toMatchObject({
+        errors: [{ code: 'INSTANCE_ALREADY_ACTIVE', instanceId: 42, labId: 1 }],
+      });
+      expect(repo.insertActivity).not.toHaveBeenCalled();
+      expect(orchestration.createInstance).not.toHaveBeenCalled();
+    });
+
+    it('refuses a lab without a v2 spec with 409 LAB_NOT_READY (learners)', async () => {
+      const { service, repo } = makeService();
+      await expect(service.provisionInstance(7, 1, null)).rejects.toMatchObject({
+        statusCode: 409,
+        errors: [{ code: 'LAB_NOT_READY' }],
+      });
+      expect(repo.insertInstance).not.toHaveBeenCalled();
+    });
+
+    it('provisions a running instance by lab slug, never generates a root password, writes LAB_STARTED', async () => {
+      const { service, repo, orchestration, vpn, check, tx } = makeService({ repo: readyRepo() });
       const result = await service.provisionInstance(7, 1, 'US');
 
+      expect(repo.findAnyActiveInstanceForUser).toHaveBeenCalledWith(7, tx);
       expect(repo.insertInstance).toHaveBeenCalledWith(
         expect.objectContaining({ userId: 7, vpnId: 1, status: 'pending' }),
+        tx,
       );
+      expect(repo.insertInstance.mock.calls[0][0]).not.toHaveProperty('rootPassword');
+      expect(repo.insertActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 7,
+          activityType: 'LAB_STARTED',
+          details: expect.objectContaining({ labId: 1, labSlug: 'docker-deep-dive', instanceId: 42 }),
+        }),
+        tx,
+      );
+      expect(check.runSetup).toHaveBeenCalledWith(42, ['echo scenario-setup']);
       expect(orchestration.createInstance).toHaveBeenCalledWith(
-        expect.objectContaining({ labId: 1, instanceId: 42 }),
+        expect.objectContaining({ labId: 1, labSlug: 'docker-deep-dive', instanceId: 42 }),
       );
+      expect(orchestration.createInstance.mock.calls[0][0]).not.toHaveProperty('rootPassword');
       expect(repo.updateInstanceStatus).toHaveBeenCalledWith(42, 'running');
       expect(vpn.ensureAssignmentForProvision).toHaveBeenCalledWith(7, 'US');
       expect(result).toEqual(
         expect.objectContaining({
           instanceId: 42,
           labId: 1,
+          labSlug: 'docker-deep-dive',
           status: 'running',
-          rootPassword: expect.any(String),
           vpnAssignment: { ovpnConfigUrl: null },
         }),
       );
-      const recordEvent = vi.mocked(
-        (await import('../../../src/features/progress/services/ActivityLogService')).activityLogService.recordEvent,
-      );
-      expect(recordEvent).toHaveBeenCalledWith(
-        7,
-        'LAB_STARTED',
-        expect.objectContaining({ labId: 1, instanceId: 42 }),
-      );
+      expect(result).not.toHaveProperty('rootPassword');
     });
 
-    it('throws 409 INSTANCE_ALREADY_ACTIVE when a second instance is attempted', async () => {
+    it('lets admins provision an inactive lab without a v2 spec (allowInactive)', async () => {
       const repo = makeRepo();
-      repo.findActiveInstanceForUser.mockResolvedValue(instanceRow() as never);
+      repo.findLabById.mockResolvedValue(labRow({ isActive: false }) as never);
+      const { service, check } = makeService({ repo });
+      await expect(service.provisionInstance(7, 1, null)).rejects.toMatchObject({ errors: [{ code: 'LAB_NOT_FOUND' }] });
+      const result = await service.provisionInstance(7, 1, null, { allowInactive: true });
+      expect(result.status).toBe('running');
+      expect(check.runSetup).not.toHaveBeenCalled();
+    });
+
+    it('throws 409 INSTANCE_ALREADY_ACTIVE when a second instance of the same lab is attempted', async () => {
+      const repo = readyRepo();
+      repo.findAnyActiveInstanceForUser.mockResolvedValue(instanceRow() as never);
       const { service } = makeService({ repo });
       await expect(service.provisionInstance(7, 1, null)).rejects.toThrow(ConflictError);
+      await expect(service.provisionInstance(7, 1, null)).rejects.toMatchObject({
+        errors: [{ code: 'INSTANCE_ALREADY_ACTIVE', instanceId: 42, labId: 1 }],
+      });
+      expect(repo.insertInstance).not.toHaveBeenCalled();
     });
 
-    it('throws 409 when any other instance is already running', async () => {
-      const repo = makeRepo();
+    it('throws 409 INSTANCE_ALREADY_ACTIVE when an instance of another lab is running', async () => {
+      const repo = readyRepo();
       repo.findAnyActiveInstanceForUser.mockResolvedValue(instanceRow({ labId: 9 }) as never);
       const { service } = makeService({ repo });
-      await expect(service.provisionInstance(7, 1, null)).rejects.toThrow(
-        expect.objectContaining({ message: 'INSTANCE_ALREADY_ACTIVE' }),
-      );
+      await expect(service.provisionInstance(7, 1, null)).rejects.toMatchObject({
+        statusCode: 409,
+        errors: [{ code: 'INSTANCE_ALREADY_ACTIVE', instanceId: 42, labId: 9 }],
+      });
     });
 
     it('throws 403 when the entitlement gate denies premium access', async () => {
@@ -199,8 +341,11 @@ describe('LabService', () => {
         getLabTtlHours: vi.fn(async () => 4),
         getExtensionLimit: vi.fn(async () => 3),
       };
-      const { service, repo } = makeService({ entitlement });
+      const { service, repo } = makeService({ entitlement, repo: readyRepo() });
       await expect(service.provisionInstance(7, 1, null)).rejects.toThrow(ForbiddenError);
+      await expect(service.provisionInstance(7, 1, null)).rejects.toMatchObject({
+        errors: [{ code: 'LAB_ACCESS_DENIED' }],
+      });
       expect(repo.insertInstance).not.toHaveBeenCalled();
     });
 
@@ -213,10 +358,56 @@ describe('LabService', () => {
         stopInstance: vi.fn(async () => undefined),
         terminateInstance: vi.fn(async () => undefined),
       };
-      const { service, repo, vpn } = makeService({ orchestration });
-      await expect(service.provisionInstance(7, 1, null)).rejects.toThrow();
+      const { service, repo, vpn } = makeService({ orchestration, repo: readyRepo() });
+      await expect(service.provisionInstance(7, 1, null)).rejects.toMatchObject({ statusCode: 500 });
       expect(repo.updateInstanceStatus).toHaveBeenCalledWith(42, 'error');
       expect(vpn.releaseAssignmentForUser).toHaveBeenCalledWith(7);
+    });
+  });
+
+  describe('getActiveInstance', () => {
+    it('returns the terminal endpoint from the orchestrator', async () => {
+      const repo = makeRepo();
+      repo.findAnyActiveInstanceForUser.mockResolvedValue(instanceRow() as never);
+      const orchestration = {
+        getInstance: vi.fn(async () => ({ terminalWsUrl: 'wss://terminal.example.com/42' })),
+        createInstance: vi.fn(),
+        stopInstance: vi.fn(),
+        terminateInstance: vi.fn(),
+      };
+      const { service } = makeService({ repo, orchestration: orchestration as never });
+
+      const active = await service.getActiveInstance(7);
+
+      expect(orchestration.getInstance).toHaveBeenCalledWith(42);
+      expect(active).toMatchObject({ instanceId: 42, labId: 1, labName: 'Docker Deep Dive', terminalWsUrl: 'wss://terminal.example.com/42' });
+    });
+
+    it('returns terminalWsUrl null, not a localhost fallback, when the orchestrator is unreachable', async () => {
+      const repo = makeRepo();
+      repo.findAnyActiveInstanceForUser.mockResolvedValue(instanceRow() as never);
+      const orchestration = {
+        getInstance: vi.fn(async () => {
+          throw new Error('orchestrator down');
+        }),
+        createInstance: vi.fn(),
+        stopInstance: vi.fn(),
+        terminateInstance: vi.fn(),
+      };
+      const { service } = makeService({ repo, orchestration: orchestration as never });
+
+      const active = await service.getActiveInstance(7);
+
+      expect(active).not.toBeNull();
+      expect(active?.instanceId).toBe(42);
+      expect(active?.terminalWsUrl).toBeNull();
+      expect(JSON.stringify(active)).not.toContain('localhost');
+    });
+
+    it('returns null when the learner has no live instance', async () => {
+      const { service, orchestration } = makeService();
+      await expect(service.getActiveInstance(7)).resolves.toBeNull();
+      expect(orchestration.getInstance).not.toHaveBeenCalled();
     });
   });
 

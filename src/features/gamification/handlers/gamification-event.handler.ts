@@ -1,14 +1,18 @@
-import type { LearnerProgressSnapshot } from '../../progress/dto/progress.dto';
-import type { AchievementUnlockedEvent, GamificationEventResult } from '../dto/gamification.dto';
+import { awardKeys } from '../config/award-keys';
+import { logger } from '../../../shared/logger';
+import type {
+  AchievementUnlockedEvent,
+  GamificationEventResult,
+  LearnerProgressSnapshot,
+} from '../dto/gamification.dto';
+import type { AchievementEvaluator } from '../engines/achievement-evaluator.engine';
 import { achievementEvaluator } from '../engines/achievement-evaluator.engine';
 import type { BadgeAwardEngine } from '../engines/badge-award.engine';
 import { badgeAwardEngine } from '../engines/badge-award.engine';
-import type { GamificationRepository } from '../repositories/gamification.repository';
+import type { AchievementRow, GamificationRepository } from '../repositories/gamification.repository';
 import { gamificationRepository } from '../repositories/gamification.repository';
-import type { CertificateService } from '../services/certificate.service';
-import { certificateService } from '../services/certificate.service';
-import type { PointsService } from '../services/points.service';
-import { pointsService } from '../services/points.service';
+import type { AwardService } from '../services/award.service';
+import { awardService } from '../services/award.service';
 
 export interface GamificationEventHandlerDeps {
   repo: Pick<
@@ -18,21 +22,10 @@ export interface GamificationEventHandlerDeps {
     | 'hasUserAchievement'
     | 'insertUserAchievement'
     | 'listUnlockedAchievementIds'
-    | 'getCanonicalCourseId'
   >;
-  evaluator: Pick<AchievementEvaluatorShim, 'evaluate'>;
+  evaluator: Pick<AchievementEvaluator, 'evaluate'>;
   badges: Pick<BadgeAwardEngine, 'evaluateAndAward'>;
-  points: Pick<PointsService, 'credit'>;
-  certificates: Pick<CertificateService, 'issueCertificate'>;
-}
-
-/** Structural type for the evaluator dependency (avoids hard coupling). */
-interface AchievementEvaluatorShim {
-  evaluate(
-    snapshot: LearnerProgressSnapshot,
-    achievement: { triggerType: string | null; triggerValue: Record<string, unknown> | null },
-    context: { pointsBalance: number },
-  ): { unlocked: boolean; progressData: Record<string, unknown> };
+  award: Pick<AwardService, 'withUserLock' | 'apply'>;
 }
 
 function defaultDeps(): GamificationEventHandlerDeps {
@@ -40,17 +33,21 @@ function defaultDeps(): GamificationEventHandlerDeps {
     repo: gamificationRepository,
     evaluator: achievementEvaluator,
     badges: badgeAwardEngine,
-    points: pointsService,
-    certificates: certificateService,
+    award: awardService,
   };
 }
 
+/** Duplicate primary key: another request already unlocked this achievement (ER_DUP_ENTRY). */
+function isDuplicateKeyError(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === 'ER_DUP_ENTRY';
+}
+
 /**
- * F7 §08 async event handler. Consumed by F5/F6 hooks via
- * `GamificationService.processProgressSnapshot` / `processLabCompletion`.
- * Orchestrates achievement evaluation, idempotent badge awarding, points
- * crediting and course-completion certificate issuance. Returns the
- * F8-consumable event lists without importing F8 (forward-integration hook).
+ * F7 §08 event handler. Runs post-commit through `GamificationService.afterLearningEvent`
+ * (never inside a lock). Evaluates achievements and badges against the learner
+ * snapshot and persists every unlock as one locked unit: user_achievements
+ * insert and its ledger reward commit together or not at all. Certificates are
+ * issued by the service, not here.
  */
 export class GamificationEventHandler {
   constructor(private readonly deps: GamificationEventHandlerDeps = defaultDeps()) {}
@@ -60,9 +57,13 @@ export class GamificationEventHandler {
     const { balance } = await this.deps.repo.getBalance(userId);
 
     const achievements = await this.deps.repo.listActiveAchievements();
+    const unlockedIds = new Set<number>(await this.deps.repo.listUnlockedAchievementIds(userId));
     const achievementsUnlocked: AchievementUnlockedEvent[] = [];
 
     for (const achievement of achievements) {
+      if (unlockedIds.has(achievement.achievementId)) {
+        continue;
+      }
       const { unlocked, progressData } = this.deps.evaluator.evaluate(
         snapshot,
         { triggerType: achievement.triggerType, triggerValue: achievement.triggerValue },
@@ -71,47 +72,68 @@ export class GamificationEventHandler {
       if (!unlocked) {
         continue;
       }
-      if (await this.deps.repo.hasUserAchievement(userId, achievement.achievementId)) {
-        continue;
+      const event = await this.unlockAchievement(userId, achievement, progressData);
+      if (event) {
+        unlockedIds.add(achievement.achievementId);
+        achievementsUnlocked.push(event);
       }
-      await this.deps.repo.insertUserAchievement(userId, achievement.achievementId, progressData);
-      if (achievement.pointsAwarded > 0) {
-        await this.deps.points.credit(
-          userId,
-          achievement.pointsAwarded,
-          'achievement',
-          achievement.achievementId,
-          `Achievement unlocked: ${achievement.name}`,
-        );
-      }
-      achievementsUnlocked.push({
-        userId,
-        achievementId: achievement.achievementId,
-        achievementName: achievement.name,
-        pointsAwarded: achievement.pointsAwarded,
-        unlockedAt: new Date(),
-      });
     }
 
     // Re-read the balance so badge `points_threshold` triggers see points
     // credited by achievement unlocks in this same pass.
     const refreshed = await this.deps.repo.getBalance(userId);
-    const unlockedIds = new Set<number>(await this.deps.repo.listUnlockedAchievementIds(userId));
     const badgesAwarded = await this.deps.badges.evaluateAndAward(userId, snapshot, {
       pointsBalance: refreshed.balance,
       unlockedAchievementIds: unlockedIds,
     });
 
-    let certificateIssued = false;
-    if (snapshot.courseProgressPct >= 100) {
-      const courseId = await this.deps.repo.getCanonicalCourseId();
-      if (courseId !== null) {
-        await this.deps.certificates.issueCertificate(userId, courseId);
-        certificateIssued = true;
-      }
-    }
+    return { badgesAwarded, achievementsUnlocked, certificateIssued: false, certificateCourseIds: [] };
+  }
 
-    return { badgesAwarded, achievementsUnlocked, certificateIssued };
+  /**
+   * One award unit under the user lock: re-check `user_achievements`, insert
+   * the unlock, then write its reward through the ledger. A duplicate key
+   * rolls the unit back and skips it; other failures are logged and skipped
+   * so one broken achievement does not block the rest.
+   */
+  private async unlockAchievement(
+    userId: number,
+    achievement: AchievementRow,
+    progressData: Record<string, unknown>,
+  ): Promise<AchievementUnlockedEvent | null> {
+    const { repo, award } = this.deps;
+    try {
+      const unlocked = await award.withUserLock(userId, async (tx) => {
+        if (await repo.hasUserAchievement(userId, achievement.achievementId, tx)) {
+          return false;
+        }
+        await repo.insertUserAchievement(userId, achievement.achievementId, progressData, tx);
+        await award.apply(tx, {
+          userId,
+          key: awardKeys.achievement(achievement.achievementId),
+          points: achievement.pointsAwarded,
+          sourceType: 'achievement',
+          sourceId: achievement.achievementId,
+          label: `Achievement unlocked: ${achievement.name}`,
+        });
+        return true;
+      });
+      if (!unlocked) {
+        return null;
+      }
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) {
+        logger.error({ err: error, userId, achievementId: achievement.achievementId }, 'Achievement unlock failed');
+      }
+      return null;
+    }
+    return {
+      userId,
+      achievementId: achievement.achievementId,
+      achievementName: achievement.name,
+      pointsAwarded: achievement.pointsAwarded,
+      unlockedAt: new Date(),
+    };
   }
 }
 

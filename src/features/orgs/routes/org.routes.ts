@@ -18,6 +18,7 @@ import {
   requireOrgStaff,
 } from '../middleware/requireOrgMembership';
 import {
+  acceptOrgAdminSchema,
   adminOrgListQuerySchema,
   assignOrgAdminSchema,
   assignProfessorSchema,
@@ -32,6 +33,7 @@ import {
   createOrgSchema,
   emailDomainSchema,
   enrollStudentSchema,
+  inviteOrgAdminSchema,
   inviteProfessorSchema,
   inviteStudentsSchema,
   inviteTokenSchema,
@@ -134,12 +136,15 @@ orgRoutes.post(
   authenticate,
   authorizePermissions(PERMISSIONS.PLATFORM_ORGANIZATIONS_MANAGE),
   validateRequest(orgIdParamSchema, 'params'),
+  validateRequest(inviteOrgAdminSchema, 'body'),
   asyncHandler((req, res) => orgController.inviteOrgAdmin(req, res)),
 );
 
+/** Token in the body only (query tokens leak into access logs). */
 orgRoutes.post(
   '/admin/organizations/accept-admin',
   authenticate,
+  validateRequest(acceptOrgAdminSchema, 'body'),
   asyncHandler((req, res) => orgController.acceptOrgAdmin(req, res)),
 );
 

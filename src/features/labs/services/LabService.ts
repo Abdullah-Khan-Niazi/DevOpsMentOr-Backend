@@ -1,10 +1,10 @@
-import { randomBytes } from 'node:crypto';
 import { env } from '../../../app/config';
-import { AppError, ConflictError, ForbiddenError, NotFoundError } from '../../../shared/errors';
+import { AppError, ConflictError, ERROR_CODES, ForbiddenError, NotFoundError } from '../../../shared/errors';
 import { HTTP_STATUS } from '../../../shared/constants';
 import { logger } from '../../../shared/logger';
 import { redisClient, cacheKeys } from '../../../app/cache/redis';
 import { activityLogService } from '../../progress/services/ActivityLogService';
+import { awardService, type AwardService } from '../../gamification/services/award.service';
 import type {
   ActiveInstanceDto,
   ExtendInstanceDto,
@@ -21,8 +21,11 @@ import type { EntitlementService } from './EntitlementService';
 import { entitlementService } from './EntitlementService';
 import type { VpnService } from './VpnService';
 import { vpnService } from './VpnService';
-import type { InstanceRow, LabsRepository, LabRow, ProLabRow, SherlockRow } from '../repositories/labs.repository';
+import type { LabCheckService } from './LabCheckService';
+import { labCheckService, scalePoints } from './LabCheckService';
+import type { InstanceRow, LabsRepository, LabRow, SherlockRow } from '../repositories/labs.repository';
 import { labsRepository } from '../repositories/labs.repository';
+import { parseLabSpec } from '../validators/lab-spec.validator';
 
 export interface LabServiceDeps {
   repo: Pick<
@@ -36,10 +39,12 @@ export interface LabServiceDeps {
     | 'findAnyActiveInstanceForUser'
     | 'findInstanceForUser'
     | 'insertInstance'
+    | 'insertActivity'
     | 'updateInstanceStatus'
     | 'updateInstanceExpiry'
     | 'updateInstanceEndpoint'
     | 'hasLabCompletionEvent'
+    | 'getPointsMultiplier'
   >;
   orchestration: Pick<
     ContainerOrchestrationAdapter,
@@ -47,6 +52,8 @@ export interface LabServiceDeps {
   >;
   entitlement: Pick<EntitlementService, 'assertLabAccess' | 'getLabTtlHours' | 'getExtensionLimit'>;
   vpn: Pick<VpnService, 'ensureAssignmentForProvision' | 'releaseAssignmentForUser'>;
+  award: Pick<AwardService, 'withUserLock'>;
+  check: Pick<LabCheckService, 'runSetup'>;
   maxExtensions: number;
   extendMinutes: number;
 }
@@ -57,21 +64,29 @@ function defaultDeps(): LabServiceDeps {
     orchestration: containerOrchestrationAdapter,
     entitlement: entitlementService,
     vpn: vpnService,
+    award: awardService,
+    check: labCheckService,
     maxExtensions: env.LAB_MAX_EXTENSIONS,
     extendMinutes: env.LAB_EXTEND_MINUTES,
   };
 }
 
-function generateRootPassword(): string {
-  return randomBytes(12).toString('base64url').slice(0, 16);
+function labNotFound(): NotFoundError {
+  return new NotFoundError('Lab not found.', [{ code: ERROR_CODES.LAB_NOT_FOUND }]);
+}
+
+export interface ProvisionOptions {
+  /** Admin test-check flow (contracts 6.2): provisions draft labs and labs without a v2 spec. */
+  allowInactive?: boolean;
 }
 
 /**
  * F6 §08 lab instance lifecycle: provision, stop, terminate, extend, active
  * status and the lab catalog. Every learner-scoped operation resolves the
  * instance through `user_id = session.userId` (IDOR mitigation); the F9
- * entitlement gate runs before provisioning; `root_password` is returned
- * only in the 201 provision payload (invariant 2).
+ * entitlement gate runs before provisioning; no root credential is
+ * generated or returned (D27), and lab detail never exposes the stored
+ * step spec beyond the allowlisted step summary (D21).
  */
 export class LabService {
   constructor(private readonly deps: LabServiceDeps = defaultDeps()) {}
@@ -86,16 +101,47 @@ export class LabService {
   async getLabDetail(labId: number, userId: number | null): Promise<LabDetailDto> {
     const lab = await this.deps.repo.findLabById(labId);
     if (!lab || !lab.isActive) {
-      throw new NotFoundError('Lab not found.');
+      throw labNotFound();
     }
-    const [proLab, sherlock] = await Promise.all([
+    const [proLab, sherlock, multiplier] = await Promise.all([
       this.deps.repo.findProLabByLabId(labId),
       this.deps.repo.findSherlockByLabId(labId),
+      this.deps.repo.getPointsMultiplier(labId),
     ]);
+    const [isStarted, isCompleted] = userId === null
+      ? [false, false]
+      : await Promise.all([
+          this.deps.repo.findActiveInstanceForUser(userId, labId).then((row) => row !== null),
+          this.deps.repo.hasLabCompletionEvent(userId, labId),
+        ]);
+
+    // D21: allowlist only. Checks, setup scripts, accepted answers and hints
+    // stay on the server; a spec that is not runnable v2 exposes no steps.
+    const parsed = proLab ? parseLabSpec(proLab.flagValues) : null;
+    if (parsed?.kind === 'invalid') {
+      logger.error({ labId, issues: parsed.issues }, 'Stored lab spec failed validation');
+    }
+    const spec = parsed?.kind === 'v2' ? parsed.spec : null;
+    const steps = (spec?.steps ?? []).map((step, index) => ({
+      stepId: step.id,
+      position: index + 1,
+      title: step.title,
+      kind: step.kind,
+      points: scalePoints(step.points, multiplier),
+    }));
+    const pointsAvailable = spec
+      ? steps.reduce((sum, step) => sum + step.points, 0) + scalePoints(spec.completionBonus, multiplier)
+      : 0;
+
     return {
       ...this.toLabDto(lab),
-      isStarted: userId !== null && (await this.deps.repo.findActiveInstanceForUser(userId, labId)) !== null,
-      proLab: proLab ? this.toProLabDto(proLab) : null,
+      isStarted,
+      isCompleted,
+      mode: spec?.mode ?? null,
+      scenarioIntro: spec?.scenario.intro ?? '',
+      stepCount: steps.length,
+      pointsAvailable,
+      steps,
       sherlock: sherlock ? this.toSherlockDto(sherlock) : null,
     };
   }
@@ -106,26 +152,37 @@ export class LabService {
     userId: number,
     labId: number,
     region: VpnRegion | null,
+    opts: ProvisionOptions = {},
   ): Promise<ProvisionInstanceDto> {
+    const allowInactive = opts.allowInactive === true;
     const lab = await this.deps.repo.findLabById(labId);
-    if (!lab || !lab.isActive) {
-      throw new NotFoundError('Lab not found.');
+    if (!lab || (!lab.isActive && !allowInactive)) {
+      throw labNotFound();
     }
 
-    await this.deps.entitlement.assertLabAccess(userId, labId);
-
-    const existing = await this.deps.repo.findActiveInstanceForUser(userId, labId);
-    if (existing) {
-      throw new ConflictError('You already have an active instance for this lab. Terminate it first.');
+    const parsed = parseLabSpec((await this.deps.repo.findProLabByLabId(labId))?.flagValues ?? null);
+    if (!allowInactive && parsed.kind !== 'v2') {
+      if (parsed.kind === 'invalid') {
+        logger.error({ labId, issues: parsed.issues }, 'Stored lab spec failed validation');
+        throw new ConflictError('This lab is misconfigured.', [{ code: ERROR_CODES.LAB_MISCONFIGURED }]);
+      }
+      throw new ConflictError('This lab is not ready yet.', [{ code: ERROR_CODES.LAB_NOT_READY }]);
     }
-    const anyActive = await this.deps.repo.findAnyActiveInstanceForUser(userId);
-    if (anyActive) {
-      throw new ConflictError('INSTANCE_ALREADY_ACTIVE');
+    const setupCommands = parsed.kind === 'v2' ? parsed.spec.scenario.setup : [];
+
+    try {
+      await this.deps.entitlement.assertLabAccess(userId, labId);
+    } catch (error) {
+      if (error instanceof ForbiddenError) {
+        throw new ForbiddenError(error.message, [{ code: ERROR_CODES.LAB_ACCESS_DENIED }]);
+      }
+      throw error;
     }
 
     const ttlHours = await this.deps.entitlement.getLabTtlHours(userId);
     const expiresAt = new Date(Date.now() + ttlHours * 3_600_000);
 
+    // Idempotent per user and runs before the lock: it must not hold the users row lock (contracts 0.3).
     let assignment: { assignmentId: number; vpnId: number; ovpnConfigUrl: string | null };
     try {
       assignment = await this.deps.vpn.ensureAssignmentForProvision(userId, region);
@@ -139,21 +196,55 @@ export class LabService {
       throw error;
     }
 
-    const rootPassword = generateRootPassword();
-    const instanceId = await this.deps.repo.insertInstance({
-      userId,
-      vpnId: assignment.vpnId,
-      hostname: null,
-      assignedIp: null,
-      sshPort: 22,
-      rootPassword,
-      ramGb: lab.labType === 'pro_lab' ? 4 : 2,
-      cpuCores: lab.labType === 'pro_lab' ? 4 : 2,
-      diskGb: lab.labType === 'pro_lab' ? 30 : 20,
-      status: 'pending',
-      expiresAt,
+    const isPro = lab.labType === 'pro_lab';
+    const ramGb = isPro ? 4 : 2;
+    const cpuCores = isPro ? 4 : 2;
+    const diskGb = isPro ? 30 : 20;
+
+    // Check-then-insert under the user lock (contracts 0.3, 4.1): any live instance blocks a new one.
+    const instanceId = await this.deps.award.withUserLock(userId, async (tx) => {
+      const active = await this.deps.repo.findAnyActiveInstanceForUser(userId, tx);
+      if (active) {
+        throw new ConflictError('You already have an active lab environment. Terminate it first.', [
+          { code: ERROR_CODES.INSTANCE_ALREADY_ACTIVE, instanceId: active.instanceId, labId: active.labId },
+        ]);
+      }
+
+      // No root credential is generated or stored: the container never used it (D27).
+      const id = await this.deps.repo.insertInstance(
+        {
+          userId,
+          vpnId: assignment.vpnId,
+          hostname: null,
+          assignedIp: null,
+          sshPort: 22,
+          ramGb,
+          cpuCores,
+          diskGb,
+          status: 'pending',
+          expiresAt,
+        },
+        tx,
+      );
+      // Written in the same transaction so a crash never leaves a pending instance without its lab mapping.
+      await this.deps.repo.insertActivity(
+        {
+          userId,
+          activityType: 'LAB_STARTED',
+          details: {
+            labId,
+            labSlug: lab.slug,
+            labType: lab.labType,
+            instanceId: id,
+            region: region ?? null,
+          },
+        },
+        tx,
+      );
+      return id;
     });
 
+    // Network work happens after the commit and never under the lock (contracts 0.3).
     let hostname: string | null = null;
     let assignedIp: string | null = null;
     let sshPort = 22;
@@ -161,16 +252,20 @@ export class LabService {
     try {
       const endpoint = await this.deps.orchestration.createInstance({
         labId,
+        // Labs resolves the container image by catalog slug (contracts 6.3, 7.1).
+        labSlug: lab.slug,
         instanceId,
-        rootPassword,
-        ramGb: lab.labType === 'pro_lab' ? 4 : 2,
-        cpuCores: lab.labType === 'pro_lab' ? 4 : 2,
-        diskGb: lab.labType === 'pro_lab' ? 30 : 20,
+        ramGb,
+        cpuCores,
+        diskGb,
       });
       hostname = endpoint.hostname;
       assignedIp = endpoint.assignedIp;
       sshPort = endpoint.sshPort;
       terminalWsUrl = endpoint.terminalWsUrl;
+      if (setupCommands.length > 0) {
+        await this.deps.check.runSetup(instanceId, setupCommands);
+      }
       await this.deps.repo.updateInstanceEndpoint(instanceId, {
         hostname,
         assignedIp,
@@ -178,34 +273,45 @@ export class LabService {
       });
       await this.deps.repo.updateInstanceStatus(instanceId, 'running');
     } catch (error) {
-      await this.deps.repo.updateInstanceStatus(instanceId, 'error');
-      await this.deps.vpn.releaseAssignmentForUser(userId);
-      logger.error({ err: error, userId, labId, instanceId }, 'Lab provisioning failed');
+      await this.abandonProvision(userId, labId, instanceId, error);
       throw new AppError(
         'The lab environment could not be provisioned. Please try again.',
         HTTP_STATUS.INTERNAL_SERVER_ERROR,
       );
     }
 
-    await activityLogService.recordEvent(userId, 'LAB_STARTED', {
-      labId,
-      labType: lab.labType,
-      instanceId,
-      region: region ?? null,
-    });
-
     return {
       instanceId,
       labId,
+      labSlug: lab.slug,
       status: 'running',
       hostname,
       assignedIp,
       sshPort,
-      rootPassword,
       terminalWsUrl,
       expiresAt: expiresAt.toISOString(),
       vpnAssignment: { ovpnConfigUrl: assignment.ovpnConfigUrl },
     };
+  }
+
+  /** Rolls back a failed provision: container removed (best effort), status `error`, VPN released. */
+  private async abandonProvision(userId: number, labId: number, instanceId: number, error: unknown): Promise<void> {
+    logger.error({ err: error, userId, labId, instanceId }, 'Lab provisioning failed');
+    try {
+      await this.deps.orchestration.terminateInstance(instanceId);
+    } catch (cleanupError) {
+      logger.error({ err: cleanupError, instanceId }, 'Lab cleanup after failed provisioning failed');
+    }
+    try {
+      await this.deps.repo.updateInstanceStatus(instanceId, 'error');
+    } catch (statusError) {
+      logger.error({ err: statusError, instanceId }, 'Could not mark the failed lab instance as error');
+    }
+    try {
+      await this.deps.vpn.releaseAssignmentForUser(userId);
+    } catch (vpnError) {
+      logger.error({ err: vpnError, userId, instanceId }, 'VPN release after failed provisioning failed');
+    }
   }
 
   /* ── Active instance (LAB-04) ─────────────────────────────────────────── */
@@ -217,12 +323,11 @@ export class LabService {
     }
     const lab = await this.deps.repo.findLabById(row.labId);
 
-    let terminalWsUrl = 'http://localhost:7701';
+    // Null when the orchestrator cannot resolve the environment: the FE shows the reconnect state (D11).
+    let terminalWsUrl: string | null = null;
     try {
       const endpoint = await this.deps.orchestration.getInstance(row.instanceId);
-      if (endpoint?.terminalWsUrl) {
-        terminalWsUrl = endpoint.terminalWsUrl;
-      }
+      terminalWsUrl = endpoint?.terminalWsUrl ?? null;
     } catch (err) {
       logger.warn({ err, instanceId: row.instanceId }, 'Could not resolve terminal endpoint from orchestrator');
     }
@@ -332,7 +437,7 @@ export class LabService {
   private async ownedLiveInstance(userId: number, instanceId: number): Promise<InstanceRow> {
     const instance = await this.deps.repo.findInstanceForUser(userId, instanceId);
     if (!instance) {
-      throw new NotFoundError('Lab instance not found.');
+      throw new NotFoundError('Lab instance not found.', [{ code: ERROR_CODES.INSTANCE_NOT_FOUND }]);
     }
     if (instance.status === 'terminated' || instance.status === 'error') {
       throw new ConflictError('This lab instance is no longer active.');
@@ -358,21 +463,6 @@ export class LabService {
       isStarted: false,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
-    };
-  }
-
-  private toProLabDto(row: ProLabRow) {
-    return {
-      proLabId: row.proLabId,
-      labId: row.labId,
-      networkIpRange: row.networkIpRange,
-      totalMachines: row.totalMachines,
-      requiredRootCount: row.requiredRootCount,
-      checkpoints: Object.entries(row.flagValues ?? {}).map(([checkpointId, assertionGroupId]) => ({
-        checkpointId,
-        assertionGroupId,
-      })),
-      activeUsersCount: row.activeUsersCount,
     };
   }
 

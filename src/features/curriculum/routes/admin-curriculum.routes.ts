@@ -4,19 +4,24 @@ import { authenticate, authorizePermissions, validateRequest } from '../../../sh
 import { asyncHandler } from '../../../shared/utils';
 import { adminCurriculumController } from '../controllers/admin-curriculum.controller';
 import {
+  adminCourseListQuerySchema,
   adminModuleListQuerySchema,
-  createLessonSchema,
+  courseIdParamSchema,
+  createCourseSchema,
+  createModuleItemSchema,
   createModuleSchema,
   createQuestionSchema,
-  createQuizSchema,
+  itemIdParamSchema,
   lessonIdParamSchema,
   moduleIdParamSchema,
   questionIdParamSchema,
   quizIdParamSchema,
-  reorderLessonsSchema,
+  reorderItemsSchema,
   reorderModulesSchema,
-  createCourseSchema,
+  reorderQuestionsSchema,
   updateCourseSchema,
+  updateItemPublishSchema,
+  updateItemTitleSchema,
   updateLessonSchema,
   updateModuleSchema,
   updateQuestionSchema,
@@ -24,199 +29,266 @@ import {
 } from '../validators/curriculum.validator';
 
 /**
- * F4 §07 admin routes. Writes require `platform.curriculum.manage`; reads of
- * all states require `platform.curriculum.read`. `/modules/reorder` is
- * registered before `/modules/:moduleId` so the literal segment wins.
+ * F4 §07 admin routes (contracts 6.1). Writes require `platform.curriculum.manage`;
+ * reads of all states require `platform.curriculum.read`. Literal `.../reorder`
+ * segments are registered before their `/:id` siblings so the literal wins.
  */
 const adminCurriculumRoutes = Router();
 
 adminCurriculumRoutes.use(authenticate);
 
-/** F4-API-07 */
-adminCurriculumRoutes.get(
-  '/curriculum/course',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
-  asyncHandler((req, res) => adminCurriculumController.getCourse(req, res)),
-);
+const read = authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ);
+const manage = authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE);
 
-/** SCR-F4-03: lesson tag vocabulary for the editor form. */
+/* ── Reference data ───────────────────────────────────────────────────── */
+
 adminCurriculumRoutes.get(
   '/curriculum/tags',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
+  read,
   asyncHandler((req, res) => adminCurriculumController.getTags(req, res)),
 );
 
-/** F4-API-08 */
-adminCurriculumRoutes.patch(
-  '/curriculum/course',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
-  validateRequest(updateCourseSchema, 'body'),
-  asyncHandler((req, res) => adminCurriculumController.updateCourse(req, res)),
-);
-
-/** Reference data for the course-create drawer. */
 adminCurriculumRoutes.get(
   '/curriculum/difficulties',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
+  read,
   asyncHandler((req, res) => adminCurriculumController.listDifficulties(req, res)),
 );
 
 adminCurriculumRoutes.get(
   '/curriculum/categories',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
+  read,
   asyncHandler((req, res) => adminCurriculumController.listCategories(req, res)),
 );
 
-/** Multi-course: create a DRAFT course from the master control panel. */
+/* ── Courses ──────────────────────────────────────────────────────────── */
+
+adminCurriculumRoutes.get(
+  '/curriculum/courses',
+  read,
+  validateRequest(adminCourseListQuerySchema, 'query'),
+  asyncHandler((req, res) => adminCurriculumController.listCourses(req, res)),
+);
+
 adminCurriculumRoutes.post(
   '/curriculum/courses',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(createCourseSchema, 'body'),
   asyncHandler((req, res) => adminCurriculumController.createCourse(req, res)),
 );
 
-/** F4-API-09 */
 adminCurriculumRoutes.get(
-  '/curriculum/modules',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
-  validateRequest(adminModuleListQuerySchema, 'query'),
-  asyncHandler((req, res) => adminCurriculumController.getModules(req, res)),
+  '/curriculum/courses/:courseId',
+  read,
+  validateRequest(courseIdParamSchema, 'params'),
+  asyncHandler((req, res) => adminCurriculumController.getCourse(req, res)),
 );
 
-/** F4-API-14: literal `/reorder` must precede `/:moduleId`. */
 adminCurriculumRoutes.patch(
-  '/curriculum/modules/reorder',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
-  validateRequest(reorderModulesSchema, 'body'),
-  asyncHandler((req, res) => adminCurriculumController.reorderModules(req, res)),
+  '/curriculum/courses/:courseId',
+  manage,
+  validateRequest(courseIdParamSchema, 'params'),
+  validateRequest(updateCourseSchema, 'body'),
+  asyncHandler((req, res) => adminCurriculumController.updateCourse(req, res)),
 );
 
-/** SCR-F4-02/03/04 editor payload (module + lessons + quizzes). */
+adminCurriculumRoutes.patch(
+  '/curriculum/courses/:courseId/archive',
+  manage,
+  validateRequest(courseIdParamSchema, 'params'),
+  asyncHandler((req, res) => adminCurriculumController.archiveCourse(req, res)),
+);
+
+adminCurriculumRoutes.delete(
+  '/curriculum/courses/:courseId',
+  manage,
+  validateRequest(courseIdParamSchema, 'params'),
+  asyncHandler((req, res) => adminCurriculumController.deleteCourse(req, res)),
+);
+
+/* ── Modules ──────────────────────────────────────────────────────────── */
+
 adminCurriculumRoutes.get(
-  '/curriculum/modules/:moduleId',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
-  validateRequest(moduleIdParamSchema, 'params'),
-  asyncHandler((req, res) => adminCurriculumController.getModuleEditorData(req, res)),
+  '/curriculum/courses/:courseId/modules',
+  read,
+  validateRequest(courseIdParamSchema, 'params'),
+  validateRequest(adminModuleListQuerySchema, 'query'),
+  asyncHandler((req, res) => adminCurriculumController.listCourseModules(req, res)),
 );
 
-/** F4-API-10 */
 adminCurriculumRoutes.post(
-  '/curriculum/modules',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  '/curriculum/courses/:courseId/modules',
+  manage,
+  validateRequest(courseIdParamSchema, 'params'),
   validateRequest(createModuleSchema, 'body'),
   asyncHandler((req, res) => adminCurriculumController.createModule(req, res)),
 );
 
-/** F4-API-11 */
+// Literal `/modules/reorder` before any `/modules/:id` sibling.
+adminCurriculumRoutes.patch(
+  '/curriculum/courses/:courseId/modules/reorder',
+  manage,
+  validateRequest(courseIdParamSchema, 'params'),
+  validateRequest(reorderModulesSchema, 'body'),
+  asyncHandler((req, res) => adminCurriculumController.reorderModules(req, res)),
+);
+
+adminCurriculumRoutes.get(
+  '/curriculum/modules/:moduleId',
+  read,
+  validateRequest(moduleIdParamSchema, 'params'),
+  asyncHandler((req, res) => adminCurriculumController.getModule(req, res)),
+);
+
 adminCurriculumRoutes.patch(
   '/curriculum/modules/:moduleId',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(moduleIdParamSchema, 'params'),
   validateRequest(updateModuleSchema, 'body'),
   asyncHandler((req, res) => adminCurriculumController.updateModule(req, res)),
 );
 
-/** F4-API-12 */
 adminCurriculumRoutes.patch(
   '/curriculum/modules/:moduleId/publish',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(moduleIdParamSchema, 'params'),
   asyncHandler((req, res) => adminCurriculumController.publishModule(req, res)),
 );
 
-/** F4-API-13 */
 adminCurriculumRoutes.patch(
   '/curriculum/modules/:moduleId/archive',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(moduleIdParamSchema, 'params'),
   asyncHandler((req, res) => adminCurriculumController.archiveModule(req, res)),
 );
 
-/** F4-API-15 */
-adminCurriculumRoutes.post(
-  '/curriculum/modules/:moduleId/lessons',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+adminCurriculumRoutes.delete(
+  '/curriculum/modules/:moduleId',
+  manage,
   validateRequest(moduleIdParamSchema, 'params'),
-  validateRequest(createLessonSchema, 'body'),
-  asyncHandler((req, res) => adminCurriculumController.createLesson(req, res)),
+  asyncHandler((req, res) => adminCurriculumController.deleteModule(req, res)),
 );
 
-/** F4-API-18: literal `/lessons/reorder` precedes `/:moduleId` segment. */
+/* ── Items ────────────────────────────────────────────────────────────── */
+
+adminCurriculumRoutes.post(
+  '/curriculum/modules/:moduleId/items',
+  manage,
+  validateRequest(moduleIdParamSchema, 'params'),
+  validateRequest(createModuleItemSchema, 'body'),
+  asyncHandler((req, res) => adminCurriculumController.createItem(req, res)),
+);
+
+// Literal `/items/reorder` before any `/items/:id` sibling.
 adminCurriculumRoutes.patch(
-  '/curriculum/modules/:moduleId/lessons/reorder',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  '/curriculum/modules/:moduleId/items/reorder',
+  manage,
   validateRequest(moduleIdParamSchema, 'params'),
-  validateRequest(reorderLessonsSchema, 'body'),
-  asyncHandler((req, res) => adminCurriculumController.reorderLessons(req, res)),
+  validateRequest(reorderItemsSchema, 'body'),
+  asyncHandler((req, res) => adminCurriculumController.reorderItems(req, res)),
 );
 
-/** F4-API-19 */
-adminCurriculumRoutes.post(
-  '/curriculum/modules/:moduleId/quizzes',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
-  validateRequest(moduleIdParamSchema, 'params'),
-  validateRequest(createQuizSchema, 'body'),
-  asyncHandler((req, res) => adminCurriculumController.createQuiz(req, res)),
+adminCurriculumRoutes.patch(
+  '/curriculum/items/:itemId',
+  manage,
+  validateRequest(itemIdParamSchema, 'params'),
+  validateRequest(updateItemTitleSchema, 'body'),
+  asyncHandler((req, res) => adminCurriculumController.updateItemTitle(req, res)),
 );
 
-/** SCR-F4-03: lesson editor form payload. */
+adminCurriculumRoutes.patch(
+  '/curriculum/items/:itemId/publish',
+  manage,
+  validateRequest(itemIdParamSchema, 'params'),
+  validateRequest(updateItemPublishSchema, 'body'),
+  asyncHandler((req, res) => adminCurriculumController.publishItem(req, res)),
+);
+
+adminCurriculumRoutes.delete(
+  '/curriculum/items/:itemId',
+  manage,
+  validateRequest(itemIdParamSchema, 'params'),
+  asyncHandler((req, res) => adminCurriculumController.deleteItem(req, res)),
+);
+
+/* ── Lessons ──────────────────────────────────────────────────────────── */
+
 adminCurriculumRoutes.get(
   '/curriculum/lessons/:lessonId',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
+  read,
   validateRequest(lessonIdParamSchema, 'params'),
-  asyncHandler((req, res) => adminCurriculumController.getLessonEditorData(req, res)),
+  asyncHandler((req, res) => adminCurriculumController.getLesson(req, res)),
 );
 
-/** F4-API-16 */
 adminCurriculumRoutes.patch(
   '/curriculum/lessons/:lessonId',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(lessonIdParamSchema, 'params'),
   validateRequest(updateLessonSchema, 'body'),
   asyncHandler((req, res) => adminCurriculumController.updateLesson(req, res)),
 );
 
-/** F4-API-17 */
+/** Alias of `PATCH /items/:itemId/publish` with `isPublished: true`. */
 adminCurriculumRoutes.patch(
   '/curriculum/lessons/:lessonId/publish',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(lessonIdParamSchema, 'params'),
   asyncHandler((req, res) => adminCurriculumController.publishLesson(req, res)),
 );
 
-/** F4-API-20 */
+/* ── Quizzes and questions ────────────────────────────────────────────── */
+
+adminCurriculumRoutes.get(
+  '/curriculum/quizzes/:quizId',
+  read,
+  validateRequest(quizIdParamSchema, 'params'),
+  asyncHandler((req, res) => adminCurriculumController.getQuiz(req, res)),
+);
+
 adminCurriculumRoutes.patch(
   '/curriculum/quizzes/:quizId',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(quizIdParamSchema, 'params'),
   validateRequest(updateQuizSchema, 'body'),
   asyncHandler((req, res) => adminCurriculumController.updateQuiz(req, res)),
 );
 
-/** SCR-F4-04: quiz builder payload (quiz + questions). */
-adminCurriculumRoutes.get(
+adminCurriculumRoutes.delete(
   '/curriculum/quizzes/:quizId',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_READ),
+  manage,
   validateRequest(quizIdParamSchema, 'params'),
-  asyncHandler((req, res) => adminCurriculumController.getQuizEditorData(req, res)),
+  asyncHandler((req, res) => adminCurriculumController.deleteQuiz(req, res)),
 );
 
-/** F4-API-21 */
 adminCurriculumRoutes.post(
   '/curriculum/quizzes/:quizId/questions',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(quizIdParamSchema, 'params'),
   validateRequest(createQuestionSchema, 'body'),
   asyncHandler((req, res) => adminCurriculumController.createQuestion(req, res)),
 );
 
-/** F4-API-22 */
+// Literal `/questions/reorder` before any `/questions/:id` sibling.
+adminCurriculumRoutes.patch(
+  '/curriculum/quizzes/:quizId/questions/reorder',
+  manage,
+  validateRequest(quizIdParamSchema, 'params'),
+  validateRequest(reorderQuestionsSchema, 'body'),
+  asyncHandler((req, res) => adminCurriculumController.reorderQuestions(req, res)),
+);
+
 adminCurriculumRoutes.patch(
   '/curriculum/questions/:questionId',
-  authorizePermissions(PERMISSIONS.PLATFORM_CURRICULUM_MANAGE),
+  manage,
   validateRequest(questionIdParamSchema, 'params'),
   validateRequest(updateQuestionSchema, 'body'),
   asyncHandler((req, res) => adminCurriculumController.updateQuestion(req, res)),
+);
+
+adminCurriculumRoutes.delete(
+  '/curriculum/questions/:questionId',
+  manage,
+  validateRequest(questionIdParamSchema, 'params'),
+  asyncHandler((req, res) => adminCurriculumController.deleteQuestion(req, res)),
 );
 
 export { adminCurriculumRoutes };
