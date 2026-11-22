@@ -1,166 +1,177 @@
 import { describe, expect, it } from 'vitest';
-import { QuizAttemptService } from '../../../src/features/progress/services/QuizAttemptService';
-import type { QuestionWithAnswersRow } from '../../../src/features/progress/repositories/progress.repository';
-import { QuizService } from '../../../src/features/curriculum/services/QuizService';
-import type { QuizServiceDeps } from '../../../src/features/curriculum/services/QuizService';
-import type { QuestionDto } from '../../../src/features/curriculum/dto/curriculum.dto';
+import {
+  checkQuestionShape,
+  createQuestionSchema,
+  updateQuestionSchema,
+} from '../../../src/features/curriculum/validators/curriculum.validator';
 
 type AnswerInput = { answerText: string; isCorrect: boolean; answerOrder: number };
 
-const attemptService = new QuizAttemptService({
-  repo: {} as never,
+const ans = (text: string, isCorrect: boolean, answerOrder: number): AnswerInput => ({
+  answerText: text,
+  isCorrect,
+  answerOrder,
 });
-const quizService = new QuizService({} as QuizServiceDeps);
 
-function orderingQuestion(): QuestionWithAnswersRow {
-  return {
-    questionId: 1,
-    questionText: 'Put the Git workflow steps in order.',
-    questionType: 'ordering',
-    config: null,
-    points: 10,
-    explanation: null,
-    questionOrder: 1,
-    answers: [
-      { answerId: 101, answerText: 'Create a branch', isCorrect: true, answerOrder: 1 },
-      { answerId: 102, answerText: 'Edit files', isCorrect: true, answerOrder: 2 },
-      { answerId: 103, answerText: 'Commit', isCorrect: true, answerOrder: 3 },
-    ],
-  };
-}
+const terminalConfig = (terminal: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+  terminal: { labId: 3, ...terminal },
+  ...extra,
+});
 
-function bucketQuestion(): QuestionWithAnswersRow {
-  return {
-    questionId: 2,
-    questionText: 'Classify each statement as True or False.',
-    questionType: 'bucket_sort',
-    config: { buckets: ['True', 'False'] },
-    points: 10,
-    explanation: null,
-    questionOrder: 2,
-    answers: [
-      { answerId: 201, answerText: 'git status shows untracked files', isCorrect: false, answerOrder: 1 },
-      { answerId: 202, answerText: 'git commit uploads to GitHub', isCorrect: false, answerOrder: 2 },
-    ],
-  };
-}
+describe('per-type answer rules (checkQuestionShape)', () => {
+  it('multiple_choice needs 2..10 answers with exactly one correct', () => {
+    expect(checkQuestionShape('multiple_choice', {}, [ans('a', true, 1), ans('b', false, 2)]).issues).toEqual([]);
+    expect(checkQuestionShape('multiple_choice', {}, [ans('a', true, 1)]).issues.map((i) => i.message))
+      .toContain('Add between 2 and 10 answers.');
+    expect(checkQuestionShape('multiple_choice', {}, [ans('a', true, 1), ans('b', true, 2)]).issues.map((i) => i.message))
+      .toContain('Exactly one answer must be correct.');
+    expect(checkQuestionShape('multiple_choice', {}, [ans('a', false, 1), ans('b', false, 2)]).issues.length).toBe(1);
+  });
 
-describe('ordering questions', () => {
-  it('accepts the exact correct sequence', () => {
-    const result = attemptService.scoreAttempt([orderingQuestion()], [
-      { questionId: 1, answerId: 101 },
-      { questionId: 1, answerId: 102 },
-      { questionId: 1, answerId: 103 },
+  it('true_false needs exactly 2 answers and one correct', () => {
+    expect(checkQuestionShape('true_false', {}, [ans('True', true, 1), ans('False', false, 2)]).issues).toEqual([]);
+    expect(checkQuestionShape('true_false', {}, [ans('True', true, 1), ans('False', false, 2), ans('Maybe', false, 3)]).issues[0].message)
+      .toMatch(/exactly 2 answers/);
+  });
+
+  it('multiple_select needs at least one correct answer', () => {
+    expect(checkQuestionShape('multiple_select', {}, [ans('a', true, 1), ans('b', true, 2)]).issues).toEqual([]);
+    expect(checkQuestionShape('multiple_select', {}, [ans('a', false, 1), ans('b', false, 2)]).issues[0].message)
+      .toBe('At least one answer must be correct.');
+  });
+
+  it('fill_blank requires every accepted answer to be correct', () => {
+    expect(checkQuestionShape('fill_blank', {}, [ans('ls', true, 1)]).issues).toEqual([]);
+    const issues = checkQuestionShape('fill_blank', {}, [ans('ls', true, 1), ans('dir', false, 2)]).issues;
+    expect(issues).toEqual([
+      { path: ['answers', 1, 'isCorrect'], message: 'Every accepted answer must be correct.' },
     ]);
-    expect(result.pointsEarned).toBe(10);
-    expect(result.answers[0].isCorrect).toBe(true);
   });
 
-  it('rejects a wrong sequence', () => {
-    const result = attemptService.scoreAttempt([orderingQuestion()], [
-      { questionId: 1, answerId: 102 },
-      { questionId: 1, answerId: 101 },
-      { questionId: 1, answerId: 103 },
+  it('ordering needs positions 1..n without gaps or duplicates', () => {
+    expect(checkQuestionShape('ordering', {}, [ans('A', true, 1), ans('B', true, 2)]).issues).toEqual([]);
+    expect(checkQuestionShape('ordering', {}, [ans('A', true, 1), ans('B', true, 1)]).issues[0].message)
+      .toMatch(/without gaps/);
+    expect(checkQuestionShape('ordering', {}, [ans('A', true, 1), ans('B', true, 3)]).issues[0].message)
+      .toMatch(/without gaps/);
+    expect(checkQuestionShape('ordering', {}, [ans('A', true, 1)]).issues.map((i) => i.message))
+      .toContain('Add between 2 and 20 answers.');
+  });
+
+  it('bucket_sort needs at least two buckets and card buckets inside the range', () => {
+    expect(checkQuestionShape('bucket_sort', { buckets: ['One'] }, [ans('A', false, 1)]).issues[0].path[0]).toBe('config');
+    expect(checkQuestionShape('bucket_sort', { buckets: ['True', 'False'] }, [ans('A', false, 1), ans('B', false, 2)]).issues)
+      .toEqual([]);
+    const issues = checkQuestionShape('bucket_sort', { buckets: ['True', 'False'] }, [ans('A', false, 1), ans('B', false, 3)]).issues;
+    expect(issues).toEqual([
+      { path: ['answers', 1, 'answerOrder'], message: 'Bucket number must be between 1 and 2.' },
     ]);
-    expect(result.pointsEarned).toBe(0);
-    expect(result.answers[0].isCorrect).toBe(false);
   });
 
-  it('rejects incomplete sequences instead of crediting partial order', () => {
-    const result = attemptService.scoreAttempt([orderingQuestion()], [
-      { questionId: 1, answerId: 101 },
-      { questionId: 1, answerId: 102 },
-    ]);
-    expect(result.answers[0].isCorrect).toBe(false);
+  it('terminal check questions take no answers and need a check', () => {
+    const check = { type: 'command', command: 'test -f /tmp/x', expect: { mode: 'exitCode', value: 0 } };
+    const ok = checkQuestionShape('terminal', terminalConfig({ mode: 'check', check }), []);
+    expect(ok.issues).toEqual([]);
+    const withAnswers = checkQuestionShape('terminal', terminalConfig({ mode: 'check', check }), [ans('x', true, 1)]);
+    expect(withAnswers.issues.map((i) => i.message)).toContain('Check questions take no answers.');
+    const noCheck = checkQuestionShape('terminal', terminalConfig({ mode: 'check' }), []);
+    expect(noCheck.issues.map((i) => i.message)).toContain('Check questions need a check.');
   });
 
-  it('validates unique positions when authoring', () => {
-    const duplicates: AnswerInput[] = [
-      { answerText: 'A', isCorrect: true, answerOrder: 1 },
-      { answerText: 'B', isCorrect: true, answerOrder: 1 },
-    ];
-    expect(() => quizService.assertAnswerInvariant('ordering', duplicates, null)).toThrow(
-      /unique position/i,
-    );
-  });
-
-  it('requires at least two items', () => {
-    expect(() =>
-      quizService.assertAnswerInvariant(
-        'ordering',
-        [{ answerText: 'Only', isCorrect: true, answerOrder: 1 }],
-        null,
-      ),
-    ).toThrow(/at least two/i);
+  it('terminal answer questions follow the choice or text answer rules', () => {
+    const choice = terminalConfig({ mode: 'answer', answerFormat: 'choice' });
+    expect(checkQuestionShape('terminal', choice, [ans('a', true, 1), ans('b', false, 2)]).issues).toEqual([]);
+    expect(checkQuestionShape('terminal', choice, [ans('a', true, 1), ans('b', true, 2)]).issues[0].message)
+      .toBe('Exactly one answer must be correct.');
+    const text = terminalConfig({ mode: 'answer', answerFormat: 'text' });
+    expect(checkQuestionShape('terminal', text, [ans('42', true, 1)]).issues).toEqual([]);
+    expect(checkQuestionShape('terminal', text, [ans('42', false, 1)]).issues[0].path).toEqual(['answers', 0, 'isCorrect']);
+    expect(checkQuestionShape('terminal', terminalConfig({ mode: 'answer' }), [ans('42', true, 1)]).issues.map((i) => i.message))
+      .toContain('Choose an answer format (choice or text) for answer questions.');
   });
 });
 
-describe('bucket_sort questions', () => {
-  it('accepts every card in its correct bucket', () => {
-    const result = attemptService.scoreAttempt([bucketQuestion()], [
-      { questionId: 2, answerId: 201, answerText: 'True' },
-      { questionId: 2, answerId: 202, answerText: 'False' },
-    ]);
-    expect(result.pointsEarned).toBe(10);
+describe('penalty defaults and bounds', () => {
+  it('defaults wrongPenalty to 2 and guessPenalty to 0 for plain types', () => {
+    const { config } = checkQuestionShape('multiple_choice', {}, [ans('a', true, 1), ans('b', false, 2)]);
+    expect(config).toMatchObject({ wrongPenalty: 2, guessPenalty: 0 });
   });
 
-  it('rejects a card in the wrong bucket', () => {
-    const result = attemptService.scoreAttempt([bucketQuestion()], [
-      { questionId: 2, answerId: 201, answerText: 'False' },
-      { questionId: 2, answerId: 202, answerText: 'False' },
-    ]);
-    expect(result.pointsEarned).toBe(0);
+  it('defaults bucket_sort penalties the same way', () => {
+    const { config } = checkQuestionShape('bucket_sort', { buckets: ['a', 'b'] }, [ans('A', false, 1)]);
+    expect(config).toMatchObject({ wrongPenalty: 2, guessPenalty: 0 });
   });
 
-  it('rejects incomplete card submissions', () => {
-    const result = attemptService.scoreAttempt([bucketQuestion()], [
-      { questionId: 2, answerId: 201, answerText: 'True' },
-    ]);
-    expect(result.answers[0].isCorrect).toBe(false);
-  });
-
-  it('requires at least two buckets when authoring', () => {
-    const answers: AnswerInput[] = [
-      { answerText: 'A', isCorrect: false, answerOrder: 1 },
-      { answerText: 'B', isCorrect: false, answerOrder: 1 },
-    ];
-    expect(() =>
-      quizService.assertAnswerInvariant('bucket_sort', answers, { buckets: ['Only'] }),
-    ).toThrow(/at least two buckets/i);
-  });
-
-  it('rejects a card pointing at a missing bucket', () => {
-    const answers: AnswerInput[] = [
-      { answerText: 'A', isCorrect: false, answerOrder: 1 },
-      { answerText: 'B', isCorrect: false, answerOrder: 3 },
-    ];
-    expect(() =>
-      quizService.assertAnswerInvariant('bucket_sort', answers, { buckets: ['True', 'False'] }),
-    ).toThrow(/between 1 and 2/i);
-  });
-
-  it('never leaks the correct bucket/order through the learner payload', () => {
-    const adminQuestion: QuestionDto = {
-      questionId: 2,
-      quizId: 1,
-      questionText: 'Classify',
-      questionType: 'bucket_sort',
-      config: { buckets: ['True', 'False'] },
-      points: 10,
-      explanation: null,
-      questionOrder: 1,
-      isActive: true,
-      answers: [
-        { answerId: 201, questionId: 2, answerText: 'Card A', isCorrect: true, answerOrder: 1 },
-        { answerId: 202, questionId: 2, answerText: 'Card B', isCorrect: false, answerOrder: 2 },
-      ],
-    };
-    const learner = quizService.stripCorrectAnswers(adminQuestion);
-    expect(
-      learner.answers.every((answer) => !('isCorrect' in answer)),
-    ).toBe(true);
-    expect(new Set(learner.answers.map((answer) => answer.answerId))).toEqual(
-      new Set([201, 202]),
+  it('defaults the terminal guessPenalty to 5 in answer mode and 0 in check mode', () => {
+    const answer = checkQuestionShape('terminal', terminalConfig({ mode: 'answer', answerFormat: 'text' }), [ans('x', true, 1)]);
+    expect(answer.config).toMatchObject({ wrongPenalty: 2, guessPenalty: 5 });
+    const check = checkQuestionShape(
+      'terminal',
+      terminalConfig({ mode: 'check', check: { type: 'command', command: 'true', expect: { mode: 'exitCode', value: 0 } } }),
+      [],
     );
+    expect(check.config).toMatchObject({ wrongPenalty: 2, guessPenalty: 0 });
+  });
+
+  it('keeps an explicit terminal guessPenalty of 0 in answer mode', () => {
+    const { config } = checkQuestionShape(
+      'terminal',
+      terminalConfig({ mode: 'answer', answerFormat: 'text' }, { guessPenalty: 0 }),
+      [ans('x', true, 1)],
+    );
+    expect(config.guessPenalty).toBe(0);
+  });
+
+  it('rejects penalties outside 0..1000 and non-integers', () => {
+    const a = [ans('a', true, 1), ans('b', false, 2)];
+    expect(checkQuestionShape('multiple_choice', { wrongPenalty: 1001 }, a).issues.length).toBeGreaterThan(0);
+    expect(checkQuestionShape('multiple_choice', { guessPenalty: -1 }, a).issues.length).toBeGreaterThan(0);
+    expect(checkQuestionShape('multiple_choice', { wrongPenalty: 1.5 }, a).issues.length).toBeGreaterThan(0);
+    expect(checkQuestionShape('multiple_choice', { wrongPenalty: 1000, guessPenalty: 0 }, a).issues).toEqual([]);
+  });
+
+  it('rejects unknown config keys', () => {
+    expect(checkQuestionShape('multiple_choice', { surprise: 1 }, [ans('a', true, 1), ans('b', false, 2)]).issues.length)
+      .toBeGreaterThan(0);
+  });
+});
+
+describe('question write schemas', () => {
+  const base = {
+    questionText: 'Which command lists files?',
+    questionType: 'multiple_choice' as const,
+    answers: [ans('ls', true, 1), ans('cd', false, 2)],
+  };
+
+  it('createQuestionSchema stores the config with its penalty values', () => {
+    const parsed = createQuestionSchema.parse(base);
+    expect(parsed.config).toMatchObject({ wrongPenalty: 2, guessPenalty: 0 });
+    expect(parsed.points).toBe(10);
+  });
+
+  it('createQuestionSchema maps shape issues to paths', () => {
+    const result = createQuestionSchema.safeParse({ ...base, answers: [ans('ls', true, 1), ans('cd', true, 2)] });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].path).toEqual(['answers']);
+    }
+  });
+
+  it('updateQuestionSchema requires questionType, config and answers together', () => {
+    const result = updateQuestionSchema.safeParse({ questionType: 'multiple_choice' });
+    expect(result.success).toBe(false);
+    expect(updateQuestionSchema.safeParse({ points: 20 }).success).toBe(true);
+    expect(updateQuestionSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('updateQuestionSchema revalidates the whole triple', () => {
+    const ok = updateQuestionSchema.safeParse({ questionType: 'multiple_choice', config: {}, answers: base.answers });
+    expect(ok.success).toBe(true);
+    const bad = updateQuestionSchema.safeParse({
+      questionType: 'true_false',
+      config: {},
+      answers: [ans('a', true, 1), ans('b', false, 2), ans('c', false, 3)],
+    });
+    expect(bad.success).toBe(false);
   });
 });

@@ -1,524 +1,322 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ConflictError, NotFoundError, ValidationError } from '../../../src/shared/errors';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../../src/shared/errors';
 import { AdminCurriculumService, type AdminCurriculumServiceDeps } from '../../../src/features/curriculum/services/AdminCurriculumService';
-import { QuizService, type QuizServiceDeps } from '../../../src/features/curriculum/services/QuizService';
-import { CurriculumService } from '../../../src/features/curriculum/services/CurriculumService';
+import {
+  CurriculumService,
+  moduleSlidesUrl,
+  type CurriculumServiceDeps,
+} from '../../../src/features/curriculum/services/CurriculumService';
 
-const actor = { userId: 9, ipAddress: '127.0.0.1', userAgent: 'vitest' };
+const configEnv = vi.hoisted(() => ({ SLIDES_PUBLIC_BASE_URL: 'http://localhost:5050/assets' }));
+
+vi.mock('../../../src/app/config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/app/config')>();
+  return { ...actual, env: new Proxy(actual.env, {
+    get: (target, prop) => (prop === 'SLIDES_PUBLIC_BASE_URL' ? configEnv.SLIDES_PUBLIC_BASE_URL : Reflect.get(target, prop)),
+  }) };
+});
+vi.mock('../../../src/app/database', () => ({
+  db: { transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn({ tag: 'tx' })) },
+}));
+vi.mock('../../../src/features/curriculum/services/curriculum-slug.service', () => ({
+  curriculumSlugService: { recomputeCourse: vi.fn(async () => undefined) },
+}));
+
+type Fn = ReturnType<typeof vi.fn>;
+
+const learner = { userId: 7, ipAddress: '127.0.0.1', userAgent: 'vitest', roles: [] };
+const admin = { userId: 9, ipAddress: '127.0.0.1', userAgent: 'vitest' };
+
+const validSpec = {
+  version: 2, mode: 'guided', scenario: { intro: '', setup: [] }, completionBonus: 50,
+  steps: [
+    { id: 's1', title: 'a', instructions: 'a', kind: 'task', setup: [], check: { type: 'command', command: 'true', expect: { mode: 'exitCode', value: 0 } }, hints: [], points: 25 },
+    { id: 's2', title: 'b', instructions: 'b', kind: 'task', setup: [], check: { type: 'command', command: 'true', expect: { mode: 'exitCode', value: 0 } }, hints: [], points: 25 },
+  ],
+};
 
 function courseRow(overrides: Record<string, unknown> = {}) {
   return {
-    courseId: 1,
-    title: 'DevOps Mentor',
-    slug: 'devops-mentor',
-    description: null,
-    difficultyId: 1,
-    difficultyName: 'Intermediate',
-    categoryId: null,
-    categoryName: null,
-    instructorId: 1,
-    instructorName: 'Admin',
-    coverImageUrl: null,
-    videoTrailerUrl: null,
-    estimatedHours: 40,
-    totalLessons: 0,
-    totalQuizzes: 0,
-    isPublished: true,
-    prerequisites: null,
-    learningObjectives: null,
-    createdAt: new Date('2026-01-01T00:00:00.000Z'),
-    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    courseId: 1, title: 'Linux', slug: 'C01', description: null, difficultyId: 1, difficultyName: 'Beginner',
+    categoryId: null, categoryName: null, instructorId: 1, instructorName: 'Admin', coverImageUrl: null,
+    videoTrailerUrl: null, estimatedHours: 4, totalLessons: 3, totalQuizzes: 1, isPublished: true, isPremium: false,
+    prerequisites: null, learningObjectives: null,
+    createdAt: new Date('2026-01-01T00:00:00.000Z'), updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     ...overrides,
   };
 }
 
 function moduleRow(overrides: Record<string, unknown> = {}) {
   return {
-    moduleId: 10,
-    courseId: 1,
-    title: 'Docker Fundamentals',
-    description: null,
-    moduleOrder: 1,
-    estimatedMinutes: 120,
-    isPublished: false,
-    lessonCount: 0,
-    createdAt: new Date('2026-01-02T00:00:00.000Z'),
-    updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+    moduleId: 10, courseId: 1, title: 'Basics', description: null, moduleOrder: 1, slug: 'C01M01',
+    estimatedMinutes: 60, isPublished: true, lessonCount: 2,
+    createdAt: new Date('2026-01-02T00:00:00.000Z'), updatedAt: new Date('2026-01-02T00:00:00.000Z'),
     ...overrides,
+  };
+}
+
+function itemRow(overrides: Record<string, unknown> = {}) {
+  return {
+    itemId: 20, moduleId: 10, position: 1, kind: 'lesson', title: 'Intro', slug: 'C01M01L01', contentType: 'text',
+    videoDurationSeconds: null, isPublished: true, labId: null, quizId: null, lab: null, quiz: null, ...overrides,
   };
 }
 
 function lessonRow(overrides: Record<string, unknown> = {}) {
   return {
-    lessonId: 20,
-    moduleId: 10,
-    title: 'Images and Containers',
-    content: null,
-    contentType: 'text' as const,
-    videoUrl: null,
-    videoDurationSeconds: null,
-    lessonOrder: 1,
-    isPublished: false,
-    createdAt: new Date('2026-01-03T00:00:00.000Z'),
-    updatedAt: new Date('2026-01-03T00:00:00.000Z'),
-    ...overrides,
+    lessonId: 20, moduleId: 10, title: 'Intro', slug: 'C01M01L01', content: 'Body', contentType: 'text',
+    videoUrl: null, videoDurationSeconds: null, lessonOrder: 1, isPublished: true, labId: null, quizId: null,
+    createdAt: new Date('2026-01-03T00:00:00.000Z'), updatedAt: new Date('2026-01-03T00:00:00.000Z'), ...overrides,
   };
 }
 
-function quizRow(overrides: Record<string, unknown> = {}) {
-  return {
-    quizId: 30,
-    moduleId: 10,
-    title: 'Docker Quiz',
-    description: null,
-    passingScore: 70,
-    timeLimitMinutes: null,
-    isRequired: true,
-    isPublished: false,
-    createdAt: new Date('2026-01-04T00:00:00.000Z'),
-    updatedAt: new Date('2026-01-04T00:00:00.000Z'),
-    ...overrides,
-  };
-}
+const labItem = (overrides: Record<string, unknown> = {}, flagValues: unknown = validSpec) => itemRow({
+  itemId: 21, kind: 'lab', labId: 5, contentType: 'lab',
+  lab: { labId: 5, slug: 'C01M01L02', labName: 'Linux Lab', difficultyName: 'Easy', estimatedHours: 1, isPremium: false, isActive: true, flagValues },
+  ...overrides,
+});
 
-type Mocked<T> = { [K in keyof T]: ReturnType<typeof vi.fn> };
+const quizItem = (overrides: Record<string, unknown> = {}) => itemRow({
+  itemId: 22, kind: 'quiz', quizId: 31, contentType: 'quiz',
+  quiz: { quizId: 31, activeQuestionCount: 4, passingScore: 70, timeLimitMinutes: null, isRequired: true, isPublished: true },
+  ...overrides,
+});
 
-function makeRepo(): Mocked<AdminCurriculumServiceDeps['repo']> {
+function makeRepo(): Record<string, Fn> {
   return {
-    getCanonicalCourse: vi.fn(async () => courseRow()),
-    createCourse: vi.fn(async () => 1),
-    updateCourse: vi.fn(async () => undefined),
-    refreshCourseCounts: vi.fn(async () => undefined),
+    listPublishedCourses: vi.fn(async () => [courseRow()]),
+    findCourseById: vi.fn(async () => courseRow()),
+    listModules: vi.fn(async () => [moduleRow()]),
     findModuleById: vi.fn(async () => moduleRow()),
-    listModulesAll: vi.fn(async () => []),
-    listModulesPublished: vi.fn(async () => []),
-    createModule: vi.fn(async () => 11),
-    updateModule: vi.fn(async () => undefined),
-    setModulePublished: vi.fn(async () => undefined),
-    findModuleOrder: vi.fn(async () => null),
-    maxModuleOrder: vi.fn(async () => null),
-    countModulesByCourse: vi.fn(async () => 3),
-    bulkUpdateModuleOrders: vi.fn(async () => undefined),
+    listItemsByModule: vi.fn(async () => [itemRow()]),
+    findItemById: vi.fn(async () => itemRow()),
     findLessonById: vi.fn(async () => lessonRow()),
-    listLessonsByModule: vi.fn(async () => []),
-    listPublishedLessonsByModule: vi.fn(async () => []),
-    createLesson: vi.fn(async () => 21),
-    updateLesson: vi.fn(async () => undefined),
-    setLessonPublished: vi.fn(async () => undefined),
-    findLessonOrder: vi.fn(async () => null),
-    maxLessonOrder: vi.fn(async () => null),
-    bulkUpdateLessonOrders: vi.fn(async () => undefined),
-    archiveModuleCascade: vi.fn(async () => undefined),
-    countPublishedLessonsByCourse: vi.fn(async () => 0),
-    findQuizById: vi.fn(async () => quizRow()),
-    listQuizzesByModule: vi.fn(async () => []),
-    listPublishedQuizzesByModule: vi.fn(async () => []),
-    createQuiz: vi.fn(async () => 31),
-    updateQuiz: vi.fn(async () => undefined),
-    setQuizPublished: vi.fn(async () => undefined),
-    countQuestionsByQuiz: vi.fn(async () => 0),
-    findQuestionById: vi.fn(async () => null),
-    listQuestionsByQuiz: vi.fn(async () => []),
-    createQuestion: vi.fn(async () => 41),
-    updateQuestion: vi.fn(async () => undefined),
-    listAnswersByQuestion: vi.fn(async () => []),
-    replaceAnswers: vi.fn(async () => undefined),
-    listTags: vi.fn(async () => []),
-    findTagsByIds: vi.fn(async () => []),
     listLessonTags: vi.fn(async () => []),
-    setLessonTags: vi.fn(async () => undefined),
+    countModulesByCourse: vi.fn(async () => 3),
+    findQuizById: vi.fn(async () => null),
   };
 }
 
-function makeAdminService(overrides: Partial<Mocked<AdminCurriculumServiceDeps['repo']>> = {}) {
-  const repo = { ...makeRepo(), ...overrides };
-  const deps: AdminCurriculumServiceDeps = {
-    repo,
-    quiz: { getQuizAdminDetailForModule: vi.fn(async () => []) } as unknown as QuizService,
-    audit: { record: vi.fn(async () => undefined) } as unknown as AdminCurriculumServiceDeps['audit'],
+function makeService(repoOverrides: Record<string, Fn> = {}, canAccess = true) {
+  const repo = { ...makeRepo(), ...repoOverrides };
+  const access = {
+    getCourseAccess: vi.fn(async () => (canAccess
+      ? { canAccess: true, reason: 'free', message: null }
+      : { canAccess: false, reason: 'premium_required', message: 'Upgrade to access this course.' })),
   };
-  return { service: new AdminCurriculumService(deps), repo, audit: deps.audit };
+  const service = new CurriculumService({ repo, access } as unknown as CurriculumServiceDeps);
+  return { service, repo, access };
 }
 
-function makeQuizService() {
-  const repo = makeRepo();
-  const audit = { record: vi.fn(async () => undefined) };
-  const deps: QuizServiceDeps = { repo, audit };
-  return { service: new QuizService(deps), repo, audit };
-}
-
-describe('AdminCurriculumService', () => {
+describe('CurriculumService learner reads', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    configEnv.SLIDES_PUBLIC_BASE_URL = 'http://localhost:5050/assets';
   });
 
-  describe('createModule', () => {
-    it('creates a module under the canonical course and audits', async () => {
-      const { service, repo, audit } = makeAdminService();
-      const result = await service.createModule(actor, {
-        title: 'Kubernetes Basics',
-        moduleOrder: 1,
-      });
-      expect(repo.createModule).toHaveBeenCalledWith(
-        expect.objectContaining({ courseId: 1, title: 'Kubernetes Basics' }),
-      );
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'create_module', adminUserId: 9, targetType: 'module' }),
-      );
-      expect(result.title).toBe('Docker Fundamentals');
-    });
-
-    it('rejects duplicate module order (invariant 2)', async () => {
-      const { service } = makeAdminService({ findModuleOrder: vi.fn(async () => 42) });
-      await expect(
-        service.createModule(actor, { title: 'Duplicate Order', moduleOrder: 1 }),
-      ).rejects.toThrow(ConflictError);
-    });
+  it('has no canonical-course API any more', () => {
+    const { service } = makeService();
+    expect((service as unknown as Record<string, unknown>).getCourse).toBeUndefined();
   });
 
-  describe('updateModule', () => {
-    it('rejects an order collision with another module', async () => {
-      const { service } = makeAdminService({ findModuleOrder: vi.fn(async () => 7) });
-      await expect(
-        service.updateModule(actor, 10, { moduleOrder: 5 }),
-      ).rejects.toThrow(ConflictError);
-    });
-
-    it('allows keeping the current order', async () => {
-      const { service } = makeAdminService({ findModuleOrder: vi.fn(async () => 10) });
-      await expect(service.updateModule(actor, 10, { moduleOrder: 1 })).resolves.toBeDefined();
-    });
+  it('lists published courses with module and visible item counts', async () => {
+    const { service, repo } = makeService({ listModules: vi.fn(async () => [moduleRow({ lessonCount: 2 }), moduleRow({ moduleId: 11, lessonCount: 3 })]) });
+    const courses = await service.listCourses();
+    expect(repo.listModules).toHaveBeenCalledWith(1, { publishedOnly: true });
+    expect(courses).toHaveLength(1);
+    expect(courses[0]).toMatchObject({ courseId: 1, slug: 'C01', moduleCount: 2, itemCount: 5, isPremium: false });
   });
 
-  describe('publishModule', () => {
-    it('publishes, refreshes counts and audits', async () => {
-      const { service, repo, audit } = makeAdminService();
-      await service.publishModule(actor, 10);
-      expect(repo.setModulePublished).toHaveBeenCalledWith(10, true);
-      expect(repo.refreshCourseCounts).toHaveBeenCalledWith(1);
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'publish_module', targetId: 10 }),
-      );
-    });
+  it('reads modules course-scoped, published only, in order', async () => {
+    const { service, repo } = makeService();
+    const modules = await service.listCourseModules(1);
+    expect(repo.listModules).toHaveBeenCalledWith(1, { publishedOnly: true });
+    expect(modules.map((m) => m.slug)).toEqual(['C01M01']);
   });
 
-  describe('archiveModule', () => {
-    it('cascades is_published=FALSE to lessons and quizzes atomically (AC-03)', async () => {
-      const { service, repo, audit } = makeAdminService();
-      await service.archiveModule(actor, 10);
-      expect(repo.archiveModuleCascade).toHaveBeenCalledWith(10);
-      expect(repo.setModulePublished).not.toHaveBeenCalled();
-      expect(repo.refreshCourseCounts).toHaveBeenCalledWith(1);
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'archive_module', targetId: 10 }),
-      );
-    });
+  it('returns 200 outline with the access state when the learner has access', async () => {
+    const { service } = makeService();
+    const detail = await service.getCourseDetail(learner, 1);
+    expect(detail.access).toMatchObject({ canAccess: true });
+    expect(detail.modules).toHaveLength(1);
   });
 
-  describe('reorderModules', () => {
-    it('rejects duplicate order values in the input array', async () => {
-      const { service } = makeAdminService();
-      await expect(
-        service.reorderModules(actor, [
-          { moduleId: 10, moduleOrder: 1 },
-          { moduleId: 11, moduleOrder: 1 },
-        ]),
-      ).rejects.toThrow(ConflictError);
-      expect(makeRepo().bulkUpdateModuleOrders).not.toHaveBeenCalled();
-    });
-
-    it('rejects modules outside the canonical course', async () => {
-      const { service } = makeAdminService({ findModuleById: vi.fn(async () => moduleRow({ courseId: 99 })) });
-      await expect(
-        service.reorderModules(actor, [{ moduleId: 10, moduleOrder: 1 }]),
-      ).rejects.toThrow(NotFoundError);
-    });
-
-    it('performs a transactional bulk update for valid orders', async () => {
-      const { service, repo } = makeAdminService();
-      await service.reorderModules(actor, [
-        { moduleId: 10, moduleOrder: 2 },
-        { moduleId: 11, moduleOrder: 1 },
-      ]);
-      expect(repo.bulkUpdateModuleOrders).toHaveBeenCalledWith([
-        { moduleId: 10, moduleOrder: 2 },
-        { moduleId: 11, moduleOrder: 1 },
-      ]);
-    });
+  it('returns the outline (200) with canAccess=false and the reason when locked', async () => {
+    const { service } = makeService({}, false);
+    const detail = await service.getCourseDetail(learner, 1);
+    expect(detail.access).toMatchObject({ canAccess: false, reason: 'premium_required' });
+    expect(detail.modules).toHaveLength(1);
   });
 
-  describe('publishLesson', () => {
-    it('blocks publishing a lesson under an unpublished module (rule 4)', async () => {
-      const { service } = makeAdminService();
-      await expect(service.publishLesson(actor, 20)).rejects.toThrow(ConflictError);
-    });
-
-    it('publishes when the parent module is published', async () => {
-      const { service, repo, audit } = makeAdminService({
-        findModuleById: vi.fn(async () => moduleRow({ isPublished: true })),
-      });
-      await service.publishLesson(actor, 20);
-      expect(repo.setLessonPublished).toHaveBeenCalledWith(20, true);
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'publish_lesson', targetId: 20 }),
-      );
-    });
+  it('404s an unpublished or missing course on every outline read', async () => {
+    const { service } = makeService({ findCourseById: vi.fn(async () => courseRow({ isPublished: false })) });
+    await expect(service.getCourseDetail(learner, 1)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(service.listCourseModules(1)).rejects.toBeInstanceOf(NotFoundError);
+    const missing = makeService({ findCourseById: vi.fn(async () => null) });
+    await expect(missing.service.getCourseDetail(learner, 1)).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  describe('reorderLessons', () => {
-    it('rejects a lesson that does not belong to the module', async () => {
-      const { service } = makeAdminService({
-        listLessonsByModule: vi.fn(async () => [lessonRow()]),
-      });
-      await expect(
-        service.reorderLessons(actor, 10, [{ lessonId: 999, lessonOrder: 1 }]),
-      ).rejects.toThrow(NotFoundError);
-    });
-
-    it('rejects duplicate lesson orders', async () => {
-      const { service } = makeAdminService({
-        listLessonsByModule: vi.fn(async () => [lessonRow(), lessonRow({ lessonId: 21 })]),
-      });
-      await expect(
-        service.reorderLessons(actor, 10, [
-          { lessonId: 20, lessonOrder: 1 },
-          { lessonId: 21, lessonOrder: 1 },
-        ]),
-      ).rejects.toThrow(ConflictError);
-    });
+  it('404s a module that is a draft or whose course is unpublished', async () => {
+    const draft = makeService({ findModuleById: vi.fn(async () => moduleRow({ isPublished: false })) });
+    await expect(draft.service.getModule(10)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(draft.service.listModuleItems(10)).rejects.toBeInstanceOf(NotFoundError);
+    const hiddenCourse = makeService({ findCourseById: vi.fn(async () => courseRow({ isPublished: false })) });
+    await expect(hiddenCourse.service.getModule(10)).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  describe('createLesson', () => {
-    it('creates a draft lesson and applies tags', async () => {
-      const { service, repo } = makeAdminService({ findTagsByIds: vi.fn(async () => [5]) });
-      const result = await service.createLesson(actor, 10, {
-        title: 'Networking 101',
-        contentType: 'video',
-        videoUrl: 'https://cdn.example.com/v.mp4',
-        videoDurationSeconds: 300,
-        lessonOrder: 1,
-        tagIds: [5],
-      });
-      expect(repo.createLesson).toHaveBeenCalledWith(
-        expect.objectContaining({
-          moduleId: 10,
-          title: 'Networking 101',
-          contentType: 'video',
-        }),
-      );
-      expect(repo.setLessonTags).toHaveBeenCalledWith(21, [5]);
-      expect(result.title).toBe('Images and Containers');
-    });
-
-    it('rejects a duplicate lesson order', async () => {
-      const { service } = makeAdminService({ findLessonOrder: vi.fn(async () => 3) });
-      await expect(
-        service.createLesson(actor, 10, { title: 'Duplicate', lessonOrder: 1 }),
-      ).rejects.toThrow(ConflictError);
-    });
-
-    it('rejects unknown tag ids', async () => {
-      const { service } = makeAdminService({ findTagsByIds: vi.fn(async () => []) });
-      await expect(
-        service.createLesson(actor, 10, { title: 'Bad Tags', lessonOrder: 1, tagIds: [5] }),
-      ).rejects.toThrow(NotFoundError);
-    });
-  });
-});
-
-describe('QuizService', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  it('lists only learner-visible items via the repo filter', async () => {
+    const { service, repo } = makeService();
+    await service.listModuleItems(10);
+    expect(repo.listItemsByModule).toHaveBeenCalledWith(10, { publishedOnly: true });
   });
 
-  describe('assertAnswerInvariant (rule 6)', () => {
-    const service = new QuizService({ repo: makeRepo(), audit: { record: vi.fn() } });
-
-    it('requires exactly one correct answer for multiple_choice', () => {
-      expect(() =>
-        service.assertAnswerInvariant('multiple_choice', [
-          { answerText: 'A', isCorrect: false, answerOrder: 1 },
-          { answerText: 'B', isCorrect: true, answerOrder: 2 },
-        ]),
-      ).not.toThrow();
-      expect(() =>
-        service.assertAnswerInvariant('multiple_choice', [
-          { answerText: 'A', isCorrect: false, answerOrder: 1 },
-          { answerText: 'B', isCorrect: false, answerOrder: 2 },
-        ]),
-      ).toThrow(ValidationError);
-      expect(() =>
-        service.assertAnswerInvariant('multiple_choice', [
-          { answerText: 'A', isCorrect: true, answerOrder: 1 },
-          { answerText: 'B', isCorrect: true, answerOrder: 2 },
-        ]),
-      ).toThrow(ValidationError);
+  describe('items DTO', () => {
+    it('maps a lab item with its step count and never exposes the spec', async () => {
+      const { service } = makeService({ listItemsByModule: vi.fn(async () => [labItem()]) });
+      const [item] = await service.listModuleItems(10);
+      expect(item.kind).toBe('lab');
+      expect(item.lab).toMatchObject({ labId: 5, stepCount: 2 });
+      expect(JSON.stringify(item)).not.toMatch(/flagValues|check|instructions|command/);
     });
 
-    it('requires exactly one correct answer for true_false', () => {
-      expect(() =>
-        service.assertAnswerInvariant('true_false', [
-          { answerText: 'True', isCorrect: true, answerOrder: 1 },
-          { answerText: 'False', isCorrect: false, answerOrder: 2 },
-        ]),
-      ).not.toThrow();
-      expect(() =>
-        service.assertAnswerInvariant('true_false', [
-          { answerText: 'True', isCorrect: false, answerOrder: 1 },
-          { answerText: 'False', isCorrect: false, answerOrder: 2 },
-        ]),
-      ).toThrow(ValidationError);
-    });
-
-    it('requires at least one correct answer for multiple_select', () => {
-      expect(() =>
-        service.assertAnswerInvariant('multiple_select', [
-          { answerText: 'A', isCorrect: true, answerOrder: 1 },
-          { answerText: 'B', isCorrect: true, answerOrder: 2 },
-        ]),
-      ).not.toThrow();
-      expect(() =>
-        service.assertAnswerInvariant('multiple_select', [
-          { answerText: 'A', isCorrect: false, answerOrder: 1 },
-          { answerText: 'B', isCorrect: false, answerOrder: 2 },
-        ]),
-      ).toThrow(ValidationError);
-    });
-  });
-
-  describe('createQuiz', () => {
-    it('defaults is_published to the parent module state (rule 4)', async () => {
-      const { service, repo } = makeQuizService();
-      await service.createQuiz(actor, 10, {
-        title: 'Docker Quiz',
-        passingScore: 70,
-        timeLimitMinutes: null,
-        isRequired: true,
-      });
-      expect(repo.createQuiz).toHaveBeenCalledWith(expect.objectContaining({ isPublished: false }));
-    });
-
-    it('creates published when the module is published', async () => {
-      const { service, repo } = makeQuizService();
-      repo.findModuleById.mockImplementation(async () => moduleRow({ isPublished: true }));
-      await service.createQuiz(actor, 10, {
-        title: 'Docker Quiz',
-        passingScore: 70,
-        timeLimitMinutes: null,
-        isRequired: true,
-      });
-      expect(repo.createQuiz).toHaveBeenCalledWith(expect.objectContaining({ isPublished: true }));
-    });
-  });
-
-  describe('updateQuiz', () => {
-    it('rejects publishing a quiz under a draft module (rule 4)', async () => {
-      const { service, repo } = makeQuizService();
-      repo.findQuizById.mockImplementation(async () => quizRow({ isPublished: false }));
-      repo.findModuleById.mockImplementation(async () => moduleRow({ isPublished: false }));
-      await expect(
-        service.updateQuiz(actor, 30, { isPublished: true }),
-      ).rejects.toThrow(ConflictError);
-      expect(repo.updateQuiz).not.toHaveBeenCalled();
-    });
-
-    it('allows publishing a quiz under a published module', async () => {
-      const { service, repo } = makeQuizService();
-      repo.findQuizById.mockImplementation(async () => quizRow({ isPublished: false }));
-      repo.findModuleById.mockImplementation(async () => moduleRow({ isPublished: true }));
-      await service.updateQuiz(actor, 30, { isPublished: true });
-      expect(repo.updateQuiz).toHaveBeenCalledWith(30, expect.objectContaining({ isPublished: true }));
-    });
-  });
-
-  describe('createQuestion', () => {
-    it('rejects answers that violate the invariant before persisting', async () => {
-      const { service, repo } = makeQuizService();
-      repo.findQuizById.mockImplementation(async () => quizRow({ isPublished: true }));
-      await expect(
-        service.createQuestion(actor, 30, {
-          questionText: 'Which is correct?',
-          questionType: 'multiple_choice',
-          points: 10,
-          explanation: null,
-          questionOrder: 1,
-          answers: [
-            { answerText: 'A', isCorrect: false, answerOrder: 1 },
-            { answerText: 'B', isCorrect: false, answerOrder: 2 },
-          ],
-        }),
-      ).rejects.toThrow(ValidationError);
-      expect(repo.createQuestion).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('stripCorrectAnswers (AC-04)', () => {
-    it('removes is_correct from every answer', () => {
-      const { service } = makeQuizService();
-      const stripped = service.stripCorrectAnswers({
-        questionId: 41,
-        quizId: 30,
-        questionText: 'Q',
-        questionType: 'multiple_choice',
-        points: 10,
-        explanation: null,
-        questionOrder: 1,
-        isActive: true,
-        answers: [
-          { answerId: 51, questionId: 41, answerText: 'A', isCorrect: true, answerOrder: 1 },
-          { answerId: 52, questionId: 41, answerText: 'B', isCorrect: false, answerOrder: 2 },
-        ],
-      });
-      expect(stripped.answers).toHaveLength(2);
-      for (const answer of stripped.answers) {
-        expect(answer).not.toHaveProperty('isCorrect');
+    it('reports stepCount 0 for a lab that is not ready (missing, legacy or invalid spec)', async () => {
+      for (const flagValues of [null, { cp1: 'docker' }, { version: 2, steps: [] }]) {
+        const { service } = makeService({ listItemsByModule: vi.fn(async () => [labItem({}, flagValues)]) });
+        const [item] = await service.listModuleItems(10);
+        expect(item.lab?.stepCount).toBe(0);
       }
-      expect(stripped.answers[0]).toEqual({
-        answerId: 51,
-        questionId: 41,
-        answerText: 'A',
-        answerOrder: 1,
+    });
+
+    it('maps a quiz item with its question count and omits a NULL lab_id lab object', async () => {
+      const { service } = makeService({ listItemsByModule: vi.fn(async () => [quizItem(), itemRow()]) });
+      const [quiz, lesson] = await service.listModuleItems(10);
+      expect(quiz.quiz).toMatchObject({ quizId: 31, questionCount: 4, passingScore: 70 });
+      expect(quiz.lab).toBeNull();
+      expect(lesson.lab).toBeNull();
+      expect(lesson.quiz).toBeNull();
+    });
+  });
+
+  describe('getLesson', () => {
+    it('returns the lesson with the module slug and slidesUrl when entitled', async () => {
+      const { service } = makeService();
+      const lesson = await service.getLesson(learner, 20);
+      expect(lesson).toMatchObject({ lessonId: 20, courseId: 1, content: 'Body', kind: 'lesson', moduleSlug: 'C01M01' });
+      expect(lesson.slidesUrl).toBe('http://localhost:5050/assets/slides/C01M01.pdf');
+    });
+
+    it('403 COURSE_ACCESS_DENIED with the reason when not entitled', async () => {
+      const { service } = makeService({}, false);
+      const error = await service.getLesson(learner, 20).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ForbiddenError);
+      expect((error as ForbiddenError).errors?.[0]).toMatchObject({ code: 'COURSE_ACCESS_DENIED', reason: 'premium_required' });
+    });
+
+    it('404s before the access check for unpublished content, never 403', async () => {
+      const cases: Array<Record<string, Fn>> = [
+        { findItemById: vi.fn(async () => itemRow({ isPublished: false })) },
+        { findItemById: vi.fn(async () => labItem({}, validSpec)) , findModuleById: vi.fn(async () => moduleRow({ isPublished: false })) },
+        { findItemById: vi.fn(async () => quizItem({ quiz: { quizId: 31, activeQuestionCount: 1, passingScore: 70, timeLimitMinutes: null, isRequired: true, isPublished: false } })) },
+        { findItemById: vi.fn(async () => null) },
+      ];
+      for (const overrides of cases) {
+        const { service, access } = makeService(overrides, false);
+        await expect(service.getLesson(learner, 20)).rejects.toBeInstanceOf(NotFoundError);
+        expect(access.getCourseAccess).not.toHaveBeenCalled();
+      }
+    });
+
+    it('404s a lab item whose lab is inactive', async () => {
+      const row = labItem();
+      (row.lab as { isActive: boolean }).isActive = false;
+      const { service } = makeService({ findItemById: vi.fn(async () => row) });
+      await expect(service.getLesson(learner, 21)).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it('carries no content for lab and quiz items', async () => {
+      const { service } = makeService({
+        findItemById: vi.fn(async () => labItem()),
+        findLessonById: vi.fn(async () => lessonRow({ contentType: 'lab', labId: 5, content: 'secret' })),
       });
+      const lesson = await service.getLesson(learner, 21);
+      expect(lesson.kind).toBe('lab');
+      expect(lesson.content).toBeNull();
+      expect(lesson.labId).toBe(5);
+    });
+  });
+
+  describe('snapshots', () => {
+    it('getCourseSnapshot is course-scoped and 404s an unknown course', async () => {
+      const { service, repo } = makeService();
+      await expect(service.getCourseSnapshot(1)).resolves.toMatchObject({ courseId: 1, totalModules: 3, totalLessons: 3, totalQuizzes: 1 });
+      expect(repo.findCourseById).toHaveBeenCalledWith(1);
+      const missing = makeService({ findCourseById: vi.fn(async () => null) });
+      await expect(missing.service.getCourseSnapshot(404)).rejects.toBeInstanceOf(NotFoundError);
     });
   });
 });
 
-describe('CurriculumService (learner read path)', () => {
+describe('moduleSlidesUrl', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    configEnv.SLIDES_PUBLIC_BASE_URL = 'http://localhost:5050/assets';
   });
 
-  it('returns 404 for a DRAFT lesson (AC-07)', async () => {
-    const repo = makeRepo();
-    repo.findLessonById.mockImplementation(async () => lessonRow({ isPublished: false }));
-    const service = new CurriculumService({ repo });
-    await expect(service.getPublishedLesson(20)).rejects.toThrow(NotFoundError);
+  it('builds the URL from SLIDES_PUBLIC_BASE_URL and the module slug', () => {
+    expect(moduleSlidesUrl('C02M03')).toBe('http://localhost:5050/assets/slides/C02M03.pdf');
   });
 
-  it('returns the lesson when published', async () => {
-    const repo = makeRepo();
-    repo.findLessonById.mockImplementation(async () => lessonRow({ isPublished: true }));
-    repo.listLessonTags.mockImplementation(async () => [{ tagId: 5, tagName: 'docker' }]);
-    const service = new CurriculumService({ repo });
-    const lesson = await service.getPublishedLesson(20);
-    expect(lesson.title).toBe('Images and Containers');
-    expect(lesson.tags).toEqual([{ tagId: 5, tagName: 'docker' }]);
+  it('is null when the base URL is empty or the module has no slug', () => {
+    expect(moduleSlidesUrl(null)).toBeNull();
+    configEnv.SLIDES_PUBLIC_BASE_URL = '';
+    expect(moduleSlidesUrl('C02M03')).toBeNull();
+  });
+});
+
+describe('AdminCurriculumService modules (course-scoped)', () => {
+  function makeAdmin(overrides: Record<string, Fn> = {}) {
+    const repo = {
+      findCourseById: vi.fn(async () => courseRow()),
+      findModuleById: vi.fn(async () => moduleRow()),
+      listModules: vi.fn(async () => [moduleRow({ moduleId: 1, moduleOrder: 1 }), moduleRow({ moduleId: 2, moduleOrder: 2 })]),
+      maxModuleOrder: vi.fn(async () => 2),
+      findModuleOrder: vi.fn(async () => null),
+      createModule: vi.fn(async () => 11),
+      bulkUpdateModuleOrders: vi.fn(async () => undefined),
+      hasModuleLearnerData: vi.fn(async () => false),
+      deleteModule: vi.fn(async () => undefined),
+      refreshCourseCounts: vi.fn(async () => undefined),
+      ...overrides,
+    };
+    const audit = { record: vi.fn(async () => undefined) };
+    return { service: new AdminCurriculumService({ repo, audit } as unknown as AdminCurriculumServiceDeps), repo };
+  }
+
+  it('appends a module at max+1 inside the course', async () => {
+    const { service, repo } = makeAdmin();
+    await service.createModule(admin, 1, { title: 'Networking' });
+    expect(repo.createModule).toHaveBeenCalledWith(expect.objectContaining({ courseId: 1, moduleOrder: 3 }), expect.anything());
   });
 
-  it('exposes course snapshots for /consumption', async () => {
-    const repo = makeRepo();
-    repo.getCanonicalCourse.mockImplementation(async () =>
-      courseRow({ totalLessons: 12, totalQuizzes: 3 }),
+  it('409s when an explicit module order is taken and 422s past 99 modules', async () => {
+    const taken = makeAdmin({ findModuleOrder: vi.fn(async () => 5) });
+    await expect(taken.service.createModule(admin, 1, { title: 'Dup order', moduleOrder: 2 })).rejects.toBeInstanceOf(ConflictError);
+    const full = makeAdmin({ maxModuleOrder: vi.fn(async () => 99) });
+    await expect(full.service.createModule(admin, 1, { title: 'Too many' })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('reorders modules only with the exact set', async () => {
+    const { service, repo } = makeAdmin();
+    await service.reorderModules(admin, 1, [2, 1]);
+    expect(repo.bulkUpdateModuleOrders).toHaveBeenCalledWith(
+      [{ moduleId: 2, moduleOrder: 1 }, { moduleId: 1, moduleOrder: 2 }],
+      expect.anything(),
     );
-    repo.countModulesByCourse.mockImplementation(async () => 4);
-    const service = new CurriculumService({ repo });
-    const snapshot = await service.getCourseSnapshot();
-    expect(snapshot).toEqual({
-      courseId: 1,
-      title: 'DevOps Mentor',
-      totalModules: 4,
-      totalLessons: 12,
-      totalQuizzes: 3,
-    });
+    await expect(service.reorderModules(admin, 1, [1])).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('refuses to delete a module with learner data', async () => {
+    const { service, repo } = makeAdmin({ hasModuleLearnerData: vi.fn(async () => true) });
+    await expect(service.deleteModule(admin, 10)).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.deleteModule).not.toHaveBeenCalled();
   });
 });
