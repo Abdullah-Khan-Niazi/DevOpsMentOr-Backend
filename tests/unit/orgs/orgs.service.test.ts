@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ORG_CONSTANTS } from '../../../src/shared/constants';
-import { ConflictError, ForbiddenError, NotFoundError } from '../../../src/shared/errors';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../../src/shared/errors';
 import { OrgService } from '../../../src/features/orgs/services/org.service';
 import { ClassService } from '../../../src/features/orgs/services/class.service';
 import type { OrgServiceDeps } from '../../../src/features/orgs/services/org.service';
@@ -452,16 +452,55 @@ describe('OrgService', () => {
   });
 
   describe('inviteProfessor (ORG-09)', () => {
-    it('rejects users already affiliated with another organization', async () => {
+    it('invites a user who is a professor in another organization and binds the invite to this org', async () => {
       deps.orgs.findUserByEmail.mockResolvedValueOnce({
         userId: 5,
         email: 'p@other.edu',
         fullName: null,
       });
-      deps.scopes.getOrgId.mockResolvedValueOnce(2);
-      await expect(service.inviteProfessor(actor, 1, 'p@other.edu')).rejects.toBeInstanceOf(
-        ConflictError,
+      deps.orgs.hasRole.mockResolvedValue(true);
+      deps.scopes.getOrgId.mockResolvedValue(2);
+      deps.memberships.getRoleInOrg.mockResolvedValueOnce(null);
+      redisClientMock.set.mockClear();
+
+      const res = await service.inviteProfessor(actor, 1, 'p@other.edu');
+
+      expect(res.inviteeEmail).toBe('p@other.edu');
+      expect(deps.memberships.getRoleInOrg).toHaveBeenCalledWith(5, 1);
+      expect(redisClientMock.set).toHaveBeenCalledWith(
+        expect.stringMatching(/^org:professor_invite_org:/),
+        '1',
+        'EX',
+        ORG_CONSTANTS.INVITE_TTL_SECONDS,
       );
+      expect(deps.invitations.insertMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects inviting an existing member of this organization with ALREADY_MEMBER (409)', async () => {
+      deps.orgs.findUserByEmail.mockResolvedValueOnce({
+        userId: 5,
+        email: 'p@acme.edu',
+        fullName: null,
+      });
+      deps.memberships.getRoleInOrg.mockResolvedValueOnce('professor');
+
+      const err = await service.inviteProfessor(actor, 1, 'p@acme.edu').catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConflictError);
+      expect(err).toMatchObject({
+        statusCode: 409,
+        errors: [expect.objectContaining({ code: 'ALREADY_MEMBER' })],
+      });
+      expect(deps.invitations.insertMany).not.toHaveBeenCalled();
+    });
+
+    it('still issues the invite when the Redis org binding fails', async () => {
+      redisClientMock.set.mockRejectedValueOnce(new Error('redis unavailable'));
+
+      const res = await service.inviteProfessor(actor, 1, 'nobody@acme.edu');
+
+      expect(res.status).toBe('pending');
+      expect(deps.invitations.insertMany).toHaveBeenCalledTimes(1);
     });
 
     it('allows inviting an email that does not have a user account yet', async () => {
@@ -470,6 +509,73 @@ describe('OrgService', () => {
       expect(res.inviteeEmail).toBe('nobody@acme.edu');
       expect(res.status).toBe('pending');
       expect(deps.email.sendInvitationEmail).toHaveBeenCalled();
+    });
+  });
+
+  describe('acceptOrgAdmin (B6)', () => {
+    const payload = JSON.stringify({ email: 'bob@example.com', userId: null, orgId: 3 });
+
+    it('accepts a valid token and grants admin of the org bound in Redis', async () => {
+      redisClientMock.get.mockResolvedValueOnce(payload);
+      redisClientMock.del.mockResolvedValueOnce(1);
+      deps.orgs.findUserById.mockResolvedValueOnce({ userId: 2, email: 'bob@example.com', fullName: 'Bob' });
+      deps.orgs.findById.mockResolvedValueOnce(orgRow({ organizationId: 3 }));
+      deps.orgs.getAdminDetail.mockResolvedValueOnce({ organizationId: 3 } as never);
+
+      await service.acceptOrgAdmin(2, 'a'.repeat(32));
+
+      expect(redisClientMock.get).toHaveBeenCalledWith(`org_admin_invite:${'a'.repeat(32)}`);
+      expect(deps.orgs.assignRole).toHaveBeenCalledWith(2, 7);
+      expect(deps.scopes.setOrgIdWithRole).toHaveBeenCalledWith(2, 3, 'org_admin');
+    });
+
+    it('rejects a missing token with 400 INVITE_TOKEN_INVALID without a Redis lookup', async () => {
+      redisClientMock.get.mockClear();
+      const err = await service.acceptOrgAdmin(2, undefined as unknown as string).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BadRequestError);
+      expect(err).toMatchObject({
+        statusCode: 400,
+        errors: [expect.objectContaining({ code: 'INVITE_TOKEN_INVALID' })],
+      });
+      expect(redisClientMock.get).not.toHaveBeenCalled();
+    });
+
+    it('rejects a short token with 400 INVITE_TOKEN_INVALID without a Redis lookup', async () => {
+      redisClientMock.get.mockClear();
+      await expect(service.acceptOrgAdmin(2, 'short')).rejects.toMatchObject({
+        statusCode: 400,
+        errors: [expect.objectContaining({ code: 'INVITE_TOKEN_INVALID' })],
+      });
+      expect(redisClientMock.get).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unknown token with 400 INVITE_TOKEN_INVALID', async () => {
+      redisClientMock.get.mockResolvedValueOnce(null);
+      await expect(service.acceptOrgAdmin(2, 'd'.repeat(32))).rejects.toMatchObject({
+        statusCode: 400,
+        errors: [expect.objectContaining({ code: 'INVITE_TOKEN_INVALID' })],
+      });
+    });
+
+    it('rejects an expired or corrupt payload with 400 INVITE_TOKEN_INVALID', async () => {
+      redisClientMock.get.mockResolvedValueOnce('{not json');
+      await expect(service.acceptOrgAdmin(2, 'b'.repeat(32))).rejects.toMatchObject({
+        statusCode: 400,
+        errors: [expect.objectContaining({ code: 'INVITE_TOKEN_INVALID' })],
+      });
+    });
+
+    it('rejects a token that was already used (claimed by a concurrent accept) with 400', async () => {
+      redisClientMock.get.mockResolvedValueOnce(payload);
+      redisClientMock.del.mockResolvedValueOnce(0);
+      deps.orgs.findUserById.mockResolvedValueOnce({ userId: 2, email: 'bob@example.com', fullName: 'Bob' });
+      deps.orgs.findById.mockResolvedValueOnce(orgRow({ organizationId: 3 }));
+
+      await expect(service.acceptOrgAdmin(2, 'c'.repeat(32))).rejects.toMatchObject({
+        statusCode: 400,
+        errors: [expect.objectContaining({ code: 'INVITE_TOKEN_INVALID' })],
+      });
+      expect(deps.orgs.assignRole).not.toHaveBeenCalled();
     });
   });
 
@@ -1033,6 +1139,66 @@ describe('ClassService', () => {
       expect(deps.orgs.findRoleId).toHaveBeenCalledWith('professor');
       expect(deps.orgs.assignRole).toHaveBeenCalledWith(2, 8);
       expect(deps.scopes.setOrgIdWithRole).toHaveBeenCalledWith(2, 1, 'professor');
+    });
+
+    describe('professor accept bound to the invite org (B6)', () => {
+      const profInv = {
+        invitationId: 6,
+        teamId: 99,
+        inviterId: 9,
+        inviteeEmail: 'prof@acme.edu',
+        inviteeUserId: null,
+        token: 'prof-tok',
+        status: 'pending' as const,
+        expiresAt: new Date(Date.now() + 60_000),
+        createdAt: new Date(),
+        acceptedAt: null,
+      };
+
+      afterEach(() => {
+        redisClientMock.get.mockReset();
+      });
+
+      it('grants the professor role in the Redis-bound org, not the inviter primary scope', async () => {
+        redisClientMock.get.mockImplementation(async (key: string) =>
+          key.startsWith('org:professor_invite_org:') ? '2' : null,
+        );
+        deps.invitations.findByToken.mockResolvedValueOnce(profInv);
+        deps.orgs.findUserById.mockResolvedValueOnce({ userId: 2, email: 'prof@acme.edu', fullName: 'Prof' });
+        deps.scopes.getOrgId.mockResolvedValue(1);
+        deps.orgs.findById.mockResolvedValue(orgRow({ organizationId: 2, name: 'Second Uni' }));
+        deps.memberships.getRoleInOrg.mockImplementation(async (uid: number, orgId: number) =>
+          uid === 9 && orgId === 2 ? 'org_admin' : null,
+        );
+
+        const result = await service.acceptInvitation(2, 'prof-tok');
+
+        expect(result).toMatchObject({ kind: 'professor', organizationName: 'Second Uni' });
+        expect(deps.scopes.getOrgId).not.toHaveBeenCalled();
+        expect(deps.memberships.getRoleInOrg).toHaveBeenCalledWith(9, 2);
+        expect(deps.scopes.setOrgIdWithRole).toHaveBeenCalledWith(2, 2, 'professor');
+      });
+
+      it('rejects with ALREADY_MEMBER when the user already has a role in the bound org', async () => {
+        redisClientMock.get.mockImplementation(async (key: string) =>
+          key.startsWith('org:professor_invite_org:') ? '2' : null,
+        );
+        deps.invitations.findByToken.mockResolvedValueOnce(profInv);
+        deps.orgs.findUserById.mockResolvedValueOnce({ userId: 2, email: 'prof@acme.edu', fullName: 'Prof' });
+        deps.orgs.findById.mockResolvedValue(orgRow({ organizationId: 2 }));
+        deps.memberships.getRoleInOrg.mockImplementation(async (uid: number, orgId: number) => {
+          if (orgId !== 2) return null;
+          return uid === 9 ? 'org_admin' : 'org_student';
+        });
+
+        const err = await service.acceptInvitation(2, 'prof-tok').catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(ConflictError);
+        expect(err).toMatchObject({
+          errors: [expect.objectContaining({ code: 'ALREADY_MEMBER' })],
+        });
+        expect(deps.scopes.setOrgIdWithRole).not.toHaveBeenCalled();
+      });
     });
   });
 

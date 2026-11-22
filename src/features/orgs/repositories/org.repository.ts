@@ -11,6 +11,7 @@ import {
 } from '../../../app/database/schema';
 import { ORG_CONSTANTS, ROLES } from '../../../shared/constants';
 import { getSkipTake } from '../../../shared/utils';
+import { sessionRepository } from '../../auth/repositories/session.repository';
 import type {
   AdminOrgListDto,
   OrgAdminDetailDto,
@@ -309,6 +310,8 @@ export class OrgRepository implements IOrgRepository {
     await db
       .delete(userRoles)
       .where(and(eq(userRoles.userId, userId), eq(userRoles.roleId, roleId)));
+    // Privilege reduction: existing access tokens must not keep the removed role.
+    await sessionRepository.deactivateAllForUser(userId);
   }
 
   async removeRoles(userId: number, roleNames: string[]): Promise<void> {
@@ -326,6 +329,8 @@ export class OrgRepository implements IOrgRepository {
     await db
       .delete(userRoles)
       .where(and(eq(userRoles.userId, userId), inArray(userRoles.roleId, roleIds)));
+    // Privilege reduction: existing access tokens must not keep the removed roles.
+    await sessionRepository.deactivateAllForUser(userId);
   }
 
   async clearEmailDomain(orgId: number): Promise<void> {

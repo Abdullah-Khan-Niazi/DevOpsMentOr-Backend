@@ -42,6 +42,40 @@ export const assignOrgAdminSchema = z
   })
   .strip();
 
+/**
+ * Org-admin invitation (platform admin): exactly one of `email` or `userId`.
+ * Without a schema a body with neither key was sent as the literal email
+ * "undefined".
+ */
+export const inviteOrgAdminSchema = z
+  .object({
+    email: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .email('Enter a valid email address.')
+      .max(255)
+      .optional(),
+    userId: z.coerce.number().int().positive().optional(),
+  })
+  .strict()
+  .refine((data) => (data.email === undefined) !== (data.userId === undefined), {
+    message: 'Provide either an email or a userId.',
+    path: ['email'],
+  });
+
+/**
+ * Org-admin invitation acceptance. The token travels in the BODY only:
+ * tokens in query strings end up in access logs and browser history.
+ * Length is enforced by the service so a missing or malformed token answers
+ * 400 INVITE_TOKEN_INVALID (contracts 0.1), the same as an expired one.
+ */
+export const acceptOrgAdminSchema = z
+  .object({
+    token: z.string().trim().optional(),
+  })
+  .strict();
+
 /** ORG-08 payload */
 export const emailDomainSchema = z
   .object({

@@ -7,6 +7,22 @@ type Mocked<T> = { [K in keyof T]: ReturnType<typeof vi.fn> };
 
 const learner = { userId: 7, ipAddress: null, userAgent: 'vitest', roles: ['org_student'] };
 
+function membership(organizationId: number, isPrimary: boolean) {
+  return {
+    membershipId: organizationId,
+    organizationId,
+    userId: learner.userId,
+    role: 'org_student' as const,
+    status: 'active' as const,
+    isPrimary,
+    joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+    invitedBy: null,
+    leftAt: null,
+    organizationName: `Org ${organizationId}`,
+    organizationSlug: `org-${organizationId}`,
+  };
+}
+
 function makeDeps(): Mocked<CourseAccessServiceDeps> {
   return {
     assignments: {
@@ -20,8 +36,8 @@ function makeDeps(): Mocked<CourseAccessServiceDeps> {
       findActiveAssignmentForUser: vi.fn(async () => null),
       hasActiveOrgSubscription: vi.fn(async () => false),
     },
-    scopes: {
-      getOrgId: vi.fn(async () => null),
+    memberships: {
+      listActiveForUser: vi.fn(async () => []),
     },
   } as unknown as Mocked<CourseAccessServiceDeps>;
 }
@@ -94,10 +110,41 @@ describe('CourseAccessService (chaos sprint)', () => {
   });
 
   it('allows a member of an org with an active subscription', async () => {
-    deps.scopes.getOrgId.mockResolvedValueOnce(1);
+    deps.memberships.listActiveForUser.mockResolvedValueOnce([membership(1, true)]);
     deps.assignments.hasActiveOrgSubscription.mockResolvedValueOnce(true);
     const access = await service.getCourseAccess(learner, 1);
     expect(access).toMatchObject({ canAccess: true, reason: 'org_subscription' });
+    expect(deps.assignments.hasActiveOrgSubscription).toHaveBeenCalledWith(1);
+  });
+
+  it('grants access through a non-primary membership with an active org subscription', async () => {
+    deps.memberships.listActiveForUser.mockResolvedValueOnce([
+      membership(1, true),
+      membership(2, false),
+    ]);
+    deps.assignments.hasActiveOrgSubscription.mockImplementation(
+      async (orgId: number) => orgId === 2,
+    );
+    const access = await service.getCourseAccess(learner, 1);
+    expect(access).toMatchObject({ canAccess: true, reason: 'org_subscription' });
+    expect(deps.assignments.hasActiveOrgSubscription).toHaveBeenCalledWith(1);
+    expect(deps.assignments.hasActiveOrgSubscription).toHaveBeenCalledWith(2);
+  });
+
+  it('denies when no active membership org holds a subscription', async () => {
+    deps.memberships.listActiveForUser.mockResolvedValueOnce([
+      membership(1, true),
+      membership(2, false),
+    ]);
+    const access = await service.getCourseAccess(learner, 1);
+    expect(access).toMatchObject({ canAccess: false, reason: 'not_entitled' });
+    expect(deps.assignments.hasActiveOrgSubscription).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not consult subscriptions when the learner has no active membership', async () => {
+    const access = await service.getCourseAccess(learner, 1);
+    expect(access).toMatchObject({ canAccess: false, reason: 'not_entitled' });
+    expect(deps.assignments.hasActiveOrgSubscription).not.toHaveBeenCalled();
   });
 
   it('denies with an actionable message when nothing entitles the learner', async () => {

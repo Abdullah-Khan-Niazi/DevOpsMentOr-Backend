@@ -20,7 +20,14 @@ import {
 import { redisClient } from '../../../app/cache/redis';
 import { env } from '../../../app/config/env';
 import { AUDIT_ACTIONS, ORG_CONSTANTS, ROLES } from '../../../shared/constants';
-import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../../shared/errors';
+import {
+  BadRequestError,
+  ConflictError,
+  ERROR_CODES,
+  ForbiddenError,
+  NotFoundError,
+} from '../../../shared/errors';
+import { logger } from '../../../shared/logger';
 import { emailService } from '../../../shared/services/email.service';
 import { auditLogService } from '../../admin/services/audit-log.service';
 import type {
@@ -39,6 +46,7 @@ import { classRepository } from '../repositories/class.repository';
 import { invitationRepository } from '../repositories/invitation.repository';
 import { orgRepository, orgScopeRepository } from '../repositories/org.repository';
 import { membershipRepository } from '../repositories/membership.repository';
+import { bindProfessorInviteOrg } from './professor-invite-binding';
 import { teamMemberRepository } from '../repositories/team-member.repository';
 
 export interface OrgServiceDeps {
@@ -422,14 +430,15 @@ export class OrgService {
       }
     }
 
+    // Multi-org: membership in ANOTHER organization (any role) never blocks
+    // the invite; only an existing role in THIS organization does.
     const existingUser = await this.deps.orgs.findUserByEmail(normalized);
     if (existingUser) {
-      const existingScope = await this.deps.scopes.getOrgId(existingUser.userId);
-      if (existingScope !== null && existingScope !== orgId) {
-        throw new ConflictError('This user is already affiliated with another organization.');
-      }
-      if (await this.deps.orgs.hasRole(existingUser.userId, ROLES.ORG_ADMIN)) {
-        throw new ConflictError('This user is an organization admin and cannot be invited as a professor.');
+      const roleInOrg = await this.deps.memberships.getRoleInOrg(existingUser.userId, orgId);
+      if (roleInOrg !== null) {
+        throw new ConflictError('This user is already a member of this organization.', [
+          { code: ERROR_CODES.ALREADY_MEMBER, role: roleInOrg },
+        ]);
       }
     }
 
@@ -441,6 +450,13 @@ export class OrgService {
 
     const token = randomUUID();
     const expiresAt = new Date(Date.now() + ORG_CONSTANTS.INVITE_TTL_SECONDS * 1000);
+    // Bind the invite to THIS organization: sentinel-team rows carry no org,
+    // and resolving it from the inviter's primary scope at accept time would
+    // land the professor in the wrong tenant for a multi-org inviter. A Redis
+    // failure must not fail the invite; accept then falls back to the scope.
+    await bindProfessorInviteOrg(token, orgId).catch((err: unknown) =>
+      logger.warn({ err, orgId }, 'Professor invite org binding failed'),
+    );
     await this.deps.invitations.insertMany([
       { teamId: sentinelTeamId, inviterId: actor.userId, inviteeEmail: normalized, token, expiresAt },
     ]);
@@ -612,15 +628,10 @@ export class OrgService {
     }
 
     if (targetUserId !== null) {
-      if (await this.deps.orgs.hasRole(targetUserId, ROLES.ORG_ADMIN)) {
-        throw new ConflictError('User is already an organization admin.');
-      }
-      const existingScope = await this.deps.scopes.getOrgId(targetUserId);
-      if (existingScope !== null && existingScope !== orgId) {
-        throw new ConflictError(
-          'ORG_SCOPE_CONFLICT: the user is already linked to another organization.',
-        );
-      }
+      // Multi-org: memberships elsewhere never block; the only rules are the
+      // same as `assignOrgAdmin` (one administered org per user, no re-invite
+      // of an existing admin of this org).
+      await this.assertCanAdministerOrg(targetUserId, orgId, 'invite');
     }
 
     const token = randomUUID();
@@ -648,11 +659,14 @@ export class OrgService {
   }
 
   async acceptOrgAdmin(userId: number, token: string): Promise<OrgAdminDetailDto> {
-    const raw = await redisClient.get(`org_admin_invite:${token}`);
-    if (!raw) {
-      throw new BadRequestError('Invitation token is invalid or has expired.');
+    if (typeof token !== 'string' || token.length < 16 || token.length > 256) {
+      throw invalidInviteToken();
     }
-    const invite = JSON.parse(raw) as { email: string; userId: number | null; orgId: number };
+    const key = `org_admin_invite:${token}`;
+    const invite = parseOrgAdminInvite(await redisClient.get(key));
+    if (!invite) {
+      throw invalidInviteToken();
+    }
     const user = await this.deps.orgs.findUserById(userId);
     if (!user) {
       throw new NotFoundError('User not found.');
@@ -664,24 +678,50 @@ export class OrgService {
       throw new NotFoundError('The inviting organization no longer exists.');
     }
 
-    // Never move an existing org scope; roles are global and a scope move
-    // would grant this invitation's admin role against another tenant.
-    const existingMembership = await this.deps.memberships.getActiveForUser(userId);
-    if (
-      existingMembership?.role === ROLES.ORG_ADMIN &&
-      existingMembership.organizationId !== invite.orgId
-    ) {
-      throw new ConflictError(
-        'You already administer another organization and cannot administer two.',
-      );
+    await this.assertCanAdministerOrg(userId, invite.orgId, 'accept');
+
+    // Claim the token atomically BEFORE granting anything, so two concurrent
+    // accepts (double click, replay) can never both succeed.
+    const claimed = await redisClient.del(key);
+    if (claimed !== 1) {
+      throw invalidInviteToken();
     }
 
     const roleId = await this.deps.orgs.findRoleId(ROLES.ORG_ADMIN);
     await this.deps.orgs.assignRole(userId, roleId);
     await this.deps.scopes.setOrgIdWithRole(userId, invite.orgId, ROLES.ORG_ADMIN);
-    await redisClient.del(`org_admin_invite:${token}`);
 
     return this.getOrgAdminDetail(invite.orgId);
+  }
+
+  /**
+   * Multi-org admin rules shared by invite and accept: an existing admin of
+   * this org is ALREADY_MEMBER; an admin of another org cannot administer a
+   * second one (same rule as `assignOrgAdmin` / `createMyOrg`). Student or
+   * professor memberships anywhere never block (per-org roles isolate them).
+   */
+  private async assertCanAdministerOrg(
+    userId: number,
+    orgId: number,
+    phase: 'invite' | 'accept',
+  ): Promise<void> {
+    const memberships = await this.deps.memberships.listActiveForUser(userId);
+    const administered = memberships.filter((m) => m.role === ROLES.ORG_ADMIN);
+    if (administered.some((m) => m.organizationId === orgId)) {
+      throw new ConflictError(
+        phase === 'invite'
+          ? 'This user is already an admin of this organization.'
+          : 'You are already an admin of this organization.',
+        [{ code: ERROR_CODES.ALREADY_MEMBER, role: ROLES.ORG_ADMIN }],
+      );
+    }
+    if (administered.length > 0) {
+      throw new ConflictError(
+        phase === 'invite'
+          ? 'This user already administers another organization and cannot administer two.'
+          : 'You already administer another organization and cannot administer two.',
+      );
+    }
   }
 
   async getOrgAnalytics(orgId: number) {
@@ -1253,7 +1293,38 @@ function crashAudit(
       ipAddress: actor.ipAddress,
       userAgent: actor.userAgent,
     })
-    .catch(() => undefined);
+    .catch((err: unknown) => logger.warn({ err, action }, 'Audit write failed'));
+}
+
+interface OrgAdminInvitePayload {
+  email: string;
+  userId: number | null;
+  orgId: number;
+}
+
+/** Corrupt or foreign Redis payloads are treated as an invalid token, never a 500. */
+function parseOrgAdminInvite(raw: string | null): OrgAdminInvitePayload | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<OrgAdminInvitePayload>;
+    if (
+      typeof value.email !== 'string' ||
+      typeof value.orgId !== 'number' ||
+      !Number.isInteger(value.orgId) ||
+      value.orgId <= 0
+    ) {
+      return null;
+    }
+    return { email: value.email, userId: typeof value.userId === 'number' ? value.userId : null, orgId: value.orgId };
+  } catch {
+    return null;
+  }
+}
+
+function invalidInviteToken(): BadRequestError {
+  return new BadRequestError('This invitation link is invalid, expired or already used.', [
+    { code: ERROR_CODES.INVITE_TOKEN_INVALID },
+  ]);
 }
 
 export const orgService = new OrgService();
