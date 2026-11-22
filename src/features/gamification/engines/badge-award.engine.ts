@@ -1,9 +1,10 @@
-import type { LearnerProgressSnapshot } from '../../progress/dto/progress.dto';
-import type { BadgeAwardedEvent, BadgeType } from '../dto/gamification.dto';
+import { awardKeys } from '../config/award-keys';
+import { logger } from '../../../shared/logger';
+import type { BadgeAwardedEvent, BadgeType, LearnerProgressSnapshot } from '../dto/gamification.dto';
 import type { BadgeRow, GamificationRepository } from '../repositories/gamification.repository';
 import { gamificationRepository } from '../repositories/gamification.repository';
-import type { PointsService } from '../services/points.service';
-import { pointsService } from '../services/points.service';
+import type { AwardService } from '../services/award.service';
+import { awardService } from '../services/award.service';
 
 /** Context required by the badge evaluator beyond the progress snapshot. */
 export interface BadgeAwardContext {
@@ -18,10 +19,19 @@ export interface BadgeEvaluationResult {
   reason: string | null;
 }
 
-function threshold(triggerValue: Record<string, unknown> | null, key = 'count'): number {
+/**
+ * Positive integer read from `criteria.triggerValue`. A missing or malformed
+ * value yields null so the trigger is never met (a default of 0 would award the
+ * badge to every learner).
+ */
+function threshold(triggerValue: Record<string, unknown> | null, key = 'count'): number | null {
   const raw = triggerValue?.[key];
-  const value = typeof raw === 'number' ? raw : Number(raw);
-  return Number.isFinite(value) ? value : 0;
+  const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    logger.debug({ key, triggerValue }, 'Badge trigger_value is invalid; trigger not met');
+    return null;
+  }
+  return value;
 }
 
 export interface BadgeAwardEngineDeps {
@@ -29,14 +39,19 @@ export interface BadgeAwardEngineDeps {
     GamificationRepository,
     'listBadgesWithCriteria' | 'hasUserBadge' | 'insertUserBadge'
   >;
-  points: Pick<PointsService, 'credit'>;
+  award: Pick<AwardService, 'withUserLock' | 'apply'>;
 }
 
 function defaultDeps(): BadgeAwardEngineDeps {
   return {
     repo: gamificationRepository,
-    points: pointsService,
+    award: awardService,
   };
+}
+
+/** Duplicate primary key: another request already awarded this row (ER_DUP_ENTRY). */
+function isDuplicateKeyError(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === 'ER_DUP_ENTRY';
 }
 
 /**
@@ -59,25 +74,33 @@ export class BadgeAwardEngine {
     }
 
     switch (trigger.triggerType) {
-      case 'course_complete':
-        return snapshot.courseProgressPct >= 100
-          ? { matched: true, reason: 'Completed the full course.' }
+      case 'course_complete': {
+        const rawCourseId = trigger.triggerValue?.courseId;
+        if (rawCourseId === undefined || rawCourseId === null) {
+          return snapshot.completedCourseIds.length > 0
+            ? { matched: true, reason: 'Completed a course.' }
+            : { matched: false, reason: null };
+        }
+        const courseId = Number(rawCourseId);
+        return Number.isSafeInteger(courseId) && snapshot.completedCourseIds.includes(courseId)
+          ? { matched: true, reason: `Completed course #${courseId}.` }
           : { matched: false, reason: null };
+      }
       case 'lab_complete': {
         const count = threshold(trigger.triggerValue);
-        return snapshot.completedLabCount >= count
+        return count !== null && snapshot.completedLabCount >= count
           ? { matched: true, reason: `Completed ${count}+ labs.` }
           : { matched: false, reason: null };
       }
       case 'achievement_unlock': {
         const achievementId = threshold(trigger.triggerValue, 'achievementId');
-        return context.unlockedAchievementIds.has(achievementId)
+        return achievementId !== null && context.unlockedAchievementIds.has(achievementId)
           ? { matched: true, reason: `Unlocked achievement #${achievementId}.` }
           : { matched: false, reason: null };
       }
       case 'points_threshold': {
         const points = threshold(trigger.triggerValue, 'points');
-        return context.pointsBalance >= points
+        return points !== null && context.pointsBalance >= points
           ? { matched: true, reason: `Reached ${points} total points.` }
           : { matched: false, reason: null };
       }
@@ -100,31 +123,64 @@ export class BadgeAwardEngine {
 
     for (const badge of badges) {
       const { matched, reason } = this.evaluate(snapshot, badge, context);
-      if (!matched) {
+      // Cheap pre-check outside the lock: a held badge keeps matching on every
+      // learning event, and re-locking for it each time is wasted work. The
+      // locked unit re-checks, so this read never decides the award alone.
+      if (!matched || (await this.deps.repo.hasUserBadge(userId, badge.badgeId))) {
         continue;
       }
-      if (await this.deps.repo.hasUserBadge(userId, badge.badgeId)) {
-        continue;
+      const awarded = await this.awardBadge(userId, badge, reason);
+      if (awarded) {
+        events.push(awarded);
       }
-      await this.deps.repo.insertUserBadge(userId, badge.badgeId, reason);
-      if (badge.pointsRequired > 0) {
-        await this.deps.points.credit(
-          userId,
-          badge.pointsRequired,
-          'achievement',
-          badge.badgeId,
-          `Badge awarded: ${badge.badgeName}`,
-        );
-      }
-      events.push({
-        userId,
-        badgeId: badge.badgeId,
-        badgeName: badge.badgeName,
-        badgeType: badge.badgeType as BadgeType,
-        awardedAt: new Date(),
-      });
     }
     return events;
+  }
+
+  /**
+   * One award unit under the user lock: re-check `user_badges`, insert the
+   * badge, then write the reward through the ledger. A duplicate key rolls
+   * the unit back and skips it; other failures are logged and skipped so one
+   * broken badge does not block the rest.
+   */
+  private async awardBadge(
+    userId: number,
+    badge: BadgeRow,
+    reason: string | null,
+  ): Promise<BadgeAwardedEvent | null> {
+    const { repo, award } = this.deps;
+    try {
+      const awarded = await award.withUserLock(userId, async (tx) => {
+        if (await repo.hasUserBadge(userId, badge.badgeId, tx)) {
+          return false;
+        }
+        await repo.insertUserBadge(userId, badge.badgeId, reason, tx);
+        await award.apply(tx, {
+          userId,
+          key: awardKeys.badge(badge.badgeId),
+          points: badge.pointsRequired,
+          sourceType: 'achievement',
+          sourceId: badge.badgeId,
+          label: `Badge awarded: ${badge.badgeName}`,
+        });
+        return true;
+      });
+      if (!awarded) {
+        return null;
+      }
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) {
+        logger.error({ err: error, userId, badgeId: badge.badgeId }, 'Badge award failed');
+      }
+      return null;
+    }
+    return {
+      userId,
+      badgeId: badge.badgeId,
+      badgeName: badge.badgeName,
+      badgeType: badge.badgeType as BadgeType,
+      awardedAt: new Date(),
+    };
   }
 }
 

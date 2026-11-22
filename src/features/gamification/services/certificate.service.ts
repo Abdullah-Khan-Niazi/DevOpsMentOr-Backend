@@ -8,8 +8,7 @@ import { gamificationRepository } from '../repositories/gamification.repository'
 export interface CertificateServiceDeps {
   repo: Pick<
     GamificationRepository,
-    | 'countTotalPublishedLessons'
-    | 'countCompletedLessons'
+    | 'isCourseCompleted'
     | 'listRequiredQuizIds'
     | 'countPassedRequiredQuizzes'
     | 'getGradeData'
@@ -67,16 +66,14 @@ export class CertificateService {
 
   /** F7 §02 forward hook: called by F5's progress engine on course completion. */
   async issueCertificate(userId: number, courseId: number): Promise<CertificateDto> {
-    const [totalLessons, completedLessons] = await Promise.all([
-      this.deps.repo.countTotalPublishedLessons(courseId),
-      this.deps.repo.countCompletedLessons(userId, courseId),
+    const [courseCompleted, requiredQuizIds] = await Promise.all([
+      this.deps.repo.isCourseCompleted(userId, courseId),
+      this.deps.repo.listRequiredQuizIds(courseId),
     ]);
-    const requiredQuizIds = await this.deps.repo.listRequiredQuizIds(courseId);
     const passedRequiredQuizzes = await this.deps.repo.countPassedRequiredQuizzes(userId, requiredQuizIds);
 
-    const allLessonsComplete = totalLessons > 0 && completedLessons >= totalLessons;
     const allQuizzesPassed = passedRequiredQuizzes >= requiredQuizIds.length;
-    if (!allLessonsComplete || !allQuizzesPassed) {
+    if (!courseCompleted || !allQuizzesPassed) {
       throw new BadRequestError('Course has not been fully completed yet.');
     }
 
@@ -85,8 +82,8 @@ export class CertificateService {
       return toCertificateDto(existing);
     }
 
-    const { passedSum, passedCount } = await this.deps.repo.getGradeData(courseId);
-    const grade = passedCount > 0 ? round2(passedSum / passedCount) : null;
+    const { scoreSum, quizCount } = await this.deps.repo.getGradeData(userId, courseId);
+    const grade = quizCount > 0 ? round2(scoreSum / quizCount) : null;
 
     let lastError: unknown;
     for (let attempt = 0; attempt < this.deps.maxNumberCollisionRetries; attempt += 1) {
