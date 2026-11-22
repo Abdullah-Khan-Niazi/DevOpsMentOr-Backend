@@ -10,6 +10,83 @@ dotenv.config();
  * hardcoded fallbacks for credentials: missing secrets fail fast at boot.
  * All values crossing into the application are parsed and validated here.
  */
+/**
+ * Outbound service base URL (SSRF control, contracts 8.3): either empty (the
+ * adapter stays disabled) or an absolute http(s) URL fixed by the deployment.
+ * No request input ever selects the host the backend connects to.
+ */
+const outboundBaseUrlSchema = z
+  .string()
+  .trim()
+  .default('')
+  .refine(
+    (v) => {
+      if (v === '') return true;
+      try {
+        const url = new URL(v);
+        return /^https?:$/.test(url.protocol) && url.username === '' && url.password === '';
+      } catch {
+        return false;
+      }
+    },
+    { message: 'Must be empty or an absolute http(s) URL without credentials.' },
+  );
+
+/**
+ * OAuth redirect allowlist (contracts 11.6): comma-separated absolute http(s)
+ * URLs. Each entry must match `redirectUri` exactly; the wildcard is refused.
+ */
+const oauthRedirectUrisSchema = z
+  .string()
+  .default('http://localhost:5173/api/auth/callback/google,http://localhost:5173/api/auth/callback/github')
+  .refine(
+    (v) => {
+      const entries = v
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+      if (entries.length === 0) return false;
+      return entries.every((entry) => {
+        if (entry === '*' || entry.includes('*')) return false;
+        try {
+          const url = new URL(entry);
+          return /^https?:$/.test(url.protocol) && url.username === '' && url.password === '';
+        } catch {
+          return false;
+        }
+      });
+    },
+    { message: 'Must be a comma list of absolute http(s) URLs without wildcards.' },
+  )
+  .transform((v) =>
+    v
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+  );
+
+/**
+ * Slides public base URL (contracts 11.2): empty disables slides, otherwise an
+ * absolute http(s) URL without a trailing slash. Fixed by the deployment.
+ */
+const slidesPublicBaseUrlSchema = z
+  .string()
+  .trim()
+  .default('http://localhost:5050/assets')
+  .refine(
+    (v) => {
+      if (v === '') return true;
+      if (v.endsWith('/')) return false;
+      try {
+        const url = new URL(v);
+        return /^https?:$/.test(url.protocol) && url.username === '' && url.password === '';
+      } catch {
+        return false;
+      }
+    },
+    { message: 'Must be empty or an absolute http(s) URL without a trailing slash.' },
+  );
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
@@ -34,6 +111,21 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   /** Number of trusted reverse-proxy hops (0 disables `trust proxy`). */
   TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(0),
+
+  /**
+   * Auth cookie `Secure` flag (contracts 11.5). Parsed as a boolean; when unset
+   * it defaults to `NODE_ENV === 'production'` (see the transform below).
+   */
+  AUTH_COOKIE_SECURE: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === 'true')),
+  /** Auth cookie `Domain` attribute; empty leaves the cookie host-only. */
+  AUTH_COOKIE_DOMAIN: z.string().default(''),
+  /** Exact-match allowlist for OAuth `redirectUri` (contracts 11.6). */
+  OAUTH_REDIRECT_URIS: oauthRedirectUrisSchema,
+  /** Public base for lab slides (contracts 11.2); empty disables slides. */
+  SLIDES_PUBLIC_BASE_URL: slidesPublicBaseUrlSchema,
 
   OTP_TTL_MINUTES: z.coerce.number().int().positive().default(15),
   /**
@@ -68,10 +160,16 @@ const envSchema = z.object({
   // ─── F6 Labs / Execution Engine / AI Mentor ───────────────────────────────
   // Empty by default: the adapters fail with a user-safe error until the
   // deployment supplies a real endpoint/key (F6 §12 BLOCKING conditions).
-  CONTAINER_ORCHESTRATION_API_URL: z.string().default(''),
+  CONTAINER_ORCHESTRATION_API_URL: outboundBaseUrlSchema,
   /** Optional bearer key sent to the container orchestration API when set. */
   CONTAINER_ORCHESTRATION_API_KEY: z.string().default(''),
-  LLM_API_URL: z.string().default(''),
+  /** Cloudflare R2 (course slide decks). All empty disables slides (503 SLIDES_UNAVAILABLE). */
+  R2_ACCOUNT_ID: z.string().default(''),
+  R2_ENDPOINT: z.string().url().or(z.literal('')).default(''),
+  R2_ACCESS_KEY_ID: z.string().default(''),
+  R2_SECRET_ACCESS_KEY: z.string().default(''),
+  R2_BUCKET: z.string().default(''),
+  LLM_API_URL: outboundBaseUrlSchema,
   LLM_API_KEY: z.string().default(''),
   AI_MENTOR_MODEL: z.string().default(''),
   AI_MENTOR_SYSTEM_PROMPT: z.string().default(
@@ -107,7 +205,11 @@ const envSchema = z.object({
   STRIPE_CURRENCY: z.string().length(3).default('usd'),
   // Billing cycle resolution for `subscriptions.end_date` (invariant 12).
   SUBSCRIPTION_EXPIRY_CHECK_INTERVAL_HOURS: z.coerce.number().int().positive().default(24),
-});
+}).transform((values) => ({
+  ...values,
+  // Secure cookies by default in production only; an explicit AUTH_COOKIE_SECURE wins.
+  AUTH_COOKIE_SECURE: values.AUTH_COOKIE_SECURE ?? values.NODE_ENV === 'production',
+}));
 
 const parsed = envSchema.safeParse(process.env);
 
