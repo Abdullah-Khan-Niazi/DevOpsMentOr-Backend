@@ -34,11 +34,23 @@ export async function authenticate(
     }
 
     if (payload.jti) {
-      const row = await db
+      let row = await db
         .select({ isActive: sessions.isActive, userId: sessions.userId })
         .from(sessions)
         .where(eq(sessions.sessionToken, payload.jti))
         .limit(1);
+
+      if (row.length === 0) {
+        const graceSessionIdRaw = await redisClient.get(`auth:prev_jti:${payload.jti}`);
+        const graceSessionId = graceSessionIdRaw ? Number(graceSessionIdRaw) : NaN;
+        if (Number.isInteger(graceSessionId) && graceSessionId > 0) {
+          row = await db
+            .select({ isActive: sessions.isActive, userId: sessions.userId })
+            .from(sessions)
+            .where(eq(sessions.sessionId, graceSessionId))
+            .limit(1);
+        }
+      }
 
       if (row.length === 0 || !row[0].isActive) {
         throw new UnauthorizedError('Invalid or expired access token.');

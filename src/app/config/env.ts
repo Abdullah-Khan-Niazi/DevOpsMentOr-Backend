@@ -38,9 +38,10 @@ const outboundBaseUrlSchema = z
  */
 const oauthRedirectUrisSchema = z
   .string()
-  .default('http://localhost:5173/api/auth/callback/google,http://localhost:5173/api/auth/callback/github')
+  .optional()
   .refine(
     (v) => {
+      if (v === undefined || v.trim() === '') return true;
       const entries = v
         .split(',')
         .map((item) => item.trim())
@@ -57,13 +58,36 @@ const oauthRedirectUrisSchema = z
       });
     },
     { message: 'Must be a comma list of absolute http(s) URLs without wildcards.' },
-  )
-  .transform((v) =>
-    v
-      .split(',')
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0),
   );
+
+function deriveOAuthRedirectUris(frontendUrl: string, corsOrigin: string): string[] {
+  const origins = new Set<string>();
+  const candidates = [frontendUrl, ...corsOrigin.split(',').map((item) => item.trim())];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const url = new URL(candidate);
+      if (/^https?:$/.test(url.protocol) && url.username === '' && url.password === '') {
+        origins.add(url.origin);
+      }
+    } catch {
+      // Ignore malformed origin strings; validated URLs still supply redirect URIs.
+    }
+  }
+  const derived: string[] = [];
+  for (const origin of origins) {
+    derived.push(`${origin}/api/auth/callback/google`, `${origin}/api/auth/callback/github`);
+  }
+  return derived;
+}
+
+function isSameOriginUrl(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Slides public base URL (contracts 11.2): empty disables slides, otherwise an
@@ -109,8 +133,11 @@ const envSchema = z.object({
 
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
-  /** Number of trusted reverse-proxy hops (0 disables `trust proxy`). */
-  TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(0),
+  /** Number of trusted reverse-proxy hops (0 disables `trust proxy`; defaults to 1 in production). */
+  TRUST_PROXY: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.coerce.number().int().min(0).max(5).optional(),
+  ),
 
   /**
    * Auth cookie `Secure` flag (contracts 11.5). Parsed as a boolean; when unset
@@ -120,9 +147,14 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .optional()
     .transform((v) => (v === undefined ? undefined : v === 'true')),
+  /** Auth cookie `SameSite` policy (`auto` resolves to `none` for cross-origin HTTPS deployments). */
+  AUTH_COOKIE_SAME_SITE: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.enum(['auto', 'strict', 'lax', 'none']).default('auto'),
+  ),
   /** Auth cookie `Domain` attribute; empty leaves the cookie host-only. */
   AUTH_COOKIE_DOMAIN: z.string().default(''),
-  /** Exact-match allowlist for OAuth `redirectUri` (contracts 11.6). */
+  /** Exact-match allowlist for OAuth `redirectUri` (contracts 11.6); derived from FRONTEND_URL/CORS_ORIGIN when unset. */
   OAUTH_REDIRECT_URIS: oauthRedirectUrisSchema,
   /** Public base for lab slides (contracts 11.2); empty disables slides. */
   SLIDES_PUBLIC_BASE_URL: slidesPublicBaseUrlSchema,
@@ -205,11 +237,33 @@ const envSchema = z.object({
   STRIPE_CURRENCY: z.string().length(3).default('usd'),
   // Billing cycle resolution for `subscriptions.end_date` (invariant 12).
   SUBSCRIPTION_EXPIRY_CHECK_INTERVAL_HOURS: z.coerce.number().int().positive().default(24),
-}).transform((values) => ({
-  ...values,
-  // Secure cookies by default in production only; an explicit AUTH_COOKIE_SECURE wins.
-  AUTH_COOKIE_SECURE: values.AUTH_COOKIE_SECURE ?? values.NODE_ENV === 'production',
-}));
+}).transform((values) => {
+  const baseSecure = values.AUTH_COOKIE_SECURE ?? values.NODE_ENV === 'production';
+  const resolvedSameSite: 'strict' | 'lax' | 'none' =
+    values.AUTH_COOKIE_SAME_SITE === 'auto'
+      ? baseSecure && !isSameOriginUrl(values.FRONTEND_URL, values.PUBLIC_API_URL)
+        ? 'none'
+        : 'strict'
+      : values.AUTH_COOKIE_SAME_SITE;
+  const resolvedSecure = resolvedSameSite === 'none' ? true : baseSecure;
+  const explicitOAuthUris = (values.OAUTH_REDIRECT_URIS ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  const resolvedOAuthUris =
+    explicitOAuthUris.length > 0
+      ? explicitOAuthUris
+      : deriveOAuthRedirectUris(values.FRONTEND_URL, values.CORS_ORIGIN);
+
+  return {
+    ...values,
+    TRUST_PROXY: values.TRUST_PROXY ?? (values.NODE_ENV === 'production' ? 1 : 0),
+    // Secure cookies by default in production only (and always required for SameSite=None).
+    AUTH_COOKIE_SECURE: resolvedSecure,
+    AUTH_COOKIE_SAME_SITE: resolvedSameSite,
+    OAUTH_REDIRECT_URIS: resolvedOAuthUris,
+  };
+});
 
 const parsed = envSchema.safeParse(process.env);
 

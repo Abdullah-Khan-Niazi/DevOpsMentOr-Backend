@@ -118,6 +118,16 @@ describe('login sets the session cookies', () => {
     expect(csrf).toMatch(/SameSite=Strict/i);
     expect(csrf).toMatch(/Path=\//);
     expect(cookieValue(csrf).length).toBeGreaterThanOrEqual(32);
+    expect(res.headers['x-csrf-token']).toBe(cookieValue(csrf));
+  });
+
+  it('GET /auth/csrf ensures dm_csrf cookie and returns token in body and X-CSRF-Token header', async () => {
+    const res = await request(app).get(`${AUTH}/csrf`);
+    expect(res.status).toBe(200);
+    const headerToken = res.headers['x-csrf-token'] as string;
+    expect(headerToken.length).toBeGreaterThanOrEqual(32);
+    expect(res.body.data.csrfToken).toBe(headerToken);
+    expect(cookieValue(cookie(res, 'dm_csrf'))).toBe(headerToken);
   });
 
   it('marks both cookies Secure exactly when AUTH_COOKIE_SECURE is on', async () => {
@@ -220,6 +230,14 @@ describe('POST /auth/refresh', () => {
     expect(res.status).toBe(401);
     expect(JSON.stringify(res.body)).toContain('REFRESH_TOKEN_REUSED');
     expect(cookie(res, 'dm_rt')).toMatch(/Expires=Thu, 01 Jan 1970/i);
+  });
+
+  it('transient 500 failure in refreshToken does NOT clear cookies', async () => {
+    authMock.refreshToken.mockRejectedValue(new Error('Transient Redis timeout'));
+    const res = await csrfPost(`${AUTH}/refresh`);
+    expect(res.status).toBe(500);
+    expect(cookie(res, 'dm_rt')).toBeUndefined();
+    expect(cookie(res, 'dm_csrf')).toBeUndefined();
   });
 });
 

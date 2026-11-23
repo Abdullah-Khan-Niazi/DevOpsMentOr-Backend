@@ -6,6 +6,7 @@ import {
   authorizeAnyPermissions,
   authorizePermissions,
   optionalAuthenticate,
+  rateLimit,
   validateRequest,
 } from '../../../shared/middleware';
 import { asyncHandler } from '../../../shared/utils';
@@ -51,6 +52,9 @@ import {
 import { userIdParamSchema } from '../../users/validators/user.validator';
 
 const orgRoutes = Router();
+const orgCreateLimiter = rateLimit({ scope: 'org-create', windowSeconds: 3600, max: 20, keyBy: 'user' });
+const orgInviteLimiter = rateLimit({ scope: 'org-invite', windowSeconds: 900, max: 60, keyBy: 'user' });
+const orgJoinLimiter = rateLimit({ scope: 'org-join', windowSeconds: 900, max: 30, keyBy: 'user' });
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: ORG_CONSTANTS.IMPORT_FILE_SIZE_LIMIT },
@@ -152,6 +156,7 @@ orgRoutes.post(
 orgRoutes.post(
   '/org',
   authenticate,
+  orgCreateLimiter,
   validateRequest(createOrgSchema, 'body'),
   asyncHandler((req, res) => orgController.createMyOrg(req, res)),
 );
@@ -200,6 +205,7 @@ orgRoutes.post(
   '/org/professors/invite',
   authenticate,
   authorizePermissions(PERMISSIONS.ORG_PROFESSORS_INVITE),
+  orgInviteLimiter,
   requireOrgStaff(),
   validateRequest(inviteProfessorSchema, 'body'),
   asyncHandler((req, res) => orgController.inviteProfessor(req, res)),
@@ -355,6 +361,7 @@ orgRoutes.post(
   '/org/classes/:classId/students/invite',
   authenticate,
   authorizeAnyPermissions(PERMISSIONS.CLASS_STUDENTS_INVITE, PERMISSIONS.ORG_STUDENTS_INVITE),
+  orgInviteLimiter,
   validateRequest(classIdParamSchema, 'params'),
   requireClassStaffFromParams(),
   validateRequest(inviteStudentsSchema, 'body'),
@@ -365,6 +372,7 @@ orgRoutes.post(
   '/org/classes/:classId/invitations/:invitationId/resend',
   authenticate,
   authorizeAnyPermissions(PERMISSIONS.CLASS_STUDENTS_INVITE, PERMISSIONS.ORG_STUDENTS_INVITE),
+  orgInviteLimiter,
   validateRequest(classAndInvitationParamSchema, 'params'),
   requireClassStaffFromParams(),
   asyncHandler((req, res) => classController.resendInvitation(req, res)),
@@ -395,6 +403,7 @@ orgRoutes.get(
 orgRoutes.get(
   '/enroll/validate',
   optionalAuthenticate,
+  orgJoinLimiter,
   validateRequest(inviteTokenSchema, 'query'),
   asyncHandler((req, res) => enrollmentController.previewInvitation(req, res)),
 );
@@ -402,6 +411,7 @@ orgRoutes.get(
 orgRoutes.post(
   '/enroll/accept',
   authenticate,
+  orgJoinLimiter,
   validateRequest(inviteTokenSchema, 'body'),
   asyncHandler((req, res) => enrollmentController.acceptInvitation(req, res)),
 );
@@ -425,6 +435,7 @@ orgRoutes.get(
 orgRoutes.post(
   '/student/classes/join',
   authenticate,
+  orgJoinLimiter,
   validateRequest(joinClassCodeSchema, 'body'),
   asyncHandler((req, res) => classController.joinClass(req, res)),
 );

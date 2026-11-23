@@ -281,7 +281,7 @@ describe('OrgService', () => {
       expect(deps.scopes.setOrgIdWithRole).toHaveBeenCalledWith(9, 1, 'org_admin');
     });
 
-    it('rejects a user who already administers an organization', async () => {
+    it('allows a user who already administers an organization to found another (multi-org)', async () => {
       deps.memberships.getActiveForUser.mockResolvedValueOnce({
         membershipId: 1,
         organizationId: 2,
@@ -293,9 +293,22 @@ describe('OrgService', () => {
         invitedBy: null,
         leftAt: null,
       });
+      deps.orgs.getAdminDetail.mockResolvedValueOnce({
+        ...orgRow(),
+        adminUserId: 9,
+        adminEmail: 'actor@example.com',
+      });
+
+      const result = await service.createMyOrg(actor, { name: 'Acme', slug: 'acme' });
+
+      expect(result.organizationId).toBe(1);
+      expect(deps.scopes.setOrgIdWithRole).toHaveBeenCalledWith(9, 1, 'org_admin');
+    });
+
+    it('rejects a platform administrator from founding a self-service organization', async () => {
       await expect(
-        service.createMyOrg(actor, { name: 'Acme', slug: 'acme' }),
-      ).rejects.toBeInstanceOf(ConflictError);
+        service.createMyOrg({ ...actor, roles: ['platform_admin'] }, { name: 'Acme', slug: 'acme' }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
     });
 
     it('allows a student of another org to found their own (multi-org)', async () => {
@@ -416,18 +429,18 @@ describe('OrgService', () => {
       );
     });
 
-    it('throws ConflictError when the user already administers another org', async () => {
-      deps.memberships.getActiveForUser.mockResolvedValueOnce({
-        membershipId: 1,
-        organizationId: 2,
-        userId: 2,
-        role: 'org_admin',
-        status: 'active',
-        isPrimary: true,
-        joinedAt: new Date(),
-        invitedBy: null,
-        leftAt: null,
-      });
+    it('allows assigning a user who already administers another org (multi-org)', async () => {
+      deps.memberships.getRoleInOrg.mockResolvedValueOnce(null);
+      deps.orgs.getAdminDetail.mockResolvedValueOnce({ ...orgRow(), adminUserId: 2, adminEmail: 'bob@example.com' });
+
+      const result = await service.assignOrgAdmin(actor, 1, 2);
+
+      expect(result.adminEmail).toBe('bob@example.com');
+      expect(deps.scopes.setOrgIdWithRole).toHaveBeenCalledWith(2, 1, 'org_admin');
+    });
+
+    it('throws ConflictError when the user already administers the same org', async () => {
+      deps.memberships.getRoleInOrg.mockResolvedValueOnce('org_admin');
       await expect(service.assignOrgAdmin(actor, 1, 2)).rejects.toBeInstanceOf(ConflictError);
     });
   });
@@ -776,28 +789,54 @@ describe('ClassService', () => {
       expect(deps.scopes.setOrgIdWithRole).toHaveBeenCalledWith(2, 1, 'org_student');
     });
 
-    it('blocks staff accounts from consuming a student join code', async () => {
+    it('blocks staff accounts of the target organization from consuming a student join code', async () => {
       redisClientMock.incr.mockResolvedValueOnce(1);
       redisClientMock.get.mockResolvedValueOnce(
         JSON.stringify({ classId: 10, organizationId: 1 }),
       );
-      deps.orgs.hasRole.mockImplementation(async (_id: number, role: string) => role === 'professor');
+      deps.memberships.getRoleInOrg.mockResolvedValueOnce('professor');
 
       await expect(
         service.joinClassWithCode({ ...actor, userId: 2 }, 'abcd2345'),
       ).rejects.toBeInstanceOf(ConflictError);
     });
 
-    it('rejects a code from a different organization than the caller scope', async () => {
+    it('allows joining a class in another organization for multi-org learners', async () => {
       redisClientMock.incr.mockResolvedValueOnce(1);
       redisClientMock.get.mockResolvedValueOnce(
         JSON.stringify({ classId: 10, organizationId: 1 }),
       );
       deps.scopes.getOrgId.mockResolvedValueOnce(2);
 
+      const result = await service.joinClassWithCode({ ...actor, userId: 2 }, 'abcd2345');
+
+      expect(result.classId).toBe(10);
+      expect(deps.scopes.setOrgIdWithRole).toHaveBeenCalledWith(2, 1, 'org_student');
+    });
+
+    it('enforces organization emailDomain evenly for both join code and invite link', async () => {
+      deps.orgs.getEmailDomain.mockResolvedValue('acme.edu');
+      deps.orgs.findUserById.mockResolvedValue({ userId: 2, email: 'bob@other.org', fullName: 'Bob' });
+
+      redisClientMock.incr.mockResolvedValueOnce(1);
+      redisClientMock.get.mockResolvedValueOnce(JSON.stringify({ classId: 10, organizationId: 1 }));
       await expect(
         service.joinClassWithCode({ ...actor, userId: 2 }, 'abcd2345'),
-      ).rejects.toBeInstanceOf(ConflictError);
+      ).rejects.toBeInstanceOf(ForbiddenError);
+
+      deps.invitations.findByToken.mockResolvedValueOnce({
+        invitationId: 5,
+        teamId: 10,
+        inviterId: 9,
+        inviteeEmail: 'bob@other.org',
+        inviteeUserId: null,
+        token: 'tok',
+        status: 'pending',
+        expiresAt: new Date(Date.now() + 60_000),
+        createdAt: new Date(),
+        acceptedAt: null,
+      });
+      await expect(service.acceptInvitation(2, 'tok')).rejects.toBeInstanceOf(ForbiddenError);
     });
 
     it('rejects an unknown or expired code', async () => {

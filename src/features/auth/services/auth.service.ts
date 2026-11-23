@@ -16,6 +16,7 @@ import {
   revocationService,
 } from '../../../shared/services';
 import { ROLES, UserStatus, getUserStatus } from '../../../shared/constants';
+import { redisClient } from '../../../app/cache/redis';
 import { env } from '../../../app/config/env';
 import { db, users } from '../../../app/database';
 import { countries, userProfiles } from '../../../app/database/schema';
@@ -463,6 +464,13 @@ export class AuthService {
       // read and the update: the issued pair is not stored, so it must not leave.
       throw this.invalidRefreshError();
     }
+    if (session.sessionToken) {
+      try {
+        await redisClient.set(`auth:prev_jti:${session.sessionToken}`, String(session.sessionId), 'EX', 15);
+      } catch {
+        // Best-effort grace window for concurrent requests using the just-rotated access JWT.
+      }
+    }
     await this.persistRefreshSessionMapping(newPair.refreshJti, session.sessionId, newPair.refreshExpiresAt);
 
     return {
@@ -900,13 +908,14 @@ export class AuthService {
       input.codeVerifier,
     );
 
-    const existingUser = await this.usersRepo.findByEmail(oauthUser.email);
+    const normalizedEmail = oauthUser.email.trim().toLowerCase();
+    const existingUser = await this.usersRepo.findByEmail(normalizedEmail);
     if (existingUser) {
       throw new ConflictError('An account with this email already exists. Please log in instead.');
     }
 
     const pendingToken = await createPendingOAuth({
-      email: oauthUser.email,
+      email: normalizedEmail,
       name: input.fullName ?? oauthUser.name,
       provider: oauthUser.provider,
       providerId: oauthUser.providerId,
@@ -917,7 +926,7 @@ export class AuthService {
     return {
       exists: false,
       pendingToken,
-      email: oauthUser.email,
+      email: normalizedEmail,
       name: input.fullName ?? oauthUser.name,
       provider: oauthUser.provider,
     };

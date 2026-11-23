@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, like } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, like, ne } from 'drizzle-orm';
 import { db } from '../../../app/database';
 import {
   organizationMemberships,
@@ -424,10 +424,14 @@ export class OrgScopeRepository implements IOrgScopeRepository {
         .values({ userId, settingKey: ORG_CONSTANTS.ORG_ID_SETTING_KEY, settingValue: orgId })
         .onDuplicateKeyUpdate({ set: { settingValue: orgId } });
       await tx
+        .update(organizationMemberships)
+        .set({ isPrimary: false })
+        .where(and(eq(organizationMemberships.userId, userId), ne(organizationMemberships.organizationId, orgId)));
+      await tx
         .insert(organizationMemberships)
-        .values({ userId, organizationId: orgId, role, status: 'active' })
+        .values({ userId, organizationId: orgId, role, status: 'active', isPrimary: true })
         .onDuplicateKeyUpdate({
-          set: { role, status: 'active', leftAt: null },
+          set: { role, status: 'active', leftAt: null, isPrimary: true },
         });
     });
   }

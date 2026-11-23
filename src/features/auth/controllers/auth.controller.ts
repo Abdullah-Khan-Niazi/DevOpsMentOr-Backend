@@ -1,7 +1,14 @@
 import type { Request, Response } from 'express';
 import { HTTP_STATUS } from '../../../shared/constants';
+import { ForbiddenError, UnauthorizedError } from '../../../shared/errors';
 import { sendSuccess } from '../../../shared/utils';
-import { AUTH_COOKIES, clearAuthCookies, readCookie, setAuthCookies } from '../../../shared/utils/auth-cookies';
+import {
+  AUTH_COOKIES,
+  clearAuthCookies,
+  ensureCsrfCookie,
+  readCookie,
+  setAuthCookies,
+} from '../../../shared/utils/auth-cookies';
 import { authService } from '../services/auth.service';
 import type {
   AdminLoginDto,
@@ -74,13 +81,20 @@ export class AuthController {
     return sendSuccess(res, issueSession(res, result), 'Login successful.', HTTP_STATUS.OK);
   }
 
+  getCsrfToken(req: Request, res: Response): Response {
+    const csrfToken = ensureCsrfCookie(req, res);
+    return sendSuccess(res, { csrfToken }, 'CSRF token ready.', HTTP_STATUS.OK);
+  }
+
   async refreshToken(req: Request, res: Response): Promise<Response> {
     try {
       const tokens = await authService.refreshToken(refreshTokenFrom(req));
       setAuthCookies(res, { refreshToken: tokens.refreshToken, refreshExpiresAt: tokens.refreshExpiresAt });
       return sendSuccess(res, toPublicTokens(tokens), 'Token refreshed successfully.', HTTP_STATUS.OK);
     } catch (err) {
-      clearAuthCookies(res);
+      if (err instanceof UnauthorizedError || err instanceof ForbiddenError) {
+        clearAuthCookies(res);
+      }
       throw err;
     }
   }

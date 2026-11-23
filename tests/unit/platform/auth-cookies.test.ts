@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response } from 'express';
 
+const envMock = vi.hoisted(() => ({
+  API_PREFIX: '/api/v1',
+  AUTH_COOKIE_SECURE: true,
+  AUTH_COOKIE_SAME_SITE: 'strict' as 'strict' | 'lax' | 'none',
+  AUTH_COOKIE_DOMAIN: '',
+}));
+
 vi.mock('../../../src/app/config/env', () => ({
-  env: {
-    API_PREFIX: '/api/v1',
-    AUTH_COOKIE_SECURE: true,
-    AUTH_COOKIE_DOMAIN: '',
-  },
+  env: envMock,
 }));
 
 import {
   AUTH_COOKIES,
   clearAuthCookies,
+  ensureCsrfCookie,
   parseCookies,
   readCookie,
   setAuthCookies,
@@ -21,6 +25,7 @@ function fakeResponse() {
   return {
     cookie: vi.fn(),
     clearCookie: vi.fn(),
+    setHeader: vi.fn(),
   };
 }
 
@@ -62,7 +67,7 @@ describe('setAuthCookies', () => {
     vi.clearAllMocks();
   });
 
-  it('sets the httpOnly refresh cookie and the readable CSRF cookie', () => {
+  it('sets the httpOnly refresh cookie, readable CSRF cookie, and X-CSRF-Token header', () => {
     const res = fakeResponse();
     const csrf = setAuthCookies(res as unknown as Response, {
       refreshToken: 'refresh-jwt',
@@ -70,6 +75,7 @@ describe('setAuthCookies', () => {
     });
 
     expect(res.cookie).toHaveBeenCalledTimes(2);
+    expect(res.setHeader).toHaveBeenCalledWith('X-CSRF-Token', csrf);
 
     expect(res.cookie).toHaveBeenNthCalledWith(1, 'dm_rt', 'refresh-jwt', {
       httpOnly: true,
@@ -111,6 +117,46 @@ describe('setAuthCookies', () => {
     expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(second).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(first).not.toBe(second);
+  });
+
+  it('forces Secure=true when AUTH_COOKIE_SAME_SITE is none', () => {
+    envMock.AUTH_COOKIE_SECURE = false;
+    envMock.AUTH_COOKIE_SAME_SITE = 'none';
+    const res = fakeResponse();
+    setAuthCookies(res as unknown as Response, { refreshToken: 'r', refreshExpiresAt });
+    expect(res.cookie).toHaveBeenNthCalledWith(
+      1,
+      'dm_rt',
+      'r',
+      expect.objectContaining({ sameSite: 'none', secure: true }),
+    );
+    envMock.AUTH_COOKIE_SECURE = true;
+    envMock.AUTH_COOKIE_SAME_SITE = 'strict';
+  });
+});
+
+describe('ensureCsrfCookie', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reuses a valid dm_csrf cookie and exposes X-CSRF-Token', () => {
+    const existing = 'a'.repeat(43);
+    const req = { headers: { cookie: `dm_csrf=${existing}` } } as unknown as Request;
+    const res = fakeResponse();
+    const token = ensureCsrfCookie(req, res as unknown as Response);
+    expect(token).toBe(existing);
+    expect(res.cookie).not.toHaveBeenCalled();
+    expect(res.setHeader).toHaveBeenCalledWith('X-CSRF-Token', existing);
+  });
+
+  it('mints a fresh dm_csrf cookie and header when absent or malformed', () => {
+    const req = { headers: { cookie: 'dm_csrf=short' } } as unknown as Request;
+    const res = fakeResponse();
+    const token = ensureCsrfCookie(req, res as unknown as Response);
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(res.cookie).toHaveBeenCalledTimes(1);
+    expect(res.setHeader).toHaveBeenCalledWith('X-CSRF-Token', token);
   });
 });
 

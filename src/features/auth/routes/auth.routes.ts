@@ -105,6 +105,8 @@ authRoutes.post(
 );
 
 // ─── Session lifecycle ─────────────────────────────────────────────────────
+authRoutes.get('/csrf', (req, res) => authController.getCsrfToken(req, res));
+
 authRoutes.post(
   '/refresh',
   refreshLimiter,

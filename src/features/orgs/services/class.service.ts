@@ -343,22 +343,7 @@ export class ClassService {
       throw new NotFoundError('CLASS_CODE_INVALID: this class code is invalid or has expired.');
     }
 
-    if (actor.roles?.includes(ROLES.PLATFORM_ADMIN)) {
-      throw new ConflictError('STAFF_ROLE_CONFLICT: platform administrators cannot join a class as students.');
-    }
-    if (await this.deps.orgs.hasRole(actor.userId, ROLES.ORG_ADMIN)) {
-      throw new ConflictError('STAFF_ROLE_CONFLICT: organization admins cannot join a class as students.');
-    }
-    if (await this.deps.orgs.hasRole(actor.userId, ROLES.PROFESSOR)) {
-      throw new ConflictError('STAFF_ROLE_CONFLICT: professors cannot join a class as students.');
-    }
-
-    const currentScope = await this.deps.scopes.getOrgId(actor.userId);
-    if (currentScope !== null && currentScope !== classOrgId) {
-      throw new ConflictError(
-        'ORG_SCOPE_CONFLICT: your account is already linked to another organization.',
-      );
-    }
+    await this.assertStudentJoinEligible(actor.userId, classOrgId, actor.roles);
 
     const alreadyEnrolled = await this.deps.members.isActiveMember(cls.teamId, actor.userId);
     if (!alreadyEnrolled) {
@@ -736,21 +721,7 @@ export class ClassService {
     }
     const classOrgId = await this.requireLiveClassOrg(cls.organizationId);
 
-    // Security: `user_settings.org_id` is the single source of org scope and
-    // roles are global. Accepting an invite for another org must never move
-    // the scope while retaining org-level permissions (cross-tenant takeover).
-    const currentScope = await this.deps.scopes.getOrgId(userId);
-    if (currentScope !== null && currentScope !== classOrgId) {
-      throw new ConflictError(
-        'ORG_SCOPE_CONFLICT: your account is already linked to another organization.',
-      );
-    }
-    if (await this.deps.orgs.hasRole(userId, ROLES.ORG_ADMIN)) {
-      throw new ConflictError('STAFF_ROLE_CONFLICT: organization admins cannot accept a student invitation.');
-    }
-    if (await this.deps.orgs.hasRole(userId, ROLES.PROFESSOR)) {
-      throw new ConflictError('STAFF_ROLE_CONFLICT: professors cannot accept a student invitation.');
-    }
+    await this.assertStudentJoinEligible(userId, classOrgId, undefined, caller.email);
 
     const isAlreadyMember = await this.deps.members.isActiveMember(invitation.teamId, userId);
     if (!isAlreadyMember && cls.maxMembers && cls.studentCount >= cls.maxMembers) {
@@ -776,6 +747,52 @@ export class ClassService {
       className: cls.teamName,
       organizationName: (await this.orgName(classOrgId)) ?? '',
     };
+  }
+
+  /**
+   * Unified student join gate shared by code redemption and invitation link acceptance.
+   * Multi-org learners can join classes across organizations; staff within the target
+   * organization and platform admins are blocked, and org email domain policies apply evenly.
+   */
+  private async assertStudentJoinEligible(
+    userId: number,
+    classOrgId: number,
+    roles?: readonly string[],
+    callerEmail?: string,
+  ): Promise<void> {
+    if (roles?.includes(ROLES.PLATFORM_ADMIN) || (await this.deps.orgs.hasRole(userId, ROLES.PLATFORM_ADMIN))) {
+      throw new ConflictError('STAFF_ROLE_CONFLICT: platform administrators cannot join a class as students.');
+    }
+
+    const targetOrgRole = await this.deps.memberships.getRoleInOrg(userId, classOrgId);
+    if (targetOrgRole === ROLES.ORG_ADMIN) {
+      throw new ConflictError('STAFF_ROLE_CONFLICT: organization admins cannot join a class in the organization they administer.');
+    }
+    if (targetOrgRole === ROLES.PROFESSOR) {
+      throw new ConflictError('STAFF_ROLE_CONFLICT: professors cannot join a class in the organization where they teach.');
+    }
+    if (targetOrgRole === null) {
+      const currentScope = await this.deps.scopes.getOrgId(userId);
+      if (currentScope === classOrgId) {
+        if (await this.deps.orgs.hasRole(userId, ROLES.ORG_ADMIN)) {
+          throw new ConflictError('STAFF_ROLE_CONFLICT: organization admins cannot join a class as students.');
+        }
+        if (await this.deps.orgs.hasRole(userId, ROLES.PROFESSOR)) {
+          throw new ConflictError('STAFF_ROLE_CONFLICT: professors cannot join a class as students.');
+        }
+      }
+    }
+
+    const emailDomain = await this.deps.orgs.getEmailDomain(classOrgId);
+    if (emailDomain) {
+      const email = callerEmail ?? (await this.deps.orgs.findUserById(userId))?.email;
+      const domain = email?.trim().toLowerCase().split('@')[1];
+      if (!domain || domain !== emailDomain.toLowerCase()) {
+        throw new ForbiddenError(
+          `Only members with a @${emailDomain} email address may join classes in this organization.`,
+        );
+      }
+    }
   }
 
   /** Org bound to the professor invite at invite time; legacy invites fall back to the inviter's scope. */

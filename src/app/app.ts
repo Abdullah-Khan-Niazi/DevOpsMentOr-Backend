@@ -103,9 +103,9 @@ export function createApp() {
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
       // X-CSRF-Token is the double-submit header checked by requireCsrf.
       allowedHeaders: ['Authorization', 'Content-Type', 'X-CSRF-Token'],
-      // Neither header is CORS-safelisted: the SPA reads Retry-After on 429s
-      // and Date to derive the server clock offset for quiz timers.
-      exposedHeaders: ['Retry-After', 'Date'],
+      // Neither header is CORS-safelisted: the SPA reads Retry-After on 429s,
+      // Date to derive the server clock offset, and X-CSRF-Token for cross-site cookies.
+      exposedHeaders: ['Retry-After', 'Date', 'X-CSRF-Token'],
       maxAge: 600,
     }),
   );

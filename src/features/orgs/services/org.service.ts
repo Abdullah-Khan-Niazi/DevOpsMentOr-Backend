@@ -5,6 +5,7 @@ import {
   activityLogs,
   countries,
   orders,
+  organizationMemberships,
   pwnboxInstances,
   quizAttempts,
   roles,
@@ -126,14 +127,11 @@ export class OrgService {
    * another organization may found their own (per-org roles isolate access).
    */
   async createMyOrg(actor: OrgActor, input: CreateOrgInput): Promise<OrgCreatedDto> {
-    // Multi-org rule: anyone may create an organization EXCEPT a user who
-    // already administers one. Students/professors of another org can found
-    // their own; per-org membership roles keep the two contexts isolated.
-    const existingMembership = await this.deps.memberships.getActiveForUser(actor.userId);
-    if (existingMembership?.role === ROLES.ORG_ADMIN) {
-      throw new ConflictError(
-        'You already administer an organization. Transfer or delete it before creating another.',
-      );
+    // Platform admins manage tenants globally and cannot found self-service orgs;
+    // any other authenticated user (including existing org admins, professors, or
+    // students) can found multiple organizations via per-org memberships.
+    if (actor.roles?.includes(ROLES.PLATFORM_ADMIN) || (await this.deps.orgs.hasRole(actor.userId, ROLES.PLATFORM_ADMIN))) {
+      throw new ForbiddenError('Platform administrators cannot create self-service organizations.');
     }
 
     const org = await this.createOrg(actor, input);
@@ -246,13 +244,15 @@ export class OrgService {
     const orgClasses = await this.deps.classes.listAllByOrg(orgId);
     const classIds = new Set(orgClasses.map((cls) => cls.teamId));
 
-    const [scopedUserIds, memberUserIds] = await Promise.all([
+    const [scopedUserIds, memberUserIds, orgMembershipUserIds] = await Promise.all([
       this.deps.scopes.listUserIdsByOrgId(orgId),
       this.deps.members.listActiveUserIdsByOrg(orgId),
+      this.deps.memberships.listActiveUserIdsByOrg(orgId),
     ]);
     const affectedUserIds = new Set<number>([
       ...scopedUserIds,
       ...memberUserIds,
+      ...orgMembershipUserIds,
       ...orgClasses.map((cls) => cls.teamOwnerId),
     ]);
 
@@ -267,9 +267,18 @@ export class OrgService {
     let clearedScopes = 0;
     let cleanedRoles = 0;
     for (const userId of affectedUserIds) {
-      const currentScope = await this.deps.scopes.getOrgId(userId);
+      const [currentScope, remainingMemberships] = await Promise.all([
+        this.deps.scopes.getOrgId(userId),
+        this.deps.memberships.listActiveForUser(userId),
+      ]);
       if (currentScope === orgId) {
-        await this.deps.scopes.clearOrgId(userId);
+        if (remainingMemberships.length > 0) {
+          const nextPrimary = remainingMemberships[0];
+          await this.deps.scopes.setOrgId(userId, nextPrimary.organizationId);
+          await this.deps.memberships.setPrimary(userId, nextPrimary.organizationId);
+        } else {
+          await this.deps.scopes.clearOrgId(userId);
+        }
         clearedScopes += 1;
       }
 
@@ -287,12 +296,14 @@ export class OrgService {
         continue;
       }
 
-      await this.deps.orgs.removeRoles(userId, [
-        ROLES.ORG_ADMIN,
-        ROLES.PROFESSOR,
-        ROLES.ORG_STUDENT,
-      ]);
-      cleanedRoles += 1;
+      const heldRoles = new Set<string>(remainingMemberships.map((m) => m.role));
+      const rolesToRemove = [ROLES.ORG_ADMIN, ROLES.PROFESSOR, ROLES.ORG_STUDENT].filter(
+        (roleName) => !heldRoles.has(roleName),
+      );
+      if (rolesToRemove.length > 0) {
+        await this.deps.orgs.removeRoles(userId, rolesToRemove);
+        cleanedRoles += 1;
+      }
 
       const remainingRoles = await this.deps.orgs.listRoleNames(userId);
       if (remainingRoles.length === 0) {
@@ -362,14 +373,9 @@ export class OrgService {
     if (!target) {
       throw new NotFoundError('Target user not found.');
     }
-    const existingMembership = await this.deps.memberships.getActiveForUser(userId);
-    if (existingMembership?.role === ROLES.ORG_ADMIN) {
-      if (existingMembership.organizationId === orgId) {
-        throw new ConflictError('User is already an organization admin of this organization.');
-      }
-      throw new ConflictError(
-        'This user already administers another organization and cannot administer two.',
-      );
+    const roleInTarget = await this.deps.memberships.getRoleInOrg(userId, orgId);
+    if (roleInTarget === ROLES.ORG_ADMIN) {
+      throw new ConflictError('User is already an organization admin of this organization.');
     }
 
     const roleId = await this.deps.orgs.findRoleId(ROLES.ORG_ADMIN);
@@ -715,13 +721,6 @@ export class OrgService {
         [{ code: ERROR_CODES.ALREADY_MEMBER, role: ROLES.ORG_ADMIN }],
       );
     }
-    if (administered.length > 0) {
-      throw new ConflictError(
-        phase === 'invite'
-          ? 'This user already administers another organization and cannot administer two.'
-          : 'You already administer another organization and cannot administer two.',
-      );
-    }
   }
 
   async getOrgAnalytics(orgId: number) {
@@ -736,6 +735,21 @@ export class OrgService {
 
     if (adminDetail?.adminUserId) {
       memberIdSet.add(adminDetail.adminUserId);
+    }
+
+    const membershipRows = await db
+      .select({ userId: organizationMemberships.userId, role: organizationMemberships.role })
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.organizationId, orgId),
+          eq(organizationMemberships.status, 'active'),
+        ),
+      );
+    const orgMembershipRoleMap = new Map<number, 'org_admin' | 'professor' | 'org_student'>();
+    for (const m of membershipRows) {
+      memberIdSet.add(m.userId);
+      orgMembershipRoleMap.set(m.userId, m.role);
     }
 
     const orgSettings = await db
@@ -780,15 +794,26 @@ export class OrgService {
 
     if (userIds.length > 0) {
       const userRoleRows = await db
-        .select({ roleName: roles.roleName })
+        .select({ userId: userRoles.userId, roleName: roles.roleName })
         .from(userRoles)
         .innerJoin(roles, eq(roles.roleId, userRoles.roleId))
         .where(inArray(userRoles.userId, userIds));
 
+      const globalRoleByUser = new Map<number, string>();
       for (const r of userRoleRows) {
-        if (r.roleName === ROLES.ORG_STUDENT) studentsCount++;
-        else if (r.roleName === ROLES.PROFESSOR) professorsCount++;
-        else if (r.roleName === ROLES.ORG_ADMIN) adminsCount++;
+        if (r.roleName === ROLES.ORG_ADMIN) globalRoleByUser.set(r.userId, ROLES.ORG_ADMIN);
+        else if (r.roleName === ROLES.PROFESSOR && globalRoleByUser.get(r.userId) !== ROLES.ORG_ADMIN) {
+          globalRoleByUser.set(r.userId, ROLES.PROFESSOR);
+        } else if (r.roleName === ROLES.ORG_STUDENT && !globalRoleByUser.has(r.userId)) {
+          globalRoleByUser.set(r.userId, ROLES.ORG_STUDENT);
+        }
+      }
+
+      for (const uid of userIds) {
+        const effectiveRole = orgMembershipRoleMap.get(uid) ?? globalRoleByUser.get(uid);
+        if (effectiveRole === ROLES.ORG_STUDENT) studentsCount++;
+        else if (effectiveRole === ROLES.PROFESSOR) professorsCount++;
+        else if (effectiveRole === ROLES.ORG_ADMIN) adminsCount++;
       }
     }
 
@@ -953,6 +978,21 @@ export class OrgService {
       memberIdSet.add(adminDetail.adminUserId);
     }
 
+    const membershipRows = await db
+      .select({ userId: organizationMemberships.userId, role: organizationMemberships.role })
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.organizationId, orgId),
+          eq(organizationMemberships.status, 'active'),
+        ),
+      );
+    const orgMembershipRoleMap = new Map<number, 'org_admin' | 'professor' | 'org_student'>();
+    for (const m of membershipRows) {
+      memberIdSet.add(m.userId);
+      orgMembershipRoleMap.set(m.userId, m.role);
+    }
+
     const orgSettings = await db
       .select({ userId: userSettings.userId })
       .from(userSettings)
@@ -1059,8 +1099,9 @@ export class OrgService {
     }
 
     return userRows.map((u) => {
-      let role: 'org_admin' | 'professor' | 'org_student' = userRoleMap.get(u.userId) || 'org_student';
-      if (u.userId === adminDetail?.adminUserId) {
+      let role: 'org_admin' | 'professor' | 'org_student' =
+        orgMembershipRoleMap.get(u.userId) || userRoleMap.get(u.userId) || 'org_student';
+      if (!orgMembershipRoleMap.has(u.userId) && u.userId === adminDetail?.adminUserId) {
         role = 'org_admin';
       }
       const status = u.deletedAt ? 'deleted' : u.isBanned ? 'banned' : !u.isActive ? 'inactive' : 'active';
