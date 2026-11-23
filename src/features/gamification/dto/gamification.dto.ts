@@ -93,11 +93,16 @@ export interface PointsHistoryDto {
 export interface LeaderboardEntryDto {
   leaderboardId: number;
   userId: number;
+  username?: string;
   fullName: string | null;
   displayName: string | null;
+  avatarUrl?: string | null;
   totalPoints: number;
+  courseCompletionsCount?: number;
   globalRank: number | null;
   countryRank: number | null;
+  cohortRank?: number | null;
+  rankDelta?: number | null;
   countryCode: string | null;
 }
 

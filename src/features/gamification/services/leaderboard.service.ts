@@ -21,6 +21,8 @@ export interface PaginatedLeaderboard<T> {
   page: number;
   limit: number;
   viewerRank: number | null;
+  viewerPoints?: number | null;
+  pointsToNextRank?: number | null;
 }
 
 export interface LeaderboardServiceDeps {
@@ -49,7 +51,17 @@ export interface LeaderboardServiceDeps {
     | 'updateLeaderboardTotals'
     | 'insertLeaderboard'
     | 'deleteOtherLeaderboardRows'
-  >;
+  > &
+    Partial<
+      Pick<
+        GamificationRepository,
+        | 'isStudentOfClass'
+        | 'findPreviousGlobalRanks'
+        | 'findNextScoreAboveGlobal'
+        | 'findNextScoreAboveCountry'
+        | 'findNextScoreAboveSeason'
+      >
+    >;
   memberships: Pick<MembershipRepository, 'getRoleInOrg'>;
   award: Pick<AwardService, 'withUserLock'>;
 }
@@ -64,34 +76,88 @@ export interface LeaderboardTotals {
   courseCompletionsCount: number;
 }
 
-function toEntry(row: LeaderboardEntryLike): LeaderboardEntryDto {
+function toEntry(
+  row: LeaderboardEntryLike,
+  previousGlobalRanks?: Map<number, number>,
+): LeaderboardEntryDto {
+  const previousGlobalRank = previousGlobalRanks?.get(row.userId) ?? null;
+  const rankDelta =
+    row.rankDelta !== undefined
+      ? row.rankDelta
+      : previousGlobalRank !== null && row.globalRank !== null
+        ? previousGlobalRank - row.globalRank
+        : null;
+
   return {
     leaderboardId: row.leaderboardId,
     userId: row.userId,
+    ...(row.username !== undefined ? { username: row.username } : {}),
     fullName: row.fullName,
     displayName: row.displayName,
+    ...(row.avatarUrl !== undefined ? { avatarUrl: row.avatarUrl } : {}),
     totalPoints: row.totalPoints,
+    ...(row.courseCompletionsCount !== undefined
+      ? { courseCompletionsCount: row.courseCompletionsCount }
+      : {}),
     globalRank: row.globalRank,
     countryRank: row.countryRank,
+    ...(row.cohortRank !== undefined ? { cohortRank: row.cohortRank } : {}),
+    ...(rankDelta !== null ? { rankDelta } : {}),
     countryCode: row.countryCode,
+  };
+}
+
+function withCohortRanks(rows: LeaderboardEntryLike[], previousGlobalRanks?: Map<number, number>): LeaderboardEntryDto[] {
+  const sorted = [...rows].sort((a, b) => b.totalPoints - a.totalPoints || a.userId - b.userId);
+  let lastRank = 0;
+  return sorted.map((row, index) => {
+    const rank = index > 0 && row.totalPoints === sorted[index - 1].totalPoints ? lastRank : index + 1;
+    lastRank = rank;
+    return toEntry({ ...row, cohortRank: rank }, previousGlobalRanks);
+  });
+}
+
+function cohortViewerStanding(entries: LeaderboardEntryDto[], viewerUserId: number): {
+  viewerRank: number | null;
+  viewerPoints: number | null;
+  pointsToNextRank: number | null;
+} {
+  const viewer = entries.find((e) => e.userId === viewerUserId);
+  if (!viewer) {
+    return { viewerRank: null, viewerPoints: null, pointsToNextRank: null };
+  }
+  const higherScores = entries
+    .map((e) => e.totalPoints)
+    .filter((pts) => pts > viewer.totalPoints);
+  const nextAbove = higherScores.length > 0 ? Math.min(...higherScores) : null;
+  return {
+    viewerRank: viewer.cohortRank ?? null,
+    viewerPoints: viewer.totalPoints,
+    pointsToNextRank: nextAbove !== null ? nextAbove - viewer.totalPoints : null,
   };
 }
 
 function toSeasonEntry(row: SeasonLeaderboardRow): {
   leaderboardId: number;
   userId: number;
+  username?: string;
   pointsEarned: number;
   rank: number | null;
   fullName: string | null;
   displayName: string | null;
+  avatarUrl?: string | null;
+  countryCode?: string | null;
 } {
   return {
     leaderboardId: row.leaderboardId,
     userId: row.userId,
+    ...(row.username !== undefined ? { username: row.username } : {}),
     pointsEarned: row.pointsEarned,
     rank: row.rank,
     fullName: row.fullName,
     displayName: row.displayName,
+    ...(row.avatarUrl !== undefined ? { avatarUrl: row.avatarUrl } : {}),
+    ...(row.countryCode !== undefined ? { countryCode: row.countryCode } : {}),
   };
 }
 
@@ -112,18 +178,38 @@ function isPlatformAdmin(actor: GamificationActor): boolean {
 export class LeaderboardService {
   constructor(private readonly deps: LeaderboardServiceDeps = defaultDeps()) {}
 
-  /** GAM-06: paginated global leaderboard with the viewer's own rank. */
+  /** GAM-06: paginated global leaderboard with the viewer's own rank and gap to next rank. */
   async getGlobal(
     page: number,
     limit: number,
     viewerUserId: number | null,
   ): Promise<PaginatedLeaderboard<LeaderboardEntryDto>> {
     const { rows, total } = await this.deps.repo.getGlobalLeaderboard(page, limit);
-    const viewerRank = viewerUserId !== null ? await this.viewerRank(viewerUserId) : null;
-    return { items: rows.map(toEntry), total, page, limit, viewerRank };
+    const previousRanks =
+      typeof this.deps.repo.findPreviousGlobalRanks === 'function'
+        ? await this.deps.repo.findPreviousGlobalRanks(rows.map((r) => r.userId))
+        : undefined;
+    const viewerRow = viewerUserId !== null ? await this.deps.repo.findLeaderboardForUser(viewerUserId) : null;
+    const viewerRank = viewerRow?.globalRank ?? null;
+    const viewerPoints = viewerRow?.totalPoints ?? null;
+    const nextScore =
+      viewerRow && typeof this.deps.repo.findNextScoreAboveGlobal === 'function'
+        ? await this.deps.repo.findNextScoreAboveGlobal(viewerRow.totalPoints)
+        : null;
+    const pointsToNextRank =
+      viewerRow && nextScore !== null ? Math.max(0, nextScore - viewerRow.totalPoints) : null;
+    return {
+      items: rows.map((row) => toEntry(row, previousRanks)),
+      total,
+      page,
+      limit,
+      viewerRank,
+      viewerPoints,
+      pointsToNextRank,
+    };
   }
 
-  /** GAM-07: paginated country-scoped leaderboard. */
+  /** GAM-07: paginated country-scoped leaderboard with viewer's country-scoped rank. */
   async getByCountry(
     countryCode: string,
     page: number,
@@ -135,8 +221,28 @@ export class LeaderboardService {
       throw new NotFoundError('Country not found.');
     }
     const { rows, total } = await this.deps.repo.getCountryLeaderboard(countryId, page, limit);
-    const viewerRank = viewerUserId !== null ? await this.viewerRank(viewerUserId) : null;
-    return { items: rows.map(toEntry), total, page, limit, viewerRank };
+    const previousRanks =
+      typeof this.deps.repo.findPreviousGlobalRanks === 'function'
+        ? await this.deps.repo.findPreviousGlobalRanks(rows.map((r) => r.userId))
+        : undefined;
+    const viewerRow = viewerUserId !== null ? await this.deps.repo.findLeaderboardForUser(viewerUserId) : null;
+    const viewerRank = viewerRow?.countryRank ?? null;
+    const viewerPoints = viewerRow?.totalPoints ?? null;
+    const nextScore =
+      viewerRow && typeof this.deps.repo.findNextScoreAboveCountry === 'function'
+        ? await this.deps.repo.findNextScoreAboveCountry(countryId, viewerRow.totalPoints)
+        : null;
+    const pointsToNextRank =
+      viewerRow && nextScore !== null ? Math.max(0, nextScore - viewerRow.totalPoints) : null;
+    return {
+      items: rows.map((row) => toEntry(row, previousRanks)),
+      total,
+      page,
+      limit,
+      viewerRank,
+      viewerPoints,
+      pointsToNextRank,
+    };
   }
 
   /** GAM-08: paginated season standings for a season. */
@@ -152,44 +258,74 @@ export class LeaderboardService {
     }
     const { rows, total } = await this.deps.repo.getSeasonLeaderboard(seasonId, page, limit);
     let viewerRank: number | null = null;
+    let viewerPoints: number | null = null;
+    let pointsToNextRank: number | null = null;
     if (viewerUserId !== null) {
       const own = await this.deps.repo.findSeasonLeaderboardRow(seasonId, viewerUserId);
       viewerRank = own?.rank ?? null;
+      viewerPoints = own?.pointsEarned ?? null;
+      if (own && typeof this.deps.repo.findNextScoreAboveSeason === 'function') {
+        const nextScore = await this.deps.repo.findNextScoreAboveSeason(seasonId, own.pointsEarned);
+        pointsToNextRank = nextScore !== null ? Math.max(0, nextScore - own.pointsEarned) : null;
+      }
     }
-    return { items: rows.map(toSeasonEntry), total, page, limit, viewerRank };
+    return { items: rows.map(toSeasonEntry), total, page, limit, viewerRank, viewerPoints, pointsToNextRank };
   }
 
-  /** GAM-09: class-scoped leaderboard for the assigned professor / org admin. */
+  /** GAM-09: class-scoped leaderboard for the professor, org admin, or enrolled students of that class. */
   async getClass(
     classId: number,
     actor: GamificationActor,
-  ): Promise<{ className: string; items: LeaderboardEntryDto[]; total: number }> {
+  ): Promise<{
+    className: string;
+    items: LeaderboardEntryDto[];
+    total: number;
+    viewerRank: number | null;
+    viewerPoints: number | null;
+    pointsToNextRank: number | null;
+  }> {
     const cls = await this.deps.repo.findClass(classId);
     if (!cls) {
       throw new NotFoundError('Class not found.');
     }
     if (!isPlatformAdmin(actor)) {
-      // Multi-org (D15): the actor's role is read from the membership in the
-      // class's own organization, never from a single legacy org setting.
+      // Multi-org (D15): check professor of class, org_admin of class's org, or active student enrolled in class.
       const isProfessor = await this.deps.repo.isProfessorOfClass(classId, actor.userId);
       const isClassOrgAdmin =
         !isProfessor &&
         cls.organizationId !== null &&
         (await this.deps.memberships.getRoleInOrg(actor.userId, cls.organizationId)) === ROLES.ORG_ADMIN;
-      if (!isProfessor && !isClassOrgAdmin) {
+      const isEnrolledStudent =
+        !isProfessor &&
+        !isClassOrgAdmin &&
+        typeof this.deps.repo.isStudentOfClass === 'function' &&
+        (await this.deps.repo.isStudentOfClass(classId, actor.userId));
+      if (!isProfessor && !isClassOrgAdmin && !isEnrolledStudent) {
         throw new ForbiddenError('You do not have access to this class.');
       }
     }
     const userIds = await this.deps.repo.listClassStudentIds(classId);
     const rows = await this.deps.repo.getLeaderboardForUsers(userIds);
-    return { className: cls.className, items: rows.map(toEntry), total: rows.length };
+    const previousRanks =
+      typeof this.deps.repo.findPreviousGlobalRanks === 'function'
+        ? await this.deps.repo.findPreviousGlobalRanks(rows.map((r) => r.userId))
+        : undefined;
+    const items = withCohortRanks(rows, previousRanks);
+    const standing = cohortViewerStanding(items, actor.userId);
+    return { className: cls.className, items, total: items.length, ...standing };
   }
 
   /** GAM-10: org-scoped leaderboard for an admin of that org / platform admin. */
   async getOrg(
     orgId: number,
     actor: GamificationActor,
-  ): Promise<{ items: LeaderboardEntryDto[]; total: number }> {
+  ): Promise<{
+    items: LeaderboardEntryDto[];
+    total: number;
+    viewerRank: number | null;
+    viewerPoints: number | null;
+    pointsToNextRank: number | null;
+  }> {
     if (isPlatformAdmin(actor)) {
       if (!(await this.deps.repo.organizationExists(orgId))) {
         throw new NotFoundError('Organization not found.');
@@ -199,7 +335,13 @@ export class LeaderboardService {
     }
     const userIds = await this.deps.repo.listOrgMemberIds(orgId);
     const rows = await this.deps.repo.getLeaderboardForUsers(userIds);
-    return { items: rows.map(toEntry), total: rows.length };
+    const previousRanks =
+      typeof this.deps.repo.findPreviousGlobalRanks === 'function'
+        ? await this.deps.repo.findPreviousGlobalRanks(rows.map((r) => r.userId))
+        : undefined;
+    const items = withCohortRanks(rows, previousRanks);
+    const standing = cohortViewerStanding(items, actor.userId);
+    return { items, total: items.length, ...standing };
   }
 
   /**
@@ -249,11 +391,6 @@ export class LeaderboardService {
       achievementCount,
       certificateCount,
     };
-  }
-
-  private async viewerRank(userId: number): Promise<number | null> {
-    const row = await this.deps.repo.findLeaderboardForUser(userId);
-    return row?.globalRank ?? null;
   }
 }
 

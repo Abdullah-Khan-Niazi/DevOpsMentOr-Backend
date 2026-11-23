@@ -125,6 +125,7 @@ learnerRoutes.get(
 learnerRoutes.get(
   '/leaderboard/class/:classId',
   authorizeAnyPermissions(
+    PERMISSIONS.ENROLLMENT_READ,
     PERMISSIONS.GAMIFICATION_CLASS_READ,
     PERMISSIONS.GAMIFICATION_ORG_READ,
     PERMISSIONS.PLATFORM_GAMIFICATION_MANAGE,

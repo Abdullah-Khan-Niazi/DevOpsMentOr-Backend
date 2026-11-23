@@ -920,4 +920,50 @@ describe('LeaderboardService', () => {
     expect(result.className).toBe('CS-101');
     expect(repo.listClassStudentIds).toHaveBeenCalledWith(5);
   });
+
+  it('allows an enrolled org_student to read their own class leaderboard with cohort ranks', async () => {
+    const repo = {
+      findClass: vi.fn().mockResolvedValue({ classId: 5, className: 'CS-101', organizationId: 1 }),
+      isProfessorOfClass: vi.fn().mockResolvedValue(false),
+      isStudentOfClass: vi.fn().mockResolvedValue(true),
+      listClassStudentIds: vi.fn().mockResolvedValue([3, 4]),
+      getLeaderboardForUsers: vi.fn().mockResolvedValue([
+        { leaderboardId: 1, userId: 4, username: 'top', fullName: 'Top Student', displayName: null, totalPoints: 250, globalRank: 5, countryRank: 2, countryCode: 'PK' },
+        { leaderboardId: 0, userId: 3, username: 'me', fullName: 'Me Student', displayName: null, totalPoints: 0, globalRank: null, countryRank: null, countryCode: 'PK' },
+      ]),
+    };
+    const memberships = { getRoleInOrg: vi.fn().mockResolvedValue('org_student') };
+    const actor = { userId: 3, roles: ['org_student'], permissions: ['enrollment:read'] };
+    const service = new LeaderboardService({ repo: repo as never, memberships, award: {} as never });
+
+    const result = await service.getClass(5, actor);
+
+    expect(result.items.map((item) => item.cohortRank)).toEqual([1, 2]);
+    expect(result.viewerRank).toBe(2);
+    expect(result.viewerPoints).toBe(0);
+    expect(result.pointsToNextRank).toBe(250);
+  });
+
+  it('returns viewer countryRank (not globalRank) and rank deltas in getByCountry', async () => {
+    const repo = {
+      getCountryIdByCode: vi.fn().mockResolvedValue(10),
+      getCountryLeaderboard: vi.fn().mockResolvedValue({
+        rows: [
+          { leaderboardId: 1, userId: 7, username: 'ali', fullName: 'Ali', displayName: null, totalPoints: 500, globalRank: 42, countryRank: 1, countryCode: 'PK' },
+        ],
+        total: 1,
+      }),
+      findLeaderboardForUser: vi.fn().mockResolvedValue({ leaderboardId: 1, userId: 7, totalPoints: 500, globalRank: 42, countryRank: 1 }),
+      findPreviousGlobalRanks: vi.fn().mockResolvedValue(new Map([[7, 45]])),
+      findNextScoreAboveCountry: vi.fn().mockResolvedValue(650),
+    };
+    const service = new LeaderboardService({ repo: repo as never, memberships: {} as never, award: {} as never });
+
+    const result = await service.getByCountry('PK', 1, 25, 7);
+
+    expect(result.viewerRank).toBe(1);
+    expect(result.viewerPoints).toBe(500);
+    expect(result.pointsToNextRank).toBe(150);
+    expect(result.items[0].rankDelta).toBe(3);
+  });
 });

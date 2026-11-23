@@ -131,9 +131,18 @@ export interface SeasonLeaderboardRow {
   userId: number;
   pointsEarned: number;
   rank: number | null;
+  username?: string;
   fullName: string | null;
   displayName: string | null;
+  avatarUrl?: string | null;
+  countryCode?: string | null;
 }
+
+const activeUserFilter = and(
+  eq(users.isActive, true),
+  eq(users.isBanned, false),
+  isNull(users.deletedAt),
+);
 
 /**
  * F7 data access layer. Identity, class and org scopes are resolved on the
@@ -401,12 +410,22 @@ export class GamificationRepository {
    */
   async listLeaderboardCandidateUserIds(): Promise<number[]> {
     const [ledgerRows, boardRows, completionRows] = await Promise.all([
-      db.selectDistinct({ userId: pointsHistory.userId }).from(pointsHistory),
-      db.selectDistinct({ userId: leaderboards.userId }).from(leaderboards),
+      db
+        .selectDistinct({ userId: pointsHistory.userId })
+        .from(pointsHistory)
+        .innerJoin(users, eq(users.userId, pointsHistory.userId))
+        .where(activeUserFilter),
+      db
+        .selectDistinct({ userId: leaderboards.userId })
+        .from(leaderboards)
+        .innerJoin(users, eq(users.userId, leaderboards.userId))
+        .where(activeUserFilter),
       db
         .selectDistinct({ userId: userProgress.userId })
         .from(userProgress)
+        .innerJoin(users, eq(users.userId, userProgress.userId))
         .where(and(
+          activeUserFilter,
           isNotNull(userProgress.courseId),
           isNull(userProgress.moduleId),
           isNull(userProgress.lessonId),
@@ -466,7 +485,11 @@ export class GamificationRepository {
         value: sql<number>`COALESCE(SUM(${pointsHistory.pointsChange}), 0)`,
       })
       .from(pointsHistory)
-      .where(sql`${pointsHistory.createdAt} >= ${startDate} AND ${pointsHistory.createdAt} < DATE_ADD(${endDate}, INTERVAL 1 DAY)`)
+      .innerJoin(users, eq(users.userId, pointsHistory.userId))
+      .where(and(
+        activeUserFilter,
+        sql`${pointsHistory.createdAt} >= ${startDate} AND ${pointsHistory.createdAt} < DATE_ADD(${endDate}, INTERVAL 1 DAY)`,
+      ))
       .groupBy(pointsHistory.userId);
     return new Map(rows.map((row) => [row.userId, row.value]));
   }
@@ -743,7 +766,7 @@ export class GamificationRepository {
       .where(and(eq(leaderboards.userId, userId), ne(leaderboards.leaderboardId, keepLeaderboardId)));
   }
 
-  /** All leaderboard rows ordered by points desc (global rank assignment). */
+  /** All active, non-banned leaderboard rows ordered by points desc (global rank assignment). */
   async listAllLeaderboardRows(): Promise<Array<{
     leaderboardId: number;
     userId: number;
@@ -758,10 +781,12 @@ export class GamificationRepository {
         globalRank: leaderboards.globalRank,
       })
       .from(leaderboards)
+      .innerJoin(users, eq(users.userId, leaderboards.userId))
+      .where(activeUserFilter)
       .orderBy(desc(leaderboards.totalPoints), asc(leaderboards.userId));
   }
 
-  /** Leaderboard rows with their user country, points desc (country rank assignment). */
+  /** Active, non-banned leaderboard rows with user country, points desc (country rank assignment). */
   async listCountryScopedRows(): Promise<Array<{
     leaderboardId: number;
     userId: number;
@@ -778,8 +803,9 @@ export class GamificationRepository {
         countryRank: leaderboards.countryRank,
       })
       .from(leaderboards)
+      .innerJoin(users, eq(users.userId, leaderboards.userId))
       .innerJoin(userProfiles, eq(userProfiles.userId, leaderboards.userId))
-      .where(isNotNull(userProfiles.countryId))
+      .where(and(isNotNull(userProfiles.countryId), activeUserFilter))
       .orderBy(desc(leaderboards.totalPoints), asc(leaderboards.userId));
     return rows.map((row) => ({ ...row, countryId: row.countryId as number }));
   }
@@ -799,20 +825,86 @@ export class GamificationRepository {
     await db.insert(leaderboardHistory).values(rows);
   }
 
-  /** Paginated global leaderboard joined to users and country codes. */
+  /** Previous snapshot global ranks (one snapshot cycle prior to latest) for rank deltas. */
+  async findPreviousGlobalRanks(userIds: number[]): Promise<Map<number, number>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+    const snapshots = await db
+      .selectDistinct({ recordedAt: leaderboardHistory.recordedAt })
+      .from(leaderboardHistory)
+      .orderBy(desc(leaderboardHistory.recordedAt))
+      .limit(2);
+    const previousAt = snapshots[1]?.recordedAt;
+    if (!previousAt) {
+      return new Map();
+    }
+    const rows = await db
+      .select({
+        userId: leaderboardHistory.userId,
+        globalRank: leaderboardHistory.globalRank,
+      })
+      .from(leaderboardHistory)
+      .where(and(eq(leaderboardHistory.recordedAt, previousAt), inArray(leaderboardHistory.userId, userIds)));
+    const map = new Map<number, number>();
+    for (const row of rows) {
+      if (row.globalRank !== null) {
+        map.set(row.userId, row.globalRank);
+      }
+    }
+    return map;
+  }
+
+  /** Minimum points strictly above `currentPoints` in the active global leaderboard. */
+  async findNextScoreAboveGlobal(currentPoints: number): Promise<number | null> {
+    const rows = await db
+      .select({ value: sql<number | null>`MIN(${leaderboards.totalPoints})` })
+      .from(leaderboards)
+      .innerJoin(users, eq(users.userId, leaderboards.userId))
+      .where(and(activeUserFilter, sql`${leaderboards.totalPoints} > ${currentPoints}`));
+    const value = rows[0]?.value;
+    return value === null || value === undefined ? null : Number(value);
+  }
+
+  /** Minimum points strictly above `currentPoints` within a specific country. */
+  async findNextScoreAboveCountry(countryId: number, currentPoints: number): Promise<number | null> {
+    const rows = await db
+      .select({ value: sql<number | null>`MIN(${leaderboards.totalPoints})` })
+      .from(leaderboards)
+      .innerJoin(users, eq(users.userId, leaderboards.userId))
+      .innerJoin(userProfiles, eq(userProfiles.userId, leaderboards.userId))
+      .where(and(activeUserFilter, eq(userProfiles.countryId, countryId), sql`${leaderboards.totalPoints} > ${currentPoints}`));
+    const value = rows[0]?.value;
+    return value === null || value === undefined ? null : Number(value);
+  }
+
+  /** Minimum points strictly above `currentPoints` within a season. */
+  async findNextScoreAboveSeason(seasonId: number, currentPoints: number): Promise<number | null> {
+    const rows = await db
+      .select({ value: sql<number | null>`MIN(${seasonLeaderboards.pointsEarned})` })
+      .from(seasonLeaderboards)
+      .innerJoin(users, eq(users.userId, seasonLeaderboards.userId))
+      .where(and(activeUserFilter, eq(seasonLeaderboards.seasonId, seasonId), sql`${seasonLeaderboards.pointsEarned} > ${currentPoints}`));
+    const value = rows[0]?.value;
+    return value === null || value === undefined ? null : Number(value);
+  }
+
+  /** Paginated global leaderboard joined to users and country codes (excludes inactive/banned). */
   async getGlobalLeaderboard(page: number, limit: number): Promise<{
     rows: Array<LeaderboardEntryLike>;
     total: number;
   }> {
-    const baseWhere = undefined;
     const [rows, totalRows] = await Promise.all([
       db
         .select({
           leaderboardId: leaderboards.leaderboardId,
           userId: leaderboards.userId,
+          username: users.username,
           fullName: users.fullName,
           displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
           totalPoints: leaderboards.totalPoints,
+          courseCompletionsCount: leaderboards.courseCompletionsCount,
           globalRank: leaderboards.globalRank,
           countryRank: leaderboards.countryRank,
           countryCode: countries.countryCode,
@@ -821,7 +913,7 @@ export class GamificationRepository {
         .innerJoin(users, eq(users.userId, leaderboards.userId))
         .leftJoin(userProfiles, eq(userProfiles.userId, leaderboards.userId))
         .leftJoin(countries, eq(countries.countryId, userProfiles.countryId))
-        .where(baseWhere)
+        .where(activeUserFilter)
         // Rows refreshed since the last job run carry a NULL rank: list them
         // after the ranked ones (MySQL sorts NULL first in ASC).
         .orderBy(
@@ -832,24 +924,32 @@ export class GamificationRepository {
         )
         .limit(limit)
         .offset((page - 1) * limit),
-      db.select({ value: count() }).from(leaderboards),
+      db
+        .select({ value: count() })
+        .from(leaderboards)
+        .innerJoin(users, eq(users.userId, leaderboards.userId))
+        .where(activeUserFilter),
     ]);
     return { rows, total: totalRows[0]?.value ?? 0 };
   }
 
-  /** Paginated country-scoped leaderboard. */
+  /** Paginated country-scoped leaderboard (excludes inactive/banned). */
   async getCountryLeaderboard(countryId: number, page: number, limit: number): Promise<{
     rows: Array<LeaderboardEntryLike>;
     total: number;
   }> {
+    const whereCond = and(eq(userProfiles.countryId, countryId), activeUserFilter);
     const [rows, totalRows] = await Promise.all([
       db
         .select({
           leaderboardId: leaderboards.leaderboardId,
           userId: leaderboards.userId,
+          username: users.username,
           fullName: users.fullName,
           displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
           totalPoints: leaderboards.totalPoints,
+          courseCompletionsCount: leaderboards.courseCompletionsCount,
           globalRank: leaderboards.globalRank,
           countryRank: leaderboards.countryRank,
           countryCode: countries.countryCode,
@@ -858,7 +958,7 @@ export class GamificationRepository {
         .innerJoin(users, eq(users.userId, leaderboards.userId))
         .innerJoin(userProfiles, eq(userProfiles.userId, leaderboards.userId))
         .innerJoin(countries, eq(countries.countryId, userProfiles.countryId))
-        .where(eq(userProfiles.countryId, countryId))
+        .where(whereCond)
         .orderBy(
           sql`${leaderboards.countryRank} IS NULL`,
           asc(leaderboards.countryRank),
@@ -870,34 +970,38 @@ export class GamificationRepository {
       db
         .select({ value: count() })
         .from(leaderboards)
+        .innerJoin(users, eq(users.userId, leaderboards.userId))
         .innerJoin(userProfiles, eq(userProfiles.userId, leaderboards.userId))
-        .where(eq(userProfiles.countryId, countryId)),
+        .where(whereCond),
     ]);
     return { rows, total: totalRows[0]?.value ?? 0 };
   }
 
-  /** Cohort leaderboard: a specific set of user ids. */
+  /** Cohort leaderboard: LEFT JOINs `leaderboards` so 0-point members appear, excludes inactive/banned. */
   async getLeaderboardForUsers(userIds: number[]): Promise<LeaderboardEntryLike[]> {
     if (userIds.length === 0) {
       return [];
     }
     return db
       .select({
-        leaderboardId: leaderboards.leaderboardId,
-        userId: leaderboards.userId,
+        leaderboardId: sql<number>`COALESCE(${leaderboards.leaderboardId}, 0)`,
+        userId: users.userId,
+        username: users.username,
         fullName: users.fullName,
         displayName: users.displayName,
-        totalPoints: leaderboards.totalPoints,
+        avatarUrl: users.avatarUrl,
+        totalPoints: sql<number>`COALESCE(${leaderboards.totalPoints}, 0)`,
+        courseCompletionsCount: sql<number>`COALESCE(${leaderboards.courseCompletionsCount}, 0)`,
         globalRank: leaderboards.globalRank,
         countryRank: leaderboards.countryRank,
         countryCode: countries.countryCode,
       })
-      .from(leaderboards)
-      .innerJoin(users, eq(users.userId, leaderboards.userId))
-      .leftJoin(userProfiles, eq(userProfiles.userId, leaderboards.userId))
+      .from(users)
+      .leftJoin(leaderboards, eq(leaderboards.userId, users.userId))
+      .leftJoin(userProfiles, eq(userProfiles.userId, users.userId))
       .leftJoin(countries, eq(countries.countryId, userProfiles.countryId))
-      .where(inArray(leaderboards.userId, userIds))
-      .orderBy(desc(leaderboards.totalPoints), asc(leaderboards.userId));
+      .where(and(inArray(users.userId, userIds), activeUserFilter))
+      .orderBy(sql`COALESCE(${leaderboards.totalPoints}, 0) DESC`, asc(users.userId));
   }
 
   async getCountryIdByCode(countryCode: string): Promise<number | null> {
@@ -1005,11 +1109,12 @@ export class GamificationRepository {
     }
   }
 
-  /** Paginated season leaderboard joined to users. */
+  /** Paginated season leaderboard joined to users (excludes inactive/banned, NULL ranks sorted last). */
   async getSeasonLeaderboard(seasonId: number, page: number, limit: number): Promise<{
     rows: SeasonLeaderboardRow[];
     total: number;
   }> {
+    const whereCond = and(eq(seasonLeaderboards.seasonId, seasonId), activeUserFilter);
     const [rows, totalRows] = await Promise.all([
       db
         .select({
@@ -1018,24 +1123,35 @@ export class GamificationRepository {
           userId: seasonLeaderboards.userId,
           pointsEarned: seasonLeaderboards.pointsEarned,
           rank: seasonLeaderboards.rank,
+          username: users.username,
           fullName: users.fullName,
           displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
+          countryCode: countries.countryCode,
         })
         .from(seasonLeaderboards)
         .innerJoin(users, eq(users.userId, seasonLeaderboards.userId))
-        .where(eq(seasonLeaderboards.seasonId, seasonId))
-        .orderBy(asc(seasonLeaderboards.rank), desc(seasonLeaderboards.pointsEarned), asc(users.userId))
+        .leftJoin(userProfiles, eq(userProfiles.userId, seasonLeaderboards.userId))
+        .leftJoin(countries, eq(countries.countryId, userProfiles.countryId))
+        .where(whereCond)
+        .orderBy(
+          sql`${seasonLeaderboards.rank} IS NULL`,
+          asc(seasonLeaderboards.rank),
+          desc(seasonLeaderboards.pointsEarned),
+          asc(users.userId),
+        )
         .limit(limit)
         .offset((page - 1) * limit),
       db
         .select({ value: count() })
         .from(seasonLeaderboards)
-        .where(eq(seasonLeaderboards.seasonId, seasonId)),
+        .innerJoin(users, eq(users.userId, seasonLeaderboards.userId))
+        .where(whereCond),
     ]);
     return { rows, total: totalRows[0]?.value ?? 0 };
   }
 
-  /** All season rows for the season (rank assignment + standing). */
+  /** All active season rows for the season (rank assignment + standing). */
   async listAllSeasonRows(seasonId: number): Promise<Array<{ leaderboardId: number; userId: number; pointsEarned: number }>> {
     return db
       .select({
@@ -1044,8 +1160,9 @@ export class GamificationRepository {
         pointsEarned: seasonLeaderboards.pointsEarned,
       })
       .from(seasonLeaderboards)
-      .where(eq(seasonLeaderboards.seasonId, seasonId))
-      .orderBy(desc(seasonLeaderboards.pointsEarned), asc(seasonLeaderboards.userId));
+      .innerJoin(users, eq(users.userId, seasonLeaderboards.userId))
+      .where(and(eq(seasonLeaderboards.seasonId, seasonId), activeUserFilter))
+      .orderBy(desc(seasonLeaderboards.pointsEarned), asc(users.userId));
   }
 
   /** UPSERT one user's season points (unique_season_user constraint). */
@@ -1082,6 +1199,20 @@ export class GamificationRepository {
   }
 
   /* ── Cohort scoping (class / org membership, backend-derived) ────────── */
+
+  async isStudentOfClass(classId: number, userId: number): Promise<boolean> {
+    const rows = await db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(and(
+        eq(teamMembers.teamId, classId),
+        eq(teamMembers.userId, userId),
+        eq(teamMembers.role, 'member'),
+        eq(teamMembers.isActive, true),
+      ))
+      .limit(1);
+    return rows.length > 0;
+  }
 
   async isProfessorOfClass(classId: number, userId: number): Promise<boolean> {
     const rows = await db
@@ -1285,11 +1416,16 @@ function currentStreakDays(activityDays: string[], today: Date = new Date()): nu
 export interface LeaderboardEntryLike {
   leaderboardId: number;
   userId: number;
+  username?: string;
   fullName: string | null;
   displayName: string | null;
+  avatarUrl?: string | null;
   totalPoints: number;
+  courseCompletionsCount?: number;
   globalRank: number | null;
   countryRank: number | null;
+  cohortRank?: number | null;
+  rankDelta?: number | null;
   countryCode: string | null;
 }
 

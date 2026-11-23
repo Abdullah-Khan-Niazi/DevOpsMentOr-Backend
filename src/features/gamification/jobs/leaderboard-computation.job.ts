@@ -72,6 +72,11 @@ export class LeaderboardComputationJob {
     if (this.timer) {
       return;
     }
+    if (env.NODE_ENV !== 'test') {
+      void this.run().catch((error) => {
+        logger.error({ err: error }, 'Initial leaderboard computation run failed');
+      });
+    }
     this.timer = setInterval(() => {
       void this.run().catch((error) => {
         logger.error({ err: error }, 'Leaderboard computation run failed');
