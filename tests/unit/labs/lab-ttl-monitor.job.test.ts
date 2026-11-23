@@ -82,4 +82,18 @@ describe('LabTtlMonitorJob', () => {
     expect(repo.updateInstanceStatus).not.toHaveBeenCalled();
     expect(vpn.releaseAssignmentForUser).not.toHaveBeenCalled();
   });
+
+  it('marks expired instance terminated and releases VPN when container is already gone (404)', async () => {
+    const { NotFoundError } = await import('../../../src/shared/errors');
+    const orchestration = {
+      terminateInstance: vi.fn(async () => {
+        throw new NotFoundError('Instance gone');
+      }),
+    };
+    const { job, repo, vpn } = makeJob({ orchestration });
+    const terminated = await job.run();
+    expect(terminated).toBe(1);
+    expect(repo.updateInstanceStatus).toHaveBeenCalledWith(42, 'terminated');
+    expect(vpn.releaseAssignmentForUser).toHaveBeenCalledWith(7);
+  });
 });

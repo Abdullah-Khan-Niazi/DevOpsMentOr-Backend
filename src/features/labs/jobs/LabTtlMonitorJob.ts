@@ -1,4 +1,6 @@
 import { env } from '../../../app/config';
+import { HTTP_STATUS } from '../../../shared/constants';
+import { NotFoundError } from '../../../shared/errors';
 import { logger } from '../../../shared/logger';
 import { activityLogService } from '../../progress/services/ActivityLogService';
 import type { LabsRepository } from '../repositories/labs.repository';
@@ -65,8 +67,11 @@ export class LabTtlMonitorJob {
       try {
         await this.deps.orchestration.terminateInstance(instance.instanceId);
       } catch (error) {
-        logger.error({ err: error, instanceId: instance.instanceId }, 'TTL terminate failed');
-        continue;
+        const status = (error as { statusCode?: number })?.statusCode;
+        if (!(error instanceof NotFoundError) && status !== HTTP_STATUS.NOT_FOUND) {
+          logger.error({ err: error, instanceId: instance.instanceId }, 'TTL terminate failed');
+          continue;
+        }
       }
       await this.deps.repo.updateInstanceStatus(instance.instanceId, 'terminated');
       await this.deps.vpn.releaseAssignmentForUser(instance.userId);

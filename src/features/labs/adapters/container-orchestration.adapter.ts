@@ -192,6 +192,7 @@ const catalogEnvelope = <T extends z.ZodTypeAny>(data: T) => z.object({ success:
 
 /* ── Timeouts and limits ────────────────────────────────────────────────── */
 
+const HEALTH_TIMEOUT_MS = 3_000;
 const INSTANCE_LOOKUP_TIMEOUT_MS = 5_000;
 const INSTANCE_CONTROL_TIMEOUT_MS = 15_000;
 const INSTANCE_CREATE_TIMEOUT_MS = 30_000;
@@ -269,6 +270,48 @@ export class ContainerOrchestrationAdapter {
     return env.CONTAINER_ORCHESTRATION_API_KEY
       ? { Authorization: `Bearer ${env.CONTAINER_ORCHESTRATION_API_KEY}` }
       : {};
+  }
+
+  /** Lightweight reachability check against the Labs orchestrator `/health` endpoint. */
+  async checkHealth(): Promise<{ available: boolean; reason?: string }> {
+    if (!env.CONTAINER_ORCHESTRATION_API_URL) {
+      return { available: false, reason: 'Lab orchestration service is not configured.' };
+    }
+    const endpoint = env.CONTAINER_ORCHESTRATION_API_URL.replace(/\/$/, '');
+    try {
+      const response = await fetch(`${endpoint}/health`, {
+        method: 'GET',
+        headers: this.authHeaders(),
+        redirect: 'error',
+        signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        return {
+          available: false,
+          reason: `Lab runtime responded with HTTP ${response.status}.`,
+        };
+      }
+      return { available: true };
+    } catch (error) {
+      return {
+        available: false,
+        reason: isAbortError(error)
+          ? 'Lab runtime health check timed out.'
+          : 'Lab runtime service is offline or unreachable.',
+      };
+    }
+  }
+
+  /** Throws 503 LAB_ENV_UNREACHABLE unless the Labs runtime is up and responding. */
+  async assertReachable(): Promise<void> {
+    const health = await this.checkHealth();
+    if (!health.available) {
+      throw new AppError(
+        'Lab runtime service is currently offline. Please try again later.',
+        HTTP_STATUS.SERVICE_UNAVAILABLE,
+        [{ code: ERROR_CODES.LAB_ENV_UNREACHABLE }],
+      );
+    }
   }
 
   /** Instance lookup. Null only on 404; every other failure throws 503. */

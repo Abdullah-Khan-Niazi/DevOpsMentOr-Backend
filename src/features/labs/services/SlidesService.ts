@@ -13,8 +13,8 @@ import { entitlementService } from './EntitlementService';
 import type { LabsRepository } from '../repositories/labs.repository';
 import { labsRepository } from '../repositories/labs.repository';
 
-/** Presigned deck URLs live for five minutes; the client refreshes before they expire. */
-export const SLIDES_URL_TTL_SECONDS = 300;
+/** Presigned deck URLs stay valid across long lab workspace sessions. */
+export const SLIDES_URL_TTL_SECONDS = 3600;
 
 /** Defence in depth: only keys of the catalog layout are ever signed. */
 const SLIDES_KEY_RE = /^Slides\/[A-Za-z0-9 _.-]+\/[A-Za-z0-9 _.-]+\.pdf$/;

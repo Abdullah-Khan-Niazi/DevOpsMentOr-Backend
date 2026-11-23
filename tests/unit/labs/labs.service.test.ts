@@ -107,6 +107,8 @@ function makeService(overrides: Partial<Record<keyof LabServiceDeps, unknown>> =
   const repo = (overrides.repo ?? makeRepo()) as Mocked<LabServiceDeps['repo']>;
   const orchestration = (overrides.orchestration ?? {
     getInstance: vi.fn(async () => null),
+    checkHealth: vi.fn(async () => ({ available: true })),
+    assertReachable: vi.fn(async () => undefined),
     createInstance: vi.fn(async () => ({
       hostname: 'box-42.example.com',
       assignedIp: '10.0.0.42',
@@ -349,6 +351,29 @@ describe('LabService', () => {
       expect(repo.insertInstance).not.toHaveBeenCalled();
     });
 
+    it('throws 503 LAB_ENV_UNREACHABLE without creating a DB instance when Labs is offline', async () => {
+      const { AppError } = await import('../../../src/shared/errors');
+      const repo = readyRepo();
+      const { service, orchestration } = makeService({
+        repo,
+        orchestration: {
+          getInstance: vi.fn(async () => null),
+          assertReachable: vi.fn(async () => {
+            throw new AppError('Offline', 503, [{ code: 'LAB_ENV_UNREACHABLE' }]);
+          }),
+          createInstance: vi.fn(),
+          stopInstance: vi.fn(),
+          terminateInstance: vi.fn(),
+        },
+      });
+      await expect(service.provisionInstance(7, 1, null)).rejects.toMatchObject({
+        statusCode: 503,
+        errors: [{ code: 'LAB_ENV_UNREACHABLE' }],
+      });
+      expect(repo.insertInstance).not.toHaveBeenCalled();
+      expect(orchestration.createInstance).not.toHaveBeenCalled();
+    });
+
     it('marks the instance errored and releases the VPN when provisioning fails', async () => {
       const orchestration = {
         getInstance: vi.fn(async () => null),
@@ -383,7 +408,7 @@ describe('LabService', () => {
       expect(active).toMatchObject({ instanceId: 42, labId: 1, labName: 'Docker Deep Dive', terminalWsUrl: 'wss://terminal.example.com/42' });
     });
 
-    it('returns terminalWsUrl null, not a localhost fallback, when the orchestrator is unreachable', async () => {
+    it('throws 503 LAB_ENV_UNREACHABLE when the orchestrator is unreachable', async () => {
       const repo = makeRepo();
       repo.findAnyActiveInstanceForUser.mockResolvedValue(instanceRow() as never);
       const orchestration = {
@@ -396,12 +421,28 @@ describe('LabService', () => {
       };
       const { service } = makeService({ repo, orchestration: orchestration as never });
 
+      await expect(service.getActiveInstance(7)).rejects.toMatchObject({
+        statusCode: 503,
+        errors: [{ code: 'LAB_ENV_UNREACHABLE' }],
+      });
+    });
+
+    it('reconciles a missing runtime container to terminated, releases VPN, and returns null', async () => {
+      const repo = makeRepo();
+      repo.findAnyActiveInstanceForUser.mockResolvedValue(instanceRow() as never);
+      const orchestration = {
+        getInstance: vi.fn(async () => null),
+        createInstance: vi.fn(),
+        stopInstance: vi.fn(),
+        terminateInstance: vi.fn(),
+      };
+      const { service, vpn } = makeService({ repo, orchestration: orchestration as never });
+
       const active = await service.getActiveInstance(7);
 
-      expect(active).not.toBeNull();
-      expect(active?.instanceId).toBe(42);
-      expect(active?.terminalWsUrl).toBeNull();
-      expect(JSON.stringify(active)).not.toContain('localhost');
+      expect(active).toBeNull();
+      expect(repo.updateInstanceStatus).toHaveBeenCalledWith(42, 'terminated');
+      expect(vpn.releaseAssignmentForUser).toHaveBeenCalledWith(7);
     });
 
     it('returns null when the learner has no live instance', async () => {

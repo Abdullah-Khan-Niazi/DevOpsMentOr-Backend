@@ -142,4 +142,18 @@ describe('ContainerOrchestrationAdapter', () => {
     fetchMock.mockResolvedValueOnce(new Response('{"code":"LAB_NOT_FOUND"}', { status: 404 }));
     await expect(adapter.getCatalogLab('C01M03L01')).resolves.toBeNull();
   });
+
+  it('checkHealth returns available=true on 200 and assertReachable throws 503 LAB_ENV_UNREACHABLE on outage', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ status: 'ok' }));
+    await expect(adapter.checkHealth()).resolves.toEqual({ available: true });
+
+    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    await expect(adapter.checkHealth()).resolves.toMatchObject({ available: false });
+
+    fetchMock.mockResolvedValueOnce(new Response('down', { status: 503 }));
+    await expect(adapter.assertReachable()).rejects.toMatchObject({
+      statusCode: 503,
+      errors: [{ code: 'LAB_ENV_UNREACHABLE' }],
+    });
+  });
 });

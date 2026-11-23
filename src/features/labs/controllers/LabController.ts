@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { sendSuccess } from '../../../shared/utils';
 import { HTTP_STATUS, PERMISSIONS } from '../../../shared/constants';
 import type { VpnRegion } from '../dto/labs.dto';
+import { containerOrchestrationAdapter } from '../adapters/container-orchestration.adapter';
 import { labService } from '../services/LabService';
 import { vpnService } from '../services/VpnService';
 
@@ -11,6 +12,12 @@ function userId(req: Request): number {
 
 /** F6 §08 HTTP handling for the lab catalog and instance lifecycle. */
 export class LabController {
+  /** Runtime health check for the Labs orchestrator. */
+  async getHealth(_req: Request, res: Response): Promise<Response> {
+    const health = await containerOrchestrationAdapter.checkHealth();
+    return sendSuccess(res, health, health.available ? 'Lab runtime is healthy.' : 'Lab runtime is offline.');
+  }
+
   /** LAB-01 */
   async listLabs(_req: Request, res: Response): Promise<Response> {
     const labs = await labService.listLabs();

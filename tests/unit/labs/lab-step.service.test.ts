@@ -70,6 +70,7 @@ function harness(opts: { steps?: unknown[]; multiplier?: number; completionBonus
       [...rows].reverse().find((r) => r.activityType === 'LAB_STEP_STAGED' && r.details.instanceId === instanceId && r.details.stepId === stepId) ?? null),
     insertActivity: vi.fn(async (input: { activityType: string; details: Record<string, unknown> }) => add(input.activityType, input.details)),
     updateInstanceExpiry: vi.fn(async () => undefined),
+    updateInstanceStatus: vi.fn(async () => undefined),
   };
   const award = {
     withUserLock: vi.fn(async (_u: number, fn: (tx: unknown) => unknown) => fn({ tag: 'tx' })),
@@ -78,7 +79,11 @@ function harness(opts: { steps?: unknown[]; multiplier?: number; completionBonus
   };
   const deps = {
     repo,
-    orchestration: { getInstance: vi.fn(async () => ({ terminalWsUrl: 'wss://t/42' })) },
+    orchestration: {
+      getInstance: vi.fn(async () => ({ terminalWsUrl: 'wss://t/42' })),
+      assertReachable: vi.fn(async () => undefined),
+    },
+    vpn: { releaseAssignmentForUser: vi.fn(async () => undefined) },
     entitlement: { assertLabAccess: vi.fn(async () => undefined) },
     check: {
       evaluate: vi.fn(async () => ({ passed: true, reason: 'passed' })),
@@ -177,6 +182,28 @@ describe('LabStepService.getState', () => {
     const state = await h.service.getState(USER, LAB);
     expect(state.activeInstance).toBeNull();
     expect(state.otherActiveInstance).toEqual({ instanceId: 5, labId: 99, labName: 'Other Lab' });
+  });
+
+  it('throws 503 LAB_ENV_UNREACHABLE when Labs runtime is offline', async () => {
+    const { AppError } = await import('../../../src/shared/errors');
+    const h = harness();
+    h.deps.orchestration.assertReachable.mockRejectedValueOnce(
+      new AppError('Offline', 503, [{ code: 'LAB_ENV_UNREACHABLE' }]),
+    );
+    await expect(h.service.getState(USER, LAB)).rejects.toMatchObject({
+      statusCode: 503,
+      errors: [{ code: 'LAB_ENV_UNREACHABLE' }],
+    });
+  });
+
+  it('reconciles missing container in another lab so it does not falsely block this lab', async () => {
+    const h = harness();
+    h.deps.repo.findAnyActiveInstanceForUser.mockResolvedValue({ instanceId: 5, labId: 99, status: 'running' } as never);
+    h.deps.orchestration.getInstance.mockResolvedValueOnce(null as never);
+    const state = await h.service.getState(USER, LAB);
+    expect(state.otherActiveInstance).toBeNull();
+    expect(h.deps.repo.updateInstanceStatus).toHaveBeenCalledWith(5, 'terminated');
+    expect(h.deps.vpn.releaseAssignmentForUser).toHaveBeenCalledWith(USER);
   });
 
   it('404s an inactive or missing lab, 409s LAB_NOT_READY and LAB_MISCONFIGURED', async () => {

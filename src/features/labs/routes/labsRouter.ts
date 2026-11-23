@@ -37,6 +37,11 @@ const labsRouter = Router();
 /** Public catalog: preview without auth; `isStarted` resolved when signed in. */
 labsRouter.get('/labs', asyncHandler((req, res) => labController.listLabs(req, res)));
 labsRouter.get(
+  '/labs/health',
+  authenticate,
+  asyncHandler((req, res) => labController.getHealth(req, res)),
+);
+labsRouter.get(
   '/labs/:labId',
   optionalAuthenticate,
   validateRequest(labIdParamSchema, 'params'),

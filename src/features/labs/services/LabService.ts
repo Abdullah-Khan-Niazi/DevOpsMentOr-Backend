@@ -49,7 +49,8 @@ export interface LabServiceDeps {
   orchestration: Pick<
     ContainerOrchestrationAdapter,
     'createInstance' | 'stopInstance' | 'terminateInstance' | 'getInstance'
-  >;
+  > &
+    Partial<Pick<ContainerOrchestrationAdapter, 'checkHealth' | 'assertReachable'>>;
   entitlement: Pick<EntitlementService, 'assertLabAccess' | 'getLabTtlHours' | 'getExtensionLimit'>;
   vpn: Pick<VpnService, 'ensureAssignmentForProvision' | 'releaseAssignmentForUser'>;
   award: Pick<AwardService, 'withUserLock'>;
@@ -179,6 +180,10 @@ export class LabService {
       throw error;
     }
 
+    if (typeof this.deps.orchestration.assertReachable === 'function') {
+      await this.deps.orchestration.assertReachable();
+    }
+
     const ttlHours = await this.deps.entitlement.getLabTtlHours(userId);
     const expiresAt = new Date(Date.now() + ttlHours * 3_600_000);
 
@@ -274,6 +279,9 @@ export class LabService {
       await this.deps.repo.updateInstanceStatus(instanceId, 'running');
     } catch (error) {
       await this.abandonProvision(userId, labId, instanceId, error);
+      if (error instanceof AppError) {
+        throw error;
+      }
       throw new AppError(
         'The lab environment could not be provisioned. Please try again.',
         HTTP_STATUS.INTERNAL_SERVER_ERROR,
@@ -321,17 +329,30 @@ export class LabService {
     if (!row || !row.labId) {
       return null;
     }
-    const lab = await this.deps.repo.findLabById(row.labId);
 
-    // Null when the orchestrator cannot resolve the environment: the FE shows the reconnect state (D11).
-    let terminalWsUrl: string | null = null;
+    let endpoint: Awaited<ReturnType<ContainerOrchestrationAdapter['getInstance']>>;
     try {
-      const endpoint = await this.deps.orchestration.getInstance(row.instanceId);
-      terminalWsUrl = endpoint?.terminalWsUrl ?? null;
+      endpoint = await this.deps.orchestration.getInstance(row.instanceId);
     } catch (err) {
-      logger.warn({ err, instanceId: row.instanceId }, 'Could not resolve terminal endpoint from orchestrator');
+      logger.warn({ err, instanceId: row.instanceId }, 'Lab runtime unreachable while checking active instance');
+      if (err instanceof AppError) {
+        throw err;
+      }
+      throw new AppError(
+        'Lab runtime service is currently offline. Please try again later.',
+        HTTP_STATUS.SERVICE_UNAVAILABLE,
+        [{ code: ERROR_CODES.LAB_ENV_UNREACHABLE }],
+      );
     }
 
+    // Reconcile DB rows whose runtime container no longer exists (404 / missing / terminated).
+    if (!endpoint || endpoint.status === 'missing' || endpoint.status === 'terminated') {
+      await this.deps.repo.updateInstanceStatus(row.instanceId, 'terminated');
+      await this.deps.vpn.releaseAssignmentForUser(userId);
+      return null;
+    }
+
+    const lab = await this.deps.repo.findLabById(row.labId);
     return {
       instanceId: row.instanceId,
       labId: row.labId,
@@ -346,7 +367,7 @@ export class LabService {
       diskGb: row.diskGb,
       startedAt: row.startedAt.toISOString(),
       expiresAt: row.expiresAt?.toISOString() ?? null,
-      terminalWsUrl,
+      terminalWsUrl: endpoint.terminalWsUrl ?? null,
     };
   }
 
@@ -384,11 +405,14 @@ export class LabService {
     try {
       await this.deps.orchestration.terminateInstance(instance.instanceId);
     } catch (error) {
-      logger.error({ err: error, instanceId: instance.instanceId }, 'Lab terminate failed');
-      throw new AppError(
-        'The lab environment could not be terminated. Please try again.',
-        HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      );
+      const status = (error as { statusCode?: number })?.statusCode;
+      if (!(error instanceof NotFoundError) && status !== HTTP_STATUS.NOT_FOUND) {
+        logger.error({ err: error, instanceId: instance.instanceId }, 'Lab terminate failed');
+        throw new AppError(
+          'The lab environment could not be terminated. Please try again.',
+          HTTP_STATUS.INTERNAL_SERVER_ERROR,
+        );
+      }
     }
     await this.deps.repo.updateInstanceStatus(instance.instanceId, 'terminated');
     await this.deps.vpn.releaseAssignmentForUser(instance.userId);

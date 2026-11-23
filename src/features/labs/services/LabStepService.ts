@@ -25,6 +25,8 @@ import type { ContainerOrchestrationAdapter } from '../adapters/container-orches
 import { containerOrchestrationAdapter } from '../adapters/container-orchestration.adapter';
 import type { EntitlementService } from './EntitlementService';
 import { entitlementService } from './EntitlementService';
+import type { VpnService } from './VpnService';
+import { vpnService } from './VpnService';
 import type { LabCheckService } from './LabCheckService';
 import { labCheckService, normalizeAnswer, scalePoints } from './LabCheckService';
 import type { InstanceRow, LabActivityRow, LabRow, LabsRepository } from '../repositories/labs.repository';
@@ -73,9 +75,12 @@ export interface LabStepServiceDeps {
     | 'findLatestStageRecord'
     | 'insertActivity'
     | 'updateInstanceExpiry'
-  >;
-  orchestration: Pick<ContainerOrchestrationAdapter, 'getInstance'>;
+  > &
+    Partial<Pick<LabsRepository, 'updateInstanceStatus'>>;
+  orchestration: Pick<ContainerOrchestrationAdapter, 'getInstance'> &
+    Partial<Pick<ContainerOrchestrationAdapter, 'assertReachable'>>;
   entitlement: Pick<EntitlementService, 'assertLabAccess'>;
+  vpn?: Pick<VpnService, 'releaseAssignmentForUser'>;
   check: Pick<LabCheckService, 'evaluate' | 'runSetup' | 'readHistoryCount'>;
   award: Pick<AwardService, 'withUserLock' | 'apply' | 'balance'>;
   activity: Pick<ActivityLogService, 'recordEvent'>;
@@ -89,6 +94,7 @@ function defaultDeps(): LabStepServiceDeps {
     repo: labsRepository,
     orchestration: containerOrchestrationAdapter,
     entitlement: entitlementService,
+    vpn: vpnService,
     check: labCheckService,
     award: awardService,
     activity: activityLogService,
@@ -286,6 +292,9 @@ export class LabStepService {
 
   async getState(userId: number, labId: number): Promise<LabStepsStateDto> {
     const { lab, spec, multiplier } = await this.loadLab(userId, labId);
+    if (typeof this.deps.orchestration.assertReachable === 'function') {
+      await this.deps.orchestration.assertReachable();
+    }
     const progress = buildProgress(
       await this.deps.repo.listLabActivity(userId, labId, STATE_EVENT_TYPES),
     );
@@ -296,14 +305,17 @@ export class LabStepService {
     let activeInstance: LabStepsStateDto['activeInstance'] = null;
     let otherActiveInstance: LabStepsStateDto['otherActiveInstance'] = null;
     if (anyActive && anyActive.labId === labId) {
-      activeInstance = await this.toActiveInstance(anyActive);
+      activeInstance = await this.toActiveInstance(anyActive, userId);
     } else if (anyActive && anyActive.labId !== null) {
-      const otherLab = await this.deps.repo.findLabById(anyActive.labId);
-      otherActiveInstance = {
-        instanceId: anyActive.instanceId,
-        labId: anyActive.labId,
-        labName: otherLab?.labName ?? 'Lab',
-      };
+      const liveOther = await this.toActiveInstance(anyActive, userId);
+      if (liveOther) {
+        const otherLab = await this.deps.repo.findLabById(anyActive.labId);
+        otherActiveInstance = {
+          instanceId: anyActive.instanceId,
+          labId: anyActive.labId,
+          labName: otherLab?.labName ?? 'Lab',
+        };
+      }
     }
 
     const steps: LearnerLabStepDto[] = spec.steps.map((step, index) => {
@@ -927,19 +939,36 @@ export class LabStepService {
     return rows[0]?.balance ?? 0;
   }
 
-  private async toActiveInstance(row: InstanceRow): Promise<NonNullable<LabStepsStateDto['activeInstance']>> {
-    let terminalWsUrl: string | null = null;
+  private async toActiveInstance(
+    row: InstanceRow,
+    userId: number,
+  ): Promise<LabStepsStateDto['activeInstance']> {
+    let endpoint: Awaited<ReturnType<ContainerOrchestrationAdapter['getInstance']>>;
     try {
-      const endpoint = await this.deps.orchestration.getInstance(row.instanceId);
-      terminalWsUrl = endpoint?.terminalWsUrl ?? null;
-    } catch {
-      logger.warn({ instanceId: row.instanceId }, 'Could not resolve terminal endpoint from orchestrator');
+      endpoint = await this.deps.orchestration.getInstance(row.instanceId);
+    } catch (err) {
+      logger.warn({ err, instanceId: row.instanceId }, 'Lab runtime unreachable while resolving workspace instance');
+      if (err instanceof AppError) {
+        throw err;
+      }
+      throw new AppError(
+        'Lab runtime service is currently offline. Please try again later.',
+        HTTP_STATUS.SERVICE_UNAVAILABLE,
+        [{ code: ERROR_CODES.LAB_ENV_UNREACHABLE }],
+      );
     }
+
+    if (!endpoint || endpoint.status === 'missing' || endpoint.status === 'terminated') {
+      await this.deps.repo.updateInstanceStatus?.(row.instanceId, 'terminated');
+      await this.deps.vpn?.releaseAssignmentForUser(userId);
+      return null;
+    }
+
     return {
       instanceId: row.instanceId,
       status: row.status,
       expiresAt: row.expiresAt?.toISOString() ?? null,
-      terminalWsUrl,
+      terminalWsUrl: endpoint.terminalWsUrl ?? null,
     };
   }
 
