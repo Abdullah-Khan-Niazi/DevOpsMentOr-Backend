@@ -39,6 +39,8 @@ export interface CourseDto {
   categoryName: string | null;
   instructorId: number;
   instructorName: string | null;
+  instructorAvatarUrl: string | null;
+  instructorBio: string | null;
   coverImageUrl: string | null;
   videoTrailerUrl: string | null;
   estimatedHours: number;
@@ -234,6 +236,31 @@ export interface LearnerCourseDetailDto {
   course: CourseDto;
   modules: ModuleDto[];
   access: CourseAccessDto;
+}
+
+export interface CourseResourceFileDto {
+  id: string;
+  title: string;
+  kind: 'slides' | 'resource';
+  fileName: string;
+  url: string;
+  downloadUrl: string;
+  expiresAt: string;
+}
+
+export interface CourseWalkthroughResourceDto {
+  labId: number;
+  moduleId: number;
+  moduleTitle: string;
+  slug: string;
+  title: string;
+}
+
+export interface CourseResourcesDto {
+  courseId: number;
+  slides: CourseResourceFileDto | null;
+  files: CourseResourceFileDto[];
+  walkthroughs: CourseWalkthroughResourceDto[];
 }
 
 /** ── §02 consumable snapshots (emitted for F5/F6/F7/F9) ────────────── */

@@ -27,6 +27,12 @@ curriculumRoutes.get(
 );
 
 curriculumRoutes.get(
+  '/courses/:courseId/resources',
+  validateRequest(courseIdParamSchema, 'params'),
+  asyncHandler((req, res) => curriculumController.getCourseResources(req, res)),
+);
+
+curriculumRoutes.get(
   '/courses/:courseId/modules',
   validateRequest(courseIdParamSchema, 'params'),
   asyncHandler((req, res) => curriculumController.listCourseModules(req, res)),

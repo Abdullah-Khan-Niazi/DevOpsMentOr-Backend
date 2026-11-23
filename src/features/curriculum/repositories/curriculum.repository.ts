@@ -58,6 +58,8 @@ export interface CourseRow {
   categoryName: string | null;
   instructorId: number;
   instructorName: string | null;
+  instructorAvatarUrl?: string | null;
+  instructorBio?: string | null;
   coverImageUrl: string | null;
   videoTrailerUrl: string | null;
   estimatedHours: number;
@@ -214,6 +216,8 @@ const courseSelect = {
   categoryName: categories.name,
   instructorId: academyCourses.instructorId,
   instructorName: users.fullName,
+  instructorAvatarUrl: users.avatarUrl,
+  instructorBio: users.bio,
   coverImageUrl: academyCourses.coverImageUrl,
   videoTrailerUrl: academyCourses.videoTrailerUrl,
   estimatedHours: academyCourses.estimatedHours,
@@ -275,19 +279,14 @@ export class CurriculumRepository {
 
   /** Published course catalog (multi-course support, chaos sprint). */
   async listPublishedCourses(): Promise<CourseRow[]> {
-    const rows = await db
-      .select()
+    return db
+      .select(courseSelect)
       .from(academyCourses)
+      .leftJoin(difficultyLevels, eq(difficultyLevels.difficultyId, academyCourses.difficultyId))
+      .leftJoin(categories, eq(categories.categoryId, academyCourses.categoryId))
+      .leftJoin(users, eq(users.userId, academyCourses.instructorId))
       .where(eq(academyCourses.isPublished, true))
       .orderBy(asc(academyCourses.courseId));
-    // Catalog rows carry no joined taxonomy/instructor labels; DTO mapping
-    // renders them as nulls rather than issuing N+1 lookups.
-    return rows.map((row) => ({
-      ...row,
-      difficultyName: null,
-      categoryName: null,
-      instructorName: null,
-    }));
   }
 
   /** Difficulty taxonomy for admin pickers. */

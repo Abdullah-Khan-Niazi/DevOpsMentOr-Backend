@@ -2,10 +2,20 @@ import { env } from '../../../app/config';
 import { ERROR_CODES, ForbiddenError, NotFoundError } from '../../../shared/errors';
 import { courseAccessService, type CourseAccessService } from '../../orgs/services/course-access.service';
 import type { OrgActor } from '../../orgs/dto/org.dto';
+import {
+  SLIDES_KEY_RE,
+  SLIDES_URL_TTL_SECONDS,
+  isR2Configured,
+  listR2ObjectsByPrefix,
+  presignR2Object,
+} from '../../labs/services/SlidesService';
 import { parseLabSpec } from '../../labs/validators/lab-spec.validator';
 import type {
   CourseDto,
+  CourseResourceFileDto,
+  CourseResourcesDto,
   CourseSnapshot,
+  CourseWalkthroughResourceDto,
   LearnerCourseDetailDto,
   LessonSnapshot,
   LessonDto,
@@ -84,6 +94,107 @@ export class CurriculumService {
       modules: modules.map((row) => toModuleDto(row)),
       access,
     };
+  }
+
+  /**
+   * Course resources (`GET /curriculum/courses/:courseId/resources`): R2 slide deck,
+   * downloadable R2 resource files under the course prefix, and published lab walkthroughs.
+   */
+  async getCourseResources(actor: OrgActor, courseId: number): Promise<CourseResourcesDto> {
+    const course = await this.findPublishedCourse(courseId);
+    if (!course) {
+      throw courseNotFound();
+    }
+    const access = await this.deps.access.getCourseAccess(actor, courseId);
+    if (!access.canAccess) {
+      const message = access.message
+        ?? 'You do not have access to this course. Ask your organization admin for access.';
+      throw new ForbiddenError(message, [
+        { code: ERROR_CODES.COURSE_ACCESS_DENIED, reason: access.reason, message },
+      ]);
+    }
+
+    const r2Ready = isR2Configured();
+    const expiresAt = new Date(Date.now() + SLIDES_URL_TTL_SECONDS * 1000).toISOString();
+    let slides: CourseResourceFileDto | null = null;
+    const seenKeys = new Set<string>();
+
+    const primarySlidesKey = course.videoTrailerUrl;
+    if (r2Ready && primarySlidesKey && SLIDES_KEY_RE.test(primarySlidesKey)) {
+      try {
+        const [url, downloadUrl] = await Promise.all([
+          presignR2Object(primarySlidesKey, SLIDES_URL_TTL_SECONDS, 'inline', 'application/pdf'),
+          presignR2Object(primarySlidesKey, SLIDES_URL_TTL_SECONDS, 'attachment', 'application/pdf'),
+        ]);
+        const fileName = primarySlidesKey.split('/').pop() ?? `${course.slug}-slides.pdf`;
+        slides = {
+          id: `slides:${primarySlidesKey}`,
+          title: `${course.title} Slides`,
+          kind: 'slides',
+          fileName,
+          url,
+          downloadUrl,
+          expiresAt,
+        };
+        seenKeys.add(primarySlidesKey);
+      } catch {
+        slides = null;
+      }
+    }
+
+    const files: CourseResourceFileDto[] = [];
+    if (r2Ready && course.slug) {
+      const [resourceObjects, slideObjects] = await Promise.all([
+        listR2ObjectsByPrefix(`Resources/${course.slug}/`),
+        listR2ObjectsByPrefix(`Slides/${course.slug}/`),
+      ]);
+      for (const entry of [...resourceObjects, ...slideObjects]) {
+        if (seenKeys.has(entry.key)) continue;
+        seenKeys.add(entry.key);
+        try {
+          const isPdf = entry.fileName.toLowerCase().endsWith('.pdf');
+          const contentType = isPdf ? 'application/pdf' : undefined;
+          const [url, downloadUrl] = await Promise.all([
+            presignR2Object(entry.key, SLIDES_URL_TTL_SECONDS, 'inline', contentType),
+            presignR2Object(entry.key, SLIDES_URL_TTL_SECONDS, 'attachment', contentType),
+          ]);
+          files.push({
+            id: entry.key,
+            title: humanizeResourceTitle(entry.fileName),
+            kind: entry.key.startsWith('Slides/') ? 'slides' : 'resource',
+            fileName: entry.fileName,
+            url,
+            downloadUrl,
+            expiresAt,
+          });
+        } catch {
+          // Skip unpresignable objects without failing the course resource response
+        }
+      }
+    }
+
+    const modules = await this.deps.repo.listModules(courseId, { publishedOnly: true });
+    const moduleItems = await Promise.all(
+      modules.map((mod) => this.deps.repo.listItemsByModule(mod.moduleId, { publishedOnly: true })),
+    );
+    const walkthroughs: CourseWalkthroughResourceDto[] = [];
+    const seenLabs = new Set<number>();
+    modules.forEach((mod, index) => {
+      for (const item of moduleItems[index] ?? []) {
+        if (item.kind !== 'lab' || !item.lab || !isLearnerVisibleItem(item)) continue;
+        if (seenLabs.has(item.lab.labId)) continue;
+        seenLabs.add(item.lab.labId);
+        walkthroughs.push({
+          labId: item.lab.labId,
+          moduleId: mod.moduleId,
+          moduleTitle: mod.title,
+          slug: item.lab.slug,
+          title: item.title || item.lab.labName,
+        });
+      }
+    });
+
+    return { courseId, slides, files, walkthroughs };
   }
 
   /** Published modules of a published course, in module order (`GET /curriculum/courses/:courseId/modules`). */
@@ -358,6 +469,8 @@ export function toCourseDto(course: CourseRow): CourseDto {
     categoryName: course.categoryName,
     instructorId: course.instructorId,
     instructorName: course.instructorName,
+    instructorAvatarUrl: course.instructorAvatarUrl ?? null,
+    instructorBio: course.instructorBio ?? null,
     coverImageUrl: course.coverImageUrl,
     videoTrailerUrl: course.videoTrailerUrl,
     estimatedHours: course.estimatedHours,
@@ -370,6 +483,12 @@ export function toCourseDto(course: CourseRow): CourseDto {
     createdAt: course.createdAt.toISOString(),
     updatedAt: course.updatedAt.toISOString(),
   };
+}
+
+function humanizeResourceTitle(fileName: string): string {
+  const withoutExt = fileName.replace(/\.[A-Za-z0-9]+$/, '');
+  const clean = withoutExt.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return clean || fileName;
 }
 
 export function toModuleDto(row: ModuleRow): ModuleDto {

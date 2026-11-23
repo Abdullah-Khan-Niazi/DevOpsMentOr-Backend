@@ -26,6 +26,12 @@ export class CurriculumController {
     return sendSuccess(res, detail, 'Course retrieved successfully.');
   }
 
+  /** Presigned R2 slides, downloadable course resources, and lab walkthroughs. */
+  async getCourseResources(req: Request, res: Response): Promise<Response> {
+    const resources = await curriculumService.getCourseResources(actorFrom(req), Number(req.params.courseId));
+    return sendSuccess(res, resources, 'Course resources retrieved successfully.');
+  }
+
   async listCourseModules(req: Request, res: Response): Promise<Response> {
     const modules = await curriculumService.listCourseModules(Number(req.params.courseId));
     return sendSuccess(res, modules, 'Modules retrieved successfully.');

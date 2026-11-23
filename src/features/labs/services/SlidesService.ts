@@ -1,4 +1,4 @@
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { eq } from 'drizzle-orm';
 import { env } from '../../../app/config';
@@ -17,12 +17,17 @@ import { labsRepository } from '../repositories/labs.repository';
 export const SLIDES_URL_TTL_SECONDS = 3600;
 
 /** Defence in depth: only keys of the catalog layout are ever signed. */
-const SLIDES_KEY_RE = /^Slides\/[A-Za-z0-9 _.-]+\/[A-Za-z0-9 _.-]+\.pdf$/;
+export const SLIDES_KEY_RE = /^Slides\/[A-Za-z0-9 _.-]+\/[A-Za-z0-9 _.-]+\.pdf$/;
 
 export interface SlidesResult {
   labId: number;
   url: string;
   expiresAt: string;
+}
+
+export interface R2ListedObject {
+  key: string;
+  fileName: string;
 }
 
 export interface SlidesServiceDeps {
@@ -36,7 +41,7 @@ export interface SlidesServiceDeps {
 
 let cachedClient: S3Client | null = null;
 
-function r2Configured(): boolean {
+export function isR2Configured(): boolean {
   return Boolean(env.R2_ENDPOINT && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_BUCKET);
 }
 
@@ -49,29 +54,64 @@ function r2Client(): S3Client {
   return cachedClient;
 }
 
-async function presignDeck(key: string, ttlSeconds: number): Promise<string> {
-  if (!r2Configured()) {
+export async function presignR2Object(
+  key: string,
+  ttlSeconds: number,
+  disposition: 'inline' | 'attachment' = 'inline',
+  contentType?: string,
+): Promise<string> {
+  if (!isR2Configured()) {
     throw new AppError('Slides are not available right now.', HTTP_STATUS.SERVICE_UNAVAILABLE, [
       { code: ERROR_CODES.SLIDES_UNAVAILABLE },
     ]);
   }
+  const safeName = key.split('/').pop()?.replaceAll('"', '') ?? 'resource';
+  const contentDisposition =
+    disposition === 'attachment' ? `attachment; filename="${safeName}"` : 'inline';
   try {
     return await getSignedUrl(
       r2Client(),
       new GetObjectCommand({
         Bucket: env.R2_BUCKET,
         Key: key,
-        ResponseContentType: 'application/pdf',
-        ResponseContentDisposition: 'inline',
+        ...(contentType ? { ResponseContentType: contentType } : {}),
+        ResponseContentDisposition: contentDisposition,
       }),
       { expiresIn: ttlSeconds },
     );
   } catch (error) {
-    logger.error({ err: error }, 'Slides presign failed');
+    logger.error({ err: error, key }, 'R2 presign failed');
     throw new AppError('Slides are not available right now.', HTTP_STATUS.SERVICE_UNAVAILABLE, [
       { code: ERROR_CODES.SLIDES_UNAVAILABLE },
     ]);
   }
+}
+
+export async function listR2ObjectsByPrefix(prefix: string): Promise<R2ListedObject[]> {
+  if (!isR2Configured()) return [];
+  try {
+    const response = await r2Client().send(
+      new ListObjectsV2Command({
+        Bucket: env.R2_BUCKET,
+        Prefix: prefix,
+        MaxKeys: 50,
+      }),
+    );
+    const items = response.Contents ?? [];
+    return items
+      .filter((entry): entry is { Key: string } => typeof entry.Key === 'string' && !entry.Key.endsWith('/'))
+      .map((entry) => ({
+        key: entry.Key,
+        fileName: entry.Key.split('/').pop() ?? entry.Key,
+      }));
+  } catch (error) {
+    logger.warn({ err: error, prefix }, 'R2 list objects failed; returning empty list');
+    return [];
+  }
+}
+
+async function presignDeck(key: string, ttlSeconds: number): Promise<string> {
+  return presignR2Object(key, ttlSeconds, 'inline', 'application/pdf');
 }
 
 async function findCourseSlidesKey(courseSlug: string): Promise<string | null> {
